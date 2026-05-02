@@ -160,6 +160,14 @@ override slot enables parallel `cargo test`.
       `enums.proto`, `builtin.proto`. `build.rs` invokes
       `buffa_build::Config`; capture FDS via `descriptor_set(...)`.
       `ObsBatch.schemas` is `map<fixed64, string>`.
+      `builtin.proto` ships **all** the runtime self-events
+      catalogued in [11 § 10](./11-runtime-core.md#10-self-events) at
+      M0, even those whose runtime emission lands in M2/M3 — the
+      schemas are the contract, and adding them later would force
+      a `format_ver` bump. Includes `ObsRegistryInitialized`,
+      `ObsConfigInconsistent`, `ObsAuditSpoolRecovered`,
+      `ObsAnalyticsPartialDropped`, `ObsSpanPairOrphaned`,
+      `ObsSchemaUnknown`.
 - [ ] `obs-core`:
   - `EventSchema` trait with `SCHEMA_HASH` const.
   - **`EventSchemaErased` object-safe trait + `linkme`-collected
@@ -167,9 +175,14 @@ override slot enables parallel `cargo test`.
     Sinks added in M2/M3 will not work without this; it must land in M0.
   - `ObsCallsite` with `interest: AtomicU8`, `generation: AtomicU32`.
   - `ObsEnvelope` builder + projection helper.
-  - `Observer` trait, `OBSERVER_GLOBAL` (`Lazy<ArcSwap<Arc<dyn Observer>>>`)
-    + `OBSERVER_LOCAL` (`RefCell<Option<Arc<dyn Observer>>>`) +
-    `with_test_observer` + `WeakObserver`.
+  - `Observer` trait + **three-tier resolution** ([11 § 3.1](./11-runtime-core.md#31-the-three-tiers-and-what-each-is-for)):
+    `OBSERVER_GLOBAL` (`Lazy<ArcSwap<Arc<dyn Observer>>>`) +
+    `OBSERVER_THREAD` (`RefCell<Option<Arc<dyn Observer>>>`) +
+    `OBSERVER_TASK` (`tokio::task_local!`) +
+    `OVERRIDE_COUNT` fast-flag + `CAN_ENTER` re-entry guard.
+  - `with_test_observer`, `with_observer_thread_local`,
+    `WithObserver::with_observer` (returns `Instrumented<F>`),
+    `WeakObserver`.
   - `NoopObserver`, `InMemoryObserver`.
   - `StandardObserver` shell with `SinkRouter` (single-tier wired);
     `Sink::deliver(ScrubbedEnvelope<'_>)` from day one (no migration

@@ -16,7 +16,7 @@ trybuild compile-error fixtures, and the canonical mock OTLP collector.
 | `obs-proto` | encode/decode round-trip + view | — | proto round-trip | — | — |
 | `obs-macros` | parse + emit | — | — | — | bad inputs (one .rs per lint) |
 | `obs-build` | parser, codegen | end-to-end with fixture proto | — | codegen wall time | — |
-| `obs-core` | observer, sink, sampler, scope, filter | InMemoryObserver | env. round-trip | emit hot path | — |
+| `obs-core` | observer (3-tier resolution + re-entry guard), sink, sampler, scope, filter, **schema registry** (hash/name lookup, miss fallback), **`ScrubbedEnvelope`** (lifetime, scrubber failure), AUDIT spool format + recovery | InMemoryObserver, multi-tenant per-task observer | env. round-trip, registry determinism | emit hot path, registry lookup, scrubber, observer resolution | borrow-checker fixtures: ScrubbedEnvelope cannot escape lifetime |
 | `obs-otel` | mappers | mock OTel collector | — | encode timings | — |
 | `obs-parquet` | unified-schema gen | round-trip via `arrow` reader | — | batch write | — |
 | `obs-clickhouse` | DDL gen | docker-compose CH | — | insert throughput | — |
@@ -62,24 +62,80 @@ naive `obs::install_observer(InMemoryObserver::new())` in `setup`
 races against other tests: test #2's events end up in test #1's
 buffer or vice versa.
 
-The `#[obs::test]` attribute uses the *per-thread* observer override
-slot from [11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait):
+The `#[obs::test]` attribute uses the **per-thread** observer
+override slot from [11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait)
+for sync/single-thread tests, and the **per-task** override (via
+`Future::with_observer`) for async tests. Both keep parallelism
+intact:
 
 ```rust
-// expands to:
+// async test expands to (per-task tier):
 #[tokio::test]
 async fn foo() -> anyhow::Result<()> {
-    let (observer, handle) = InMemoryObserver::new();
-    obs::with_test_observer(observer, || async {
+    let observer = Arc::new(InMemoryObserver::new());
+    let handle   = observer.handle();
+    async move {
         // ... user body ...
-    }).await
+    }
+    .with_observer(observer.clone())
+    .await
+}
+
+// sync test expands to (per-thread tier):
+#[test]
+fn foo() -> anyhow::Result<()> {
+    let (observer, handle) = InMemoryObserver::new();
+    obs::with_test_observer(observer, || {
+        // ... user body ...
+    })
 }
 ```
 
-Effect: only this thread sees the test observer. Parallel tests do
-not interfere. Library code (called from inside the test) still
-sees `obs::observer()` returning the test observer because the TLS
+Effect: only this task (async) or this thread (sync) sees the test
+observer. Parallel tests do not interfere — async tests are
+correct even when tokio migrates them across worker threads,
+because the per-task slot follows the task. Library code called
+from inside the test still sees `obs::observer()` returning the
+test observer because the per-task slot wins over the per-thread
 slot wins over the global. No `serial_test` mandate.
+
+#### `tokio::spawn` from inside a test does NOT inherit by default
+
+Per the propagation rules in [11 § 3.1](./11-runtime-core.md#31-the-three-tiers-and-what-each-is-for),
+`tokio::spawn` creates a new task whose `OBSERVER_TASK` slot is
+empty — events emitted from the spawned task fall through to the
+**global** observer, not the test observer. This trips up tests
+like:
+
+```rust
+#[obs::test]
+async fn t() -> anyhow::Result<()> {
+    tokio::spawn(async {
+        ObsBackgroundDone::builder().emit();   // → global, not test handle
+    }).await?;
+    obs::test::assert_emitted!(ObsBackgroundDone { .. });   // FAILS
+    Ok(())
+}
+```
+
+To capture spawned-child events in the test buffer, carry the
+observer forward explicitly:
+
+```rust
+#[obs::test]
+async fn t() -> anyhow::Result<()> {
+    let o = obs::observer();   // captures the test observer
+    tokio::spawn(async move {
+        ObsBackgroundDone::builder().emit();
+    }.with_observer(o)).await?;
+    obs::test::assert_emitted!(ObsBackgroundDone { .. });   // OK
+    Ok(())
+}
+```
+
+This is documented in `test_multi_tenant_observer.rs` as the
+positive pattern, and a trybuild-style "you forgot to forward the
+observer" hint is on the M3 polish list.
 
 The attribute supports `Result<T, E>` returns so tests use `?` per
 CLAUDE.md's no-`unwrap` policy:
@@ -181,7 +237,17 @@ crates/obs-sdk/tests/dev_ergonomics/
 ├── test_hot_reload.rs           # SIGHUP changes sampling rate
 ├── test_tracing_bridge.rs       # bridge lifts tracing::info! into ObsTracingForensicEvent
 ├── test_parallel_tests.rs       # runs 32 #[obs::test]s concurrently; verifies no cross-contamination
-└── test_panic_hook.rs           # ObsPanicked emitted before process tears down
+├── test_panic_hook.rs           # ObsPanicked emitted before process tears down
+├── test_multi_tenant_observer.rs # per-task observer override via Future::with_observer
+│                                  # (11 § 3.1); spawns N concurrent tasks each with
+│                                  # its own observer; asserts events route correctly
+│                                  # even when tokio migrates tasks across threads
+├── test_registry_init.rs        # observer init walks EVENT_SCHEMAS; asserts every
+│                                  # ObsXxx in the test fixture appears in by_name and
+│                                  # by_hash; asserts ObsRegistryInitialized fired
+└── test_scrubbed_envelope.rs    # SECRET stripped, PII redacted, original env.payload
+                                   # untouched; ScrubError causes drop-with-metric,
+                                   # not leak through to a sink
 ```
 
 CI runs this suite on every PR; failure is treated as severely as a

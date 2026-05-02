@@ -94,6 +94,21 @@ Each enum:
 `#![forbid(unsafe_code)]`. Vocabulary changes here cause an envelope
 `format_ver` bump; that's the intended forcing function.
 
+#### `no_std` posture
+
+`obs-types` is `#![no_std]`-clean (no `std`, no `alloc`-only types
+in the public API beyond what `buffa::Enumeration` requires). It is
+the only crate in this workspace that meets that bar. **`obs-core`
+and every downstream crate are `std`-only by design** — they depend
+on `tokio`, `linkme`'s distributed-slice (which works under `std`
+linking only), `arc_swap`, `tracing`'s integration surface, and the
+filesystem. `no_std` library crates that want to be observable
+through `obs` therefore cannot in v1; the library author can either
+gate their instrumentation behind `#[cfg(feature = "obs")]` or wait
+for a future `obs-no_std` shim that synthesises envelopes into a
+caller-provided ring buffer. Documented as a non-goal in
+[00-prd.md § 7](./00-prd.md#7-constraints).
+
 ### 2.2 `obs-proto`
 
 Owns the canonical `obs/v1/*.proto` files and their generated Rust
@@ -105,8 +120,29 @@ crates/obs-proto/
 │   ├── options.proto      # MessageOptions / FieldOptions extensions
 │   ├── envelope.proto     # ObsEnvelope, ObsBatch
 │   ├── enums.proto        # Tier, Severity, FieldKind, Cardinality, ...
-│   └── builtin.proto      # ObsForensicEvent, ObsTracingForensicEvent,
-│                          # ObsFnEntered, ObsFnExited, runtime self-events
+│   └── builtin.proto      # User-facing built-ins:
+│                          #   ObsForensicEvent, ObsTracingForensicEvent,
+│                          #   ObsFnEntered, ObsFnExecuted,
+│                          #   ObsSpanCompleted, ObsSpanEntered,
+│                          #   ObsTracingInternedEvent, ObsForensicInternedEvent,
+│                          #   ObsHttpRequestStarted, ObsHttpRequestCompleted,
+│                          #   ObsHttpClientStarted, ObsHttpClientCompleted,
+│                          #   ObsCallsiteRegistered.
+│                          # Runtime self-events (obs.runtime.v1.*):
+│                          #   ObsSinkDropped, ObsSinkFailed,
+│                          #   ObsConfigReloaded, ObsConfigReloadFailed,
+│                          #   ObsConfigInconsistent,
+│                          #   ObsSchemaUnknown, ObsRegistryInitialized,
+│                          #   ObsForensicBudgetExceeded, ObsLabelCardinalityHigh,
+│                          #   ObsOversizedDropped, ObsPanicked,
+│                          #   ObsAuditSpooled, ObsAuditSpoolFailed,
+│                          #   ObsAuditSpoolRecovered,
+│                          #   ObsAnalyticsPartialDropped, ObsSpanPairOrphaned,
+│                          #   ObsBridgePiiSuspected, ObsBridgeMatcherConflict,
+│                          #   ObsBridgeLateSpanRecord, ObsBridgeNoDispatcher,
+│                          #   ObsBridgeCallsiteUnresolved,
+│                          #   ObsCallsiteHashCollision, ObsCallsiteRegistryConflict.
+│                          # Catalogued in 11 § 10; this file is the canonical schema.
 └── build.rs               # buffa-build over the above; emits FDS
 ```
 
@@ -193,30 +229,45 @@ The runtime. This is the biggest crate.
 src/
 ├── lib.rs
 ├── observer/
-│   ├── mod.rs              # `pub trait Observer`, `install_observer`, `observer()`
-│   ├── noop.rs             # `NoopObserver` (default)
+│   ├── mod.rs              # `pub trait Observer`, three-tier resolution
+│   │                         (`OBSERVER_GLOBAL` / `OBSERVER_THREAD` / `OBSERVER_TASK`),
+│   │                         `OVERRIDE_COUNT` fast flag, `install_observer`,
+│   │                         `observer()`, `WeakObserver`, `with_observer_thread_local`,
+│   │                         `with_test_observer`, `WithObserver` trait
+│   │                         (Future::with_observer → Instrumented<F>);
+│   │                         `CAN_ENTER` re-entry guard
+│   ├── noop.rs             # `NoopObserver` (default + re-entry fallback)
 │   ├── standard.rs         # `StandardObserver` with sink router + per-tier workers
 │   └── in_memory.rs        # test harness observer
+├── registry/               # 14-schema-registry.md
+│   ├── mod.rs              # `EventSchemaErased` object-safe trait;
+│   │                         `EVENT_SCHEMAS: distributed_slice` (linkme);
+│   │                         `SchemaRegistry` (by_name + by_hash) built at observer init
+│   ├── scrubbed.rs         # `ScrubbedEnvelope<'_>` worker→sink wrapper
+│   └── prewarm.rs          # curated callsites for bridge pre-warm
+│                             (31-callsite-interning.md § 3.3)
 ├── envelope/
 │   ├── builder.rs          # build_envelope<E: EventSchema>(...)
 │   └── projection.rs       # Label projection helper
 ├── callsite.rs             # ObsCallsite static metadata + filter cache
 ├── sink/
-│   ├── mod.rs              # `pub trait Sink`
+│   ├── mod.rs              # `pub trait Sink` (deliver: ScrubbedEnvelope<'_>)
 │   ├── stdout.rs           # human-readable dev sink
-│   ├── ndjson.rs           # NDJSON file sink
+│   ├── ndjson.rs           # NDJSON file sink (RollingFileWriter underneath)
 │   ├── memory.rs           # bounded ring buffer for tests
 │   ├── router.rs           # SinkRouter
 │   └── batch.rs            # generic Batcher used by sinks
 ├── sampling/
-│   ├── mod.rs              # head + tail sampling
+│   ├── mod.rs              # head + tail sampling, traceparent.sampled honour
 │   ├── tail_buffer.rs      # tokio::task_local ring buffer
 │   └── rate.rs             # per-event rate limiter
 ├── scope/                  # obs::scope! support, ScopeFrame, task-local stack
-├── filter/                 # EnvFilter-style DSL (Obs::Filter)
+├── instrumented.rs         # Instrumented<F> (carries scope + observer override)
+├── filter/                 # EnvFilter-grammar DSL (obs::Filter), ported parser
+├── audit/                  # AUDIT-tier worker, binary spool, recovery
 ├── config/
 │   ├── mod.rs              # `EventsConfig` (serde, ArcSwap)
-│   ├── reload.rs           # SIGHUP / file watcher
+│   ├── reload.rs           # SIGHUP (cfg(unix)) + notify file watcher
 │   └── schema.rs           # YAML schema
 └── error.rs
 ```
@@ -229,6 +280,12 @@ pub use obs_types::*;
 
 pub trait EventSchema: ... { ... }       // (defined here; codegen targets it)
 
+// Object-safe view of EventSchema, populated by the linkme distributed
+// slice and queried by sinks via SchemaRegistry. See 14-schema-registry.md.
+pub trait EventSchemaErased: Send + Sync + 'static { ... }
+pub struct SchemaRegistry { ... }
+pub struct ScrubbedEnvelope<'a> { ... }
+
 pub trait Emit: EventSchema + Sized {
     fn emit(self) { ... }
     fn emit_at(self, sev: Severity) { ... }
@@ -236,10 +293,20 @@ pub trait Emit: EventSchema + Sized {
 impl<E: EventSchema + Sized> Emit for E {}
 
 pub trait Observer: Send + Sync + 'static { ... }
-pub trait Sink: Send + Sync + 'static { ... }
+pub trait Sink:     Send + Sync + 'static { fn deliver(&self, env: ScrubbedEnvelope<'_>); ... }
 
 pub fn install_observer<O: Observer>(o: O);
-pub fn observer() -> arc_swap::Guard<Arc<Box<dyn Observer>>>;
+pub fn observer() -> Arc<dyn Observer>;          // three-tier resolution; see 11 § 3
+pub fn observer_weak() -> WeakObserver;
+pub struct WeakObserver { ... }
+
+pub fn with_observer_thread_local(o: Arc<dyn Observer>) -> ThreadObserverGuard;
+pub fn with_test_observer<O: Observer, F, R>(o: O, f: F) -> R where F: FnOnce() -> R;
+
+// Async observer carry; see 13 § 3.
+pub trait WithObserver: Future + Sized {
+    fn with_observer(self, o: Arc<dyn Observer>) -> Instrumented<Self>;
+}
 
 pub struct StandardObserverBuilder { ... }
 pub struct EventsConfig { ... }
@@ -366,10 +433,12 @@ impl OtlpLogSinkBuilder {
 // Same shape for OtlpMetricSink (adds .push_interval()) and OtlpTraceSink.
 
 impl Sink for OtlpLogSink {
-    fn deliver(&self, env: &ObsEnvelope) {
+    fn deliver(&self, env: ScrubbedEnvelope<'_>) {
         // Map per [20-otel-and-sinks.md § 2.3](../20-otel-and-sinks.md#23-to-otlp-logs).
         // Reuses the prebuilt Resource; never re-stamps service/instance/version
-        // as per-LogRecord attributes.
+        // as per-LogRecord attributes. Decodes the typed payload into the OTLP
+        // body via env.schema()?.decode_to_otlp_kv(env.payload(), ...) when
+        // body decode is enabled.
     }
     fn flush(&self) -> ... { ... }
     fn shutdown(&self) -> ... { ... }

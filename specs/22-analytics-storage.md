@@ -243,7 +243,9 @@ batch is committed atomically server-side. The `ClickHouseSink`:
   server-side.
 - On failure (network or 5xx), retries with exponential backoff
   (1 s → 30 s, 5 attempts). After max attempts, increments
-  `obs.runtime.v1.ObsSinkFailed{sink=clickhouse}` and drops the batch.
+  `obs.runtime.v1.ObsSinkFailed{sink=clickhouse}` (catalogued in
+  [11-runtime-core.md § 10](./11-runtime-core.md#10-self-events))
+  and drops the batch.
 - **Crash bound**: in-memory batches not yet flushed at the time
   of process kill are lost. The bound equals `batch_size` envelopes
   or `flush_interval` worth, whichever the user configured.

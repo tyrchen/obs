@@ -56,7 +56,20 @@ hash, walkable by codegen-generated dispatch tables.*
 /// EventSchemaErased` looked up via the registry (§ 4).
 ///
 /// All methods are `&self`; per-call mutable scratch is passed in.
-pub trait EventSchemaErased: Send + Sync + 'static {
+///
+/// **Sealed.** This trait is sealed via the `__private::Sealed`
+/// supertrait pattern: only the `obs-build` codegen and
+/// `obs-macros::derive(Event)` may implement it. External crates
+/// must go through the codegen so we can add methods (e.g. a
+/// future `decode_to_otlp_v2_kv`, a Flatbuffers fast-path, etc.)
+/// without breaking downstream impls. Adding a method becomes a
+/// codegen update, not a breaking change for users.
+///
+/// Also `#[non_exhaustive]` at the trait level so future
+/// associated constants can be added without bumping the SDK
+/// major. See [99-key-decisions.md D49](./99-key-decisions.md#d49--eventschemaerased-is-sealed-and-non_exhaustive).
+#[non_exhaustive]
+pub trait EventSchemaErased: __private::Sealed + Send + Sync + 'static {
     /// Stable identity (matches `EventSchema::FULL_NAME`).
     fn full_name(&self) -> &'static str;
 
@@ -393,11 +406,38 @@ which is `std`-only by design. WASM is a roadmap item, not v1.
 | `obs migrate parquet` | Take the unified `arrow_schema()` |
 | `obs query --grep` | `render_json` per envelope before substring match |
 
-The CLI links the same way user binaries do: `cargo install obs-cli`
-links a registry that contains only the built-in schemas
-(`obs.v1.*`). To inspect a user binary's events, the user binary's
-crate is added as a dep of `obs-cli` (rare; usually `obs decode` is
-fed an FDS via `--schemas proto/`).
+### 10.1 Multi-binary workspaces — the linkme limitation
+
+`linkme::distributed_slice` only collects symbols **linked into the
+current binary**. A workspace with `apps/server` and `apps/cli` has
+two independent registries: the server's registry holds the schemas
+its `EventSchema`-derived types declare, the CLI's registry holds
+only the built-in `obs.v1.*` schemas (since `obs-cli` does not
+depend on user crates).
+
+When `obs decode` reads a binary `ObsBatch` produced by the server,
+its registry misses on every user-defined event and falls back to
+the unknown-schema renderer per § 4.2. To get typed decoding, the
+CLI accepts a runtime schema source via `--schemas`:
+
+```
+obs decode batch.bin --schemas proto/myapp/v1/
+obs decode batch.bin --schemas-fds path/to/file_descriptor_set.bin
+```
+
+When `--schemas`/`--schemas-fds` is set, the CLI builds a *runtime*
+`SchemaRegistry` from the FDS using `buffa-reflect::DescriptorPool`
+instead of from the linkme slice. The runtime registry implements
+the same `EventSchemaErased` trait by walking the descriptor at
+decode time (slower than the codegen path, but no recompile needed
+to inspect a foreign batch). Sinks see no difference; the lookup
+path is identical.
+
+The runtime path is deliberately **CLI-only**, not exposed in
+`obs-core`'s public API. Production sinks should always use the
+link-time registry — runtime descriptor walking is 10–50× slower
+than the codegen-emitted dispatch and is acceptable only for the
+ad-hoc CLI inspection workflow.
 
 ## 11. Key Design Decisions
 

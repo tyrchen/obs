@@ -90,33 +90,45 @@ path (see § 4).
 
 ## 4. The payload scrubber
 
-`obs-build` emits a per-event scrub function in `obs/scrub.rs`:
+The scrubber is a per-event method on the object-safe schema view
+defined in [14-schema-registry.md § 2](./14-schema-registry.md#2-the-eventschemaerased-trait):
 
 ```rust
-pub fn scrub_for_log(env: &mut ObsEnvelope) {
-    match env.full_name {
-        "myapp.v1.ObsTokenIssued" => {
-            // SECRET fields are stripped before LOG/AUDIT durable writes.
-            env.payload = scrub_obs_token_issued(&env.payload);
-        }
-        _ => {}
-    }
-}
-
-pub fn scrub_for_metric(env: &mut ObsEnvelope) {
-    // PII fields (which can never be LABEL) are already absent from labels;
-    // metric sinks need no further scrubbing.
+trait EventSchemaErased {
+    /// Strip SECRET fields and redact PII fields in the payload bytes.
+    /// Returns a slice into `scratch` (worker-owned reused buffer)
+    /// containing the cleaned re-encoded payload. The original
+    /// `env.payload` is left untouched so non-durable sinks (metric
+    /// counters, audit-filter sinks that need the raw bytes) see the
+    /// original.
+    fn scrub_for_log(
+        &self,
+        payload: &[u8],
+        scratch: &mut bytes::BytesMut,
+    ) -> Result<&[u8], ScrubError>;
 }
 ```
 
-The scrubber runs in the per-tier worker, *between* the tier router
-and the sink chain, so every durable LOG/AUDIT-bound envelope is
-clean by construction.
+`obs-build` emits the per-event implementation: a generated walk
+over the schema's fields that drops or rewrites the bytes for each
+SECRET / PII field per its declared classification. PII-classified
+ATTRIBUTE fields are *redacted*, not stripped — they remain in the
+payload but their values are replaced with `"[REDACTED:pii]"`,
+keeping row counts and column structure stable for analytical
+queries.
 
-PII-classified ATTRIBUTE-class fields are *redacted*, not stripped —
-they remain in the payload but their values are replaced with
-`"[REDACTED:pii]"`. This keeps row counts and column structure stable
-for analytical queries.
+The per-tier worker invokes `scrub_for_log` between the sampler and
+the sink chain (see [11-runtime-core.md § 4.1](./11-runtime-core.md#41-pipeline-order-per-envelope)),
+then constructs a `ScrubbedEnvelope<'_>` ([14-schema-registry.md § 5](./14-schema-registry.md#5-the-scrubbedenvelope-worker-handoff))
+whose payload slot points at the cleaned bytes. Sinks see only
+`ScrubbedEnvelope`; they cannot reach the unscrubbed payload by the
+type system. Metric sinks that read `env.labels` only never trigger
+the scrubber's per-event work because PII is forbidden on LABEL
+fields by lint L002.
+
+Scrubber failure (re-encode error) drops the envelope at the worker
+and emits `obs.runtime.v1.ObsSinkFailed{reason=scrub_error}`; the
+unscrubbed payload is **never** delivered to a sink.
 
 ## 5. Bridge-side pattern redaction
 

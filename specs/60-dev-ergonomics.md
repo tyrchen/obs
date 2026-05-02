@@ -357,7 +357,61 @@ let resp = client.get("https://upstream/...").send().await?;
 // traceparent + tracestate added; ObsHttpClientCompleted emitted.
 ```
 
-#### L. Coexisting with `tokio-console`
+#### L. Multi-tenant observer per request
+
+Per-tenant observers wired through the HTTP layer. Each tenant's
+events go to that tenant's sinks (separate OTLP endpoint, separate
+Parquet bucket); a global default catches everything else.
+
+```rust
+// Built once per tenant; cached in a registry.
+fn observer_for(tenant_id: &str) -> Arc<dyn Observer> {
+    StandardObserver::builder()
+        .service("my-api", env!("CARGO_PKG_VERSION"))
+        .resource_attr("tenant_id", tenant_id)
+        .sink_for(Tier::Log,
+                  OtlpLogSink::builder()
+                      .endpoint(format!("https://otlp.{tenant_id}.example.com"))
+                      .build()?)
+        .build()
+        .map(Arc::new)
+        .expect("tenant observer build")
+}
+
+let registry = Arc::new(TenantObserverRegistry::new(observer_for));
+
+let app = axum::Router::new()
+    .route("/api/...", get(handle))
+    .layer(ObsHttpLayer::server()
+        .with_per_request_observer({
+            let registry = registry.clone();
+            move |req| req.headers()
+                .get("x-tenant-id")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|t| registry.get(t))
+        }));
+```
+
+Inside `handle`, every `obs::emit!` lands in the tenant-specific
+sinks. Background tasks spawned during the request must explicitly
+carry the override:
+
+```rust
+async fn handle(req: Request) -> Response {
+    let scope = obs::scope!(trace_id = req.id);
+    tokio::spawn(
+        background_audit(req.id)
+            .with_observer(obs::observer())   // capture & forward current tier
+            .instrument(scope.clone()),
+    );
+    serve(req).instrument(scope).await
+}
+```
+
+See [11-runtime-core.md § 3.1](./11-runtime-core.md#31-the-three-tiers-and-what-each-is-for)
+for the resolution rules and propagation matrix.
+
+#### M. Coexisting with `tokio-console`
 
 ```rust
 // Both work in the same binary; they target different things.

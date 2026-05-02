@@ -341,6 +341,15 @@ The codegen and runtime share a small set of auxiliary traits.
 Earlier drafts referenced these without defining them; this section
 is the contract.
 
+> **See also**: [`EventSchemaErased`](./14-schema-registry.md#2-the-eventschemaerased-trait)
+> is the object-safe complement to `EventSchema` that this codegen
+> also emits, alongside the `linkme`-collected registration into
+> `obs_core::registry::EVENT_SCHEMAS`. It belongs to the schema-
+> registry contract; it is referenced here so a reader of this spec
+> knows the codegen produces *both* `EventSchema` (typed, generic)
+> and `EventSchemaErased` (object-safe, registry-bound) for each
+> event.
+
 ```rust
 // ─── Builder state contract ─────────────────────────────────────────
 

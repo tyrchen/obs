@@ -63,12 +63,28 @@ All numbers measured on M2/2024-class hardware in release mode.
 
 | Path | Budget | Notes |
 | --- | --- | --- |
-| Noop emit (observer not installed) | ≤ 50 ns | one TLS check + one atomic load |
+| Noop emit (observer not installed) | ≤ 50 ns | one `OVERRIDE_COUNT.load` + one `OBSERVER_GLOBAL.load_full` |
 | Filtered-out emit (interest=Never, cache hit) | ≤ 25 ns | atomic load + branch |
+| `observer()` resolution, no override (fast path) | ≤ 15 ns | `OVERRIDE_COUNT == 0` short-circuits both probes |
+| `observer()` resolution, per-thread override set | ≤ 30 ns | adds one `RefCell::borrow + clone` |
+| `observer()` resolution, per-task override set | ≤ 30 ns | adds one `task_local::try_with + clone` |
+| `Future::with_observer(o).poll` overhead | ≤ 30 ns / poll | one `task_local::sync_scope` per `poll`; amortised over the polled work inside |
 | `emit` (StandardObserver, all sinks no-op) | ≤ 1 µs P50 | construct + project + try_send |
 | `emit` (NdjsonFileSink batched) | ≤ 1.5 µs P50 | adds copy into `BytesMut` |
 | Scope `enter` + `exit` | ≤ 100 ns | task_local push/pop |
 | Encode (10 fields, buffa) | ≤ 5 µs | not on critical emit path |
+
+### 3.1a Schema registry & scrubber (per-event worker side)
+
+| Path | Budget | Notes |
+| --- | --- | --- |
+| `SchemaRegistry::lookup(env)`, `schema_hash` hit | ≤ 15 ns | one `HashMap<u64, ...>` probe |
+| `SchemaRegistry::lookup(env)`, `full_name` fallback | ≤ 60 ns | one `HashMap<&str, ...>` probe with string hash |
+| `SchemaRegistry::lookup(env)`, miss | ≤ 80 ns | both probes + rate-limited `ObsSchemaUnknown` increment |
+| `EventSchemaErased::scrub_for_log`, no SECRET/PII fields | ≤ 100 ns | identity early-return |
+| `EventSchemaErased::scrub_for_log`, ≤ 5 redact/strip fields | ≤ 1.5 µs | per-field walk + re-encode into worker scratch |
+| `ScrubbedEnvelope` construction | ≤ 50 ns | wrapper struct, zero allocation (scratch borrow) |
+| `SchemaRegistry::from_link_section()` (init time) | ≤ 10 ms / 1000 schemas | dominated by Arrow schema assembly; runs once per `install_observer` |
 
 ### 3.2 Bridge
 
@@ -100,8 +116,13 @@ All numbers measured on M2/2024-class hardware in release mode.
 | `bench_emit_filtered` | callsite filtered to Never |
 | `bench_emit_inmemory` | full path through `InMemoryObserver` |
 | `bench_emit_ndjson` | full path through `NdjsonFileSink` (no rotation) |
+| `bench_observer_resolution` | three tiers: no override, per-thread set, per-task set |
+| `bench_with_observer_poll` | `Future::with_observer(o).poll` overhead per poll |
 | `bench_scope_enter_exit` | scope guard push/pop |
 | `bench_encode_payload` | typed → buffa bytes for 1, 5, 10, 30 fields |
+| `bench_registry_lookup` | hash-hit, name-fallback, miss paths |
+| `bench_registry_init` | wall time to walk EVENT_SCHEMAS at observer init for 10 / 100 / 1000 schemas |
+| `bench_scrub_for_log` | per-event scrubber on a 10-field event with 0 / 1 / 5 redact/strip fields |
 
 `crates/obs-tracing-bridge/benches/`:
 

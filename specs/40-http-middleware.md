@@ -98,11 +98,51 @@ ObsHttpLayer::server()
     .with_emit_started(false)                  // default; flip on for dev
     .with_emit_metrics(true)                   // default; emit MEASUREMENT histograms
     .with_status_classifier(|status| { /* custom status_class string */ })
+    .with_per_request_observer(|req| { /* Option<Arc<dyn Observer>> */ })
 ```
 
 The `with_emit_started` toggle defaults to OFF for the same reason
 `#[obs::instrument]` defaults to one event ([13-emit-scope-and-filter.md § 5](./13-emit-scope-and-filter.md#5-the-obsinstrument-attribute)) —
 double traffic for marginal value. Dev mode flips it on.
+
+### 3.1 Multi-tenant: per-request observer override
+
+`with_per_request_observer(closure)` is the production hook for
+multi-tenant SaaS (per-tenant sinks, per-tenant retention) and for
+on-demand live debug capture. The closure is invoked at request
+entry; if it returns `Some(observer)`, the layer wraps the inner
+service's response future in `Future::with_observer(observer)` per
+[13-emit-scope-and-filter.md § 3](./13-emit-scope-and-filter.md#3-obsinstrumentedf--async-scope-and-observer-adapter).
+Every event emitted while serving the request — including events
+from spawned children that explicitly carry the override forward —
+goes to the per-request observer.
+
+```rust
+let tenant_observers = Arc::new(TenantObserverRegistry::new(...));
+
+let app = axum::Router::new()
+    .route("/api/...", ...)
+    .layer(ObsHttpLayer::server()
+        .with_per_request_observer({
+            let registry = tenant_observers.clone();
+            move |req| req.headers()
+                .get("x-tenant-id")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|t| registry.observer_for(t))
+        }));
+```
+
+When the closure returns `None`, no override is installed and events
+flow to the global observer as usual. Returning `Some` for every
+request is supported but trades the fast path described in
+[11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait) —
+each request pays one `task_local::sync_scope` per poll (~30 ns).
+
+Tenant-observer lifetimes are the application's responsibility. A
+typical pattern keeps observers in an `Arc<DashMap<TenantId,
+Arc<dyn Observer>>>` and calls `observer.shutdown()` when a tenant
+is decommissioned. The layer never drops or shuts down observers
+itself.
 
 ## 4. Build dependencies
 

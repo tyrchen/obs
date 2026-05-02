@@ -161,30 +161,74 @@ pub trait Observer: Send + Sync + 'static {
     fn shutdown_blocking(&self, timeout: Duration);
 }
 
+// ─── Three-tier resolution: per-task → per-thread → global ──────────────
+//
+// The dispatcher resolution mirrors tracing-core's pattern (see
+// `vendors/tracing/tracing-core/src/dispatcher.rs:182–200, 379–398`)
+// and *extends* it with a per-task tier so async multi-tenant code
+// works without per-future Instrument adapters for the observer
+// override. See § 3.1 for the full rationale and use cases.
+//
 // `ArcSwap<dyn Trait>` requires `?Sized` support that ArcSwap does not
 // have (the inner pointer must be `Sized`), so we wrap in `Arc<dyn Trait>`
-// explicitly. The thread-local mirrors the same shape with `RefCell`,
+// explicitly. The thread-local mirrors the same shape with `RefCell`
 // because `Box<dyn Trait>` is not `Copy` and a bare `Cell::get()` would
 // not compile. `Lazy` gives a const-friendly init for the default
 // `NoopObserver`.
+
 static OBSERVER_GLOBAL: Lazy<ArcSwap<Arc<dyn Observer>>> = Lazy::new(|| {
     ArcSwap::from_pointee(Arc::new(NoopObserver) as Arc<dyn Observer>)
 });
 
 thread_local! {
-    static OBSERVER_LOCAL: RefCell<Option<Arc<dyn Observer>>> =
+    /// Per-thread override (set by `with_observer_thread_local`,
+    /// `with_test_observer`, sync code paths). `RefCell` so nested
+    /// installs stack LIFO. Mirrors tracing's `CURRENT_STATE.default`
+    /// at vendors/tracing/tracing-core/src/dispatcher.rs:184.
+    static OBSERVER_THREAD: RefCell<Option<Arc<dyn Observer>>> =
         const { RefCell::new(None) };
+
+    /// Re-entry guard. Set to `false` while inside an `Observer` method
+    /// to prevent infinite recursion if a sink synthesises an event. The
+    /// re-entry attempt sees `false` and falls back to `NoopObserver`.
+    /// Mirrors tracing's `CURRENT_STATE.can_enter` at the same line.
+    static CAN_ENTER: Cell<bool> = const { Cell::new(true) };
 }
 
+tokio::task_local! {
+    /// Per-task override (set by `Instrumented<F>::poll` via
+    /// `task_local::sync_scope` when the future was constructed with
+    /// `.with_observer(o)`). Wins over thread-local because in async
+    /// code the same thread runs many tasks; thread-local would leak
+    /// observer state across task boundaries on suspend/resume.
+    static OBSERVER_TASK: Arc<dyn Observer>;
+}
+
+/// Hot-path fast-flag. `0` means no override has ever been installed
+/// in this process; the resolver skips both probes and goes straight
+/// to the global. Bumped on first install; never decremented (the
+/// fast-path optimisation amortises across the process lifetime).
+/// Mirrors tracing's `SCOPED_COUNT` at vendors/tracing/tracing-core/src/dispatcher.rs:196.
+static OVERRIDE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Hot path. Returns a cloned `Arc` (one atomic refcount bump) so the
-/// caller does not hold a `Guard` across `await`. Identical perf
-/// characteristics to `tracing::dispatcher::get_default`.
+/// caller does not hold a `Guard` across `await`. When no overrides
+/// have ever been installed, this collapses to one atomic load + one
+/// `OBSERVER_GLOBAL.load_full()`.
+#[inline]
 pub fn observer() -> Arc<dyn Observer> {
-    if let Some(local) = OBSERVER_LOCAL.with(|c| c.borrow().clone()) {
-        local
-    } else {
-        OBSERVER_GLOBAL.load_full()
+    // Fast path: no override anywhere in this process.
+    if OVERRIDE_COUNT.load(Ordering::Relaxed) == 0 {
+        return OBSERVER_GLOBAL.load_full();
     }
+    // Slow path: probe in priority order task → thread → global.
+    if let Ok(per_task) = OBSERVER_TASK.try_with(|o| o.clone()) {
+        return per_task;
+    }
+    if let Some(per_thread) = OBSERVER_THREAD.with(|c| c.borrow().clone()) {
+        return per_thread;
+    }
+    OBSERVER_GLOBAL.load_full()
 }
 
 pub fn install_observer<O: Observer>(o: O) { /* sets OBSERVER_GLOBAL */ }
@@ -202,11 +246,19 @@ impl WeakObserver {
 }
 pub fn observer_weak() -> WeakObserver;
 
-/// Test-only scoped override. Within the closure, `observer()` returns
-/// `o` on this thread, even while other threads see the global. Cleared
-/// on closure exit. Used by `#[obs::test]`. The slot is `RefCell<Option<...>>`
-/// so the closure body may itself call `with_test_observer` (nested
-/// overrides are stacked LIFO).
+/// Sync RAII guard. Sets the per-thread observer override; restores
+/// the previous value on drop. **Do not hold across `.await`** — see
+/// the warning in § 3.1; use `Future::with_observer` instead for async.
+/// Bumps `OVERRIDE_COUNT` on first install in this process.
+pub fn with_observer_thread_local(o: Arc<dyn Observer>) -> ThreadObserverGuard;
+
+pub struct ThreadObserverGuard { /* prior: Option<Arc<dyn Observer>> */ }
+// Drop restores the prior thread-local value.
+
+/// Test-flavored alias for `with_observer_thread_local` with a closure
+/// API. Within the closure, `observer()` returns `o` on this thread,
+/// even while other threads see the global. Cleared on closure exit.
+/// Used by `#[obs::test]`. Nested calls stack LIFO.
 pub fn with_test_observer<O: Observer, F, R>(o: O, f: F) -> R
     where F: FnOnce() -> R;
 ```
@@ -219,18 +271,157 @@ pub fn with_test_observer<O: Observer, F, R>(o: O, f: F) -> R
 - `flush` and `shutdown` are async and idempotent. `shutdown` is
   required at process exit to avoid losing in-flight events.
 
-### 3.1 Why a per-thread override slot
+### 3.1 The three tiers and what each is for
 
-`cargo test` runs tests in parallel within the same process by default.
-Earlier drafts said "tests install an `InMemoryObserver` in setup and
-reset in teardown" — that races on the global `ArcSwap`, leading to
-test #2 capturing test #1's events. The per-thread override slot fixes
-this: `with_test_observer` (or the `#[obs::test]` attribute) stores
-the test's observer on the current thread; `observer()` checks the
-thread slot first. Library code is unchanged.
+Three resolution tiers — per-task, per-thread, global — each
+addressing a different operational need. The hot path skips all of
+them via `OVERRIDE_COUNT == 0` when no override has ever been
+installed in the process.
 
-This mirrors `tracing::dispatcher::with_default()`. Without it, all
-tests touching `obs` would have to use `serial_test`.
+| Tier | Storage | Set by | Used for |
+| --- | --- | --- | --- |
+| Per-task | `tokio::task_local!` | `Future::with_observer(o)` returning `Instrumented<F>` | Multi-tenant SaaS (per-request observer); per-task live debug capture; any async code path that wants a scoped observer override and crosses `.await` boundaries |
+| Per-thread | `RefCell<Option<Arc<dyn Observer>>>` thread-local | `with_observer_thread_local(o)` returning `ThreadObserverGuard`; `with_test_observer(o, f)`; `#[obs::test]` | Tests (`cargo test` runs in parallel and a shared global races); short sync regions inside synchronous handlers; panic hooks that flush to a degraded observer |
+| Global | `ArcSwap<Arc<dyn Observer>>` | `install_observer(o)` (called once at process start) | Production default for everything else |
+
+#### Multi-tenant SaaS (per-task)
+
+Tenant A's request arrives; events for that request should land in
+tenant A's sinks (separate OTLP endpoint, separate Parquet bucket).
+A single global observer cannot do this. The HTTP middleware
+(`obs-tower`, [40-http-middleware.md](./40-http-middleware.md))
+constructs the per-tenant observer at request entry and wraps the
+handler future:
+
+```rust
+async fn dispatch(req: Request) -> Response {
+    let tenant_obs = observer_for_tenant(req.tenant_id());
+    handle_request(req)
+        .with_observer(tenant_obs)   // sets OBSERVER_TASK for the future's lifetime
+        .await
+}
+```
+
+`with_observer` is a method on the `WithObserver` extension trait
+([13-emit-scope-and-filter.md § 3](./13-emit-scope-and-filter.md#3-obsinstrumentedf--async-scope-adapter)),
+returning `Instrumented<F>`. On every `poll`, the adapter calls
+`OBSERVER_TASK.sync_scope(observer.clone(), || inner.poll(cx))`,
+binding the task-local for the duration of the poll. Suspending and
+resuming on a different thread is correct because the task-local
+travels with the task, not the thread.
+
+#### Per-task live debug capture
+
+An operator wants to capture every event for one specific in-flight
+request to inspect via the CLI:
+
+```rust
+// Started by an admin endpoint that returns a capture handle.
+let capture = obs::InMemoryObserver::new();
+let handle = capture.handle();
+spawn_target_request(req).with_observer(Arc::new(capture)).await;
+println!("{:#?}", handle.drain());
+```
+
+No restart, no global config flip. The capture observer is dropped
+when the future finishes; its sinks are flushed and the buffer is
+returned via `handle`.
+
+#### Sync code (per-thread)
+
+Sync handler code that wants to redirect briefly:
+
+```rust
+fn synchronous_export(rows: &[Row]) {
+    let _g = obs::with_observer_thread_local(audit_only_observer());
+    for r in rows { emit_audit_for(r); }
+    // _g drops; thread reverts to global.
+}
+```
+
+**Foot-gun**: `let _g = with_observer_thread_local(o); something().await;`
+is wrong. The future may suspend on this thread (which has `o` set),
+then a different task may resume on this thread and inherit `o`
+incorrectly. The function is named `*_thread_local` precisely to
+make this visible at the call site. Async code uses
+`Future::with_observer` instead; the `with_observer_thread_local` API
+is for sync regions and tests.
+
+#### Tests (per-thread, special-cased)
+
+`cargo test` runs tests in parallel within the same process by
+default. Installing a test observer into the global races. The
+per-thread override fixes this: `with_test_observer` (and the
+`#[obs::test]` attribute that wraps it) stores the test's observer
+on the current thread; `observer()` checks the thread slot before
+the global.
+
+#### Re-entry and the `CAN_ENTER` cell
+
+Sinks may synthesise their own envelopes (e.g. `ObsToTracingSink`
+in `SpanEmissionMode::OnScope` opens a tracing span which can fire
+events back through the observer). Without protection this cycles.
+`Observer::emit_envelope` sets `CAN_ENTER = false` for the duration
+of dispatch; a recursive `observer()` call inside that scope returns
+`NoopObserver` (Phantom of `tracing::dispatcher::NONE`) and the
+inner emit becomes a no-op. The cell is restored on outer return.
+Mirrors the `Entered`/`State::can_enter` mechanism in
+`vendors/tracing/tracing-core/src/dispatcher.rs:228–229, 855–875`.
+
+#### Cross-thread and cross-task propagation rules
+
+| Boundary | Per-task | Per-thread | Global |
+| --- | --- | --- | --- |
+| `.await` on the same task | propagates ✓ | propagates (task didn't migrate) | propagates ✓ |
+| `.await` on a different thread (task migrated) | propagates ✓ (task-local follows) | **does not propagate** ✗ | propagates ✓ |
+| `tokio::spawn(...)` (new task) | **does not propagate** ✗ | does not propagate ✗ | propagates ✓ |
+| `std::thread::spawn(...)` | does not propagate ✗ | does not propagate ✗ | propagates ✓ |
+
+For `tokio::spawn`, the spawning code must explicitly carry the
+observer: `tokio::spawn(child.with_observer(observer().clone()))`.
+This is the same rule as obs::scope! propagation; one mental model
+applies. Documented and tested in
+[72-testing-strategy.md § 5](./72-testing-strategy.md#5-property-tests-proptest).
+
+The whole-process equivalent of tracing's three-line
+`tracing::dispatcher::with_default(&dispatch, || ...)` for sync code
+is `let _g = obs::with_observer_thread_local(o);`. The async-shaped
+equivalent (which tracing solves with `tracing-futures::Instrument`)
+is our `Future::with_observer(o)`.
+
+#### Per-task observer shutdown lifecycle
+
+Per-task observers are reference-counted (`Arc<dyn Observer>`).
+They are kept alive while:
+
+1. Any `Instrumented<F>` future holds them (the captured
+   `Arc<dyn Observer>` lives in the future's state).
+2. Any registry / cache (e.g. `TenantObserverRegistry` in
+   [40 § 3.1](./40-http-middleware.md#31-multi-tenant-per-request-observer-override))
+   holds an `Arc` to them.
+
+When the last `Arc` is dropped, the observer's `Drop` runs
+synchronously. **`StandardObserver::drop` triggers a best-effort
+synchronous shutdown** of its per-tier workers via
+`shutdown_blocking(timeout)` with a short default (250 ms); after
+the timeout, in-flight envelopes are dropped and counted in
+`ObsSinkDropped{reason=shutdown_timeout}`.
+
+This means dropping a per-task observer **can briefly block the
+dropping thread** — typically a tokio worker thread on
+`Instrumented<F>` cancellation. The 250 ms cap bounds the worst
+case; it can be tuned per observer via `EventsConfig.shutdown_max_ms`.
+
+Recommended pattern: keep per-tenant observers in a registry
+(`Arc<DashMap<TenantId, Arc<dyn Observer>>>`) that outlives any
+request that uses them, and call `observer.shutdown().await`
+explicitly when a tenant is decommissioned. This moves the
+shutdown off the cancellation hot path and gives full async drain
+semantics.
+
+The global observer's `shutdown()` is called at process exit via
+`obs::observer().shutdown().await`; it does not affect per-task
+observers (they have their own lifecycle).
 
 ### 3.2 Filter-cache invalidation on reload
 
@@ -317,20 +508,23 @@ emit thread                                        worker thread
 1. ObsCallsite::enabled(gen)        — atomic load
 2. Observer::enabled(callsite)      — only if Interest::Sometimes
 3. EventSchema::project(&mut env)   — labels + lift trace/span ids
-4. obs::scope! auto-fill            — runtime read of task-local
-5. Head sampler (per full_name+sev) — one f64 compare; honour
+                                       AND auto-fill default-fillable
+                                       fields from active obs::scope!
+                                       frame (runtime read of task-local;
+                                       see 13 § 2.1)
+4. Head sampler (per full_name+sev) — one f64 compare; honour
                                        inbound traceparent.sampled
                                        (see 13 § 6, 20 § 2.6)
-6. Tail buffer push (TRACE/DEBUG only, when scope is active)
-7. mpsc::try_send → per-tier worker
-                                                   8. Pop from mpsc
-                                                   9. Per-tier scrubber
+5. Tail buffer push (TRACE/DEBUG only, when scope is active)
+6. mpsc::try_send → per-tier worker
+                                                   7. Pop from mpsc
+                                                   8. Per-tier scrubber
                                                       (EventSchemaErased::scrub_for_log;
                                                        see 14 § 5)
-                                                   10. ScrubbedEnvelope wrapper built
-                                                   11. SinkRouter dispatches to
+                                                   9. ScrubbedEnvelope wrapper built
+                                                   10. SinkRouter dispatches to
                                                        matching Sink::deliver(env)
-                                                   12. Sink batches internally
+                                                   11. Sink batches internally
 ```
 
 **Key invariants**:
@@ -519,6 +713,25 @@ Recovery semantics:
   configured `audit.on_failure` (panic / abort / warn_only) — exactly
   as for an unwritable spool, since "spool full" and "spool
   unwritable" are the same compliance failure.
+
+#### Ownership under per-task observer override
+
+When an AUDIT event is emitted under a per-task observer override
+(see § 3.1, multi-tenant case), the **per-task observer's** AUDIT
+sink + spool are used, not the global observer's. This is the
+deliberate consequence of the resolution chain (per-task wins) and
+is what tenant-isolation requires — tenant A's audit data must
+land in tenant A's spool dir, not a shared global one. Each tenant
+observer is built with its own `EventsConfig.audit.spool_dir`
+pointing at a tenant-specific path. Operators are responsible for
+provisioning and rotating per-tenant spool directories.
+
+If a per-task observer is dropped (Arc count → 0) while its AUDIT
+worker has un-spooled in-flight events, those events are lost —
+the documented bound on multi-tenant AUDIT durability. To avoid
+this, a tenant observer should be kept alive in a registry that
+outlives any in-flight request using it (the `TenantObserverRegistry`
+pattern in [40 § 3.1](./40-http-middleware.md#31-multi-tenant-per-request-observer-override)).
 
 Consumers who want NDJSON for ad-hoc inspection can run
 `obs decode --audit-spool path.audit.bin` (CLI addition; see

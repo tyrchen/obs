@@ -71,15 +71,39 @@ aren't missing identity that OTLP carries.
 
 ## Runtime topology
 
-### D7 — Global Observer, not contextual `Subscriber`
+### D7 — Three-tier Observer resolution: per-task, per-thread, global
 
-OTel's contextual propagation is powerful but adds friction to
-every library. A global observer (with `ArcSwap` for
-swap-on-test-init) makes a library emission cost one TLS check + one
-atomic load. **A per-thread override slot** rescues parallel-test
-ergonomics without forcing `serial_test`. Cross-process trace
-propagation is via OTel propagators at HTTP/gRPC boundaries —
-orthogonal to the in-process observer.
+Earlier drafts had a single global Observer with a per-thread test
+override. Real production needs (multi-tenant SaaS with per-tenant
+sinks; on-demand per-request live debug capture) are foreclosed by
+that design. The v3 design adds a **per-task** tier above the
+per-thread tier, mirroring how `tracing` solves async with
+`tracing-futures::Instrument` but for the dispatcher itself.
+
+Resolution order (priority high → low):
+
+1. **Per-task** (`tokio::task_local!`) — set by
+   `Future::with_observer(o)` returning `Instrumented<F>`. Travels
+   with the task across `await` and thread migration. The only
+   correct semantics for async multi-tenant.
+2. **Per-thread** (`thread_local! { RefCell<Option<...>> }`) — set
+   by `with_observer_thread_local(o)` (sync RAII) and
+   `with_test_observer(o, f)` (test closure). Used by tests
+   (parallel-safe) and short sync regions.
+3. **Global** (`ArcSwap<Arc<dyn Observer>>`) — `install_observer(o)`
+   at process start. Production default.
+
+A process-wide `OVERRIDE_COUNT: AtomicUsize` (analogous to tracing's
+`SCOPED_COUNT` at vendors/tracing/tracing-core/src/dispatcher.rs:196)
+short-circuits both probes when no override has ever been installed,
+so the "single observer" deployment pays no extra cost.
+
+A library emission still costs one atomic load + one
+`OBSERVER_GLOBAL.load_full()` in the common case. Multi-tenant
+deployments add ~30 ns per emit for the `task_local::sync_scope`.
+
+Cross-process trace propagation is via OTel propagators at
+HTTP/gRPC boundaries — orthogonal to the in-process observer.
 
 ### D8 — Per-tier mpsc workers, not a shared queue
 
@@ -386,6 +410,47 @@ directives. [13-emit-scope-and-filter.md § 7](./13-emit-scope-and-filter.md#7-t
 `SIGHUP` is `#[cfg(unix)]`-only. Windows binaries get
 `reload_on_file_change()` (the `notify` crate). Either is sufficient;
 the recommended default is the file watcher because it works everywhere.
+
+### D47 — `with_observer_thread_local` is named to deter the async foot-gun
+
+The function is verbose on purpose. `let _g = with_observer(o); .await;`
+is wrong (thread may be reused by another task during suspend); the
+*_thread_local suffix makes the wrongness visible at the call site,
+analogous to how `std::cell::RefCell` is named for the runtime cost.
+The async-correct path is `Future::with_observer(o)` returning
+`Instrumented<F>`. This split is what tracing's
+`with_default` + `Instrument` pair encodes; we surface it in the
+function names rather than leaving it to docs.
+
+### D49 — `EventSchemaErased` is sealed and `#[non_exhaustive]`
+
+The trait is implemented only by codegen output. Sealing prevents
+external crates from implementing it directly (they would block
+adding methods). `#[non_exhaustive]` covers future associated
+constants. Together they let `obs-core` evolve the trait — e.g.
+add `decode_to_otlp_v2_kv`, ship a Flatbuffers fast-path, or
+add `decode_to_arrow_v2` for a future Arrow major — without
+forcing a major SDK bump. Codegen updates pick up the new method
+automatically; user code is unaffected.
+
+If a power user genuinely needs to fake an `EventSchemaErased`
+(e.g. for a foreign-format adapter), the path is: write a small
+helper crate that emits the schema via codegen against a synthetic
+descriptor, not hand-implement the trait.
+
+### D48 — Re-entry uses a `CAN_ENTER: Cell<bool>` thread-local guard
+
+A sink that synthesises an envelope (`ObsToTracingSink` opening a
+tracing span which fires events back through obs) would cycle
+without protection. `Observer::emit_envelope` sets `CAN_ENTER =
+false` for the duration of dispatch; recursive `observer()` calls
+inside that scope return `NoopObserver`. Direct port of tracing's
+`State::can_enter` (vendors/tracing/tracing-core/src/dispatcher.rs:222–223,
+855–875). Distinct from the bridge's `IN_OBS_BRIDGE` /
+`IN_TRACING_BRIDGE` guards
+([30-tracing-bridge.md § 4.1](./30-tracing-bridge.md#41-loop-avoidance)),
+which break loops between two whole subsystems; `CAN_ENTER` breaks
+recursion within a single observer.
 
 ### D46 — `WeakObserver` for sinks that may re-enter the observer
 

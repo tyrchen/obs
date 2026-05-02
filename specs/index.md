@@ -70,8 +70,9 @@ of 30/71, M3 closes everything else.
 | File | Type | Purpose |
 | --- | --- | --- |
 | [80-glossary.md](./80-glossary.md) | Reference | Terminology disambiguation (envelope vs event, scope vs span, sink vs layer, …) |
-| [90-roadmap.md](./90-roadmap.md) | Roadmap | Phased delivery M0 → M3 with exit criteria, build-order graph, perf gates, definition of done |
-| [99-key-decisions.md](./99-key-decisions.md) | Reference | Consolidated load-bearing design decisions (D1–D37) |
+| [90-roadmap.md](./90-roadmap.md) | Roadmap | Phased delivery M-1 → M4 with exit criteria, build-order graph, perf gates, definition of done (stakeholder-facing) |
+| [91-impl-plan.md](./91-impl-plan.md) | Impl-plan | Dependency-ordered build plan (engineer-facing); pairs 1:1 with roadmap milestones; covers readiness assessment, phase-by-phase task breakdown with effort estimates, and the three principles that drove the ordering |
+| [99-key-decisions.md](./99-key-decisions.md) | Reference | Consolidated load-bearing design decisions (D1–D49) |
 
 ## Reading order
 
@@ -108,7 +109,10 @@ For first-time readers:
     shaped this way (read after #1–#13 for max signal).
 15. **[61-crates-and-features.md](./61-crates-and-features.md)** —
     workspace shape, what to put where.
-16. **[90-roadmap.md](./90-roadmap.md)** — milestone exit criteria.
+16. **[90-roadmap.md](./90-roadmap.md)** — milestone exit criteria
+    (read for stakeholder framing).
+17. **[91-impl-plan.md](./91-impl-plan.md)** — dependency-ordered
+    build plan with effort estimates (read before writing code).
 
 ## Build-order graph (summary)
 

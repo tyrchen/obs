@@ -488,14 +488,17 @@ pub enum SpanEmissionMode {
 }
 
 impl Sink for ObsToTracingSink {
-    fn deliver(&self, env: &ObsEnvelope) {
+    fn deliver(&self, env: ScrubbedEnvelope<'_>) {
         if loop_guard::IN_TRACING_BRIDGE.get() { return; }    // see § 4.1
         loop_guard::IN_OBS_BRIDGE.set(true);
 
-        let meta = self.metadata_for(env);                    // cached or synthesised
+        let meta = self.metadata_for(env.envelope());          // cached or synthesised
         tracing::dispatcher::get_default(|d| {
             if !d.enabled(meta) { return; }
-            let valueset = self.build_valueset(meta, env);
+            // build_valueset reads env.envelope().labels and, when
+            // PayloadDecodeMode != Off, calls env.schema()?.decode_to_otlp_kv
+            // on env.payload() (the scrubbed bytes).
+            let valueset = self.build_valueset(meta, &env);
             let event = tracing::Event::new(meta, &valueset);
             d.event(&event);
         });
@@ -995,8 +998,11 @@ How we achieve the bridge overhead:
 
 - **Field capture without per-call heap**: a thread-local
   `FieldCapture { strings: Vec<(String, String)>, scratch: BytesMut }`
-  reused across calls. The `Vec` is `clear()`ed (preserves capacity)
-  after each event. Net: zero allocations on the steady state.
+  reused across calls. The bridge owns the rental and passes
+  `&mut FieldCapture` into auto-typing closures (per § 2.5), so
+  promoters never allocate their own. The `Vec` is `clear()`ed
+  (preserves capacity) after each event. Net: zero allocations on
+  the steady state, including for typed-promotion paths.
 - **Cached metadata lookup**: `DashMap<MetadataKey, &'static Metadata>`.
   Hot path is one shard read-lock + HashMap::get ≈ 60–80 ns. Project
   policy (CLAUDE.md § Async & Concurrency) mandates DashMap over
