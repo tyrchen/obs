@@ -1,6 +1,10 @@
 # Design — Callsite Interning
 
-Status: draft · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [architecture-design.md](./architecture-design.md), [tracing-interop-design.md](./tracing-interop-design.md), [crates-design.md](./crates-design.md), [schema-codegen-design.md](./schema-codegen-design.md)
+Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [10-data-model.md](./10-data-model.md), [11-runtime-core.md](./11-runtime-core.md), [30-tracing-bridge.md](./30-tracing-bridge.md), [12-schema-and-codegen.md](./12-schema-and-codegen.md)
+
+> v3 changes: callsite_id == 0 collision case explicitly handled in
+> § 3.1; cross-references retargeted to the post-split spec
+> structure.
 
 This spec applies the lesson of `defmt`'s tokenized-logging
 optimisation to `obs` server-side: emit only `(callsite_id, args)`
@@ -120,13 +124,24 @@ fn callsite_id(
     h.update(&[level as u8]);
     for f in field_names { h.update(f.as_bytes()); h.update(b"\x00"); }
     if let Some(t) = template { h.update(t.as_bytes()); }
-    // `blake3::Hash::as_bytes()` returns `&[u8; 32]` by type, so this is
-    // panic-free without `unwrap`/`expect` (project policy: no panics on
-    // hot path; CLAUDE.md § Error Handling).
+    // `blake3::Hash::as_bytes()` returns `&[u8; 32]` by type. Take the
+    // first 8 bytes via `try_into` so `clippy::indexing_slicing` is
+    // satisfied (no [..8] subslice indexing, no unwrap).
     let bytes = h.finalize();
     let arr: &[u8; 32] = bytes.as_bytes();
-    u64::from_le_bytes([arr[0], arr[1], arr[2], arr[3],
-                        arr[4], arr[5], arr[6], arr[7]])
+    let head: [u8; 8] = <[u8; 8]>::try_from(&arr[0..8])
+        .expect("blake3 hash is always 32 bytes");
+    let id = u64::from_le_bytes(head);
+    // `0` is the reserved "no interning" sentinel. The truncation has
+    // a 1-in-2⁶⁴ chance of producing zero; perturb to a non-zero value
+    // by taking bytes 8..16 instead. Both BLAKE3 outputs are uniform
+    // and independent under the threat model, so the post-perturbation
+    // id is still uniformly distributed.
+    if id != 0 { id } else {
+        let head2: [u8; 8] = <[u8; 8]>::try_from(&arr[8..16])
+            .expect("blake3 hash is always 32 bytes");
+        u64::from_le_bytes(head2) | 1   // last-resort: force the LSB on
+    }
 }
 ```
 
@@ -140,7 +155,8 @@ Properties:
   **once per callsite**, cached by `tracing_core::callsite::Identifier`
   pointer (Direction A) or by source-location hash (forensic).
 - **Reserved id `0`** means "no interning" and is what default-mode
-  envelopes carry.
+  envelopes carry. The hashing path above guarantees a real callsite
+  never produces `0` (see KD32 in [99-key-decisions.md](./99-key-decisions.md)).
 
 We deliberately do **not** copy defmt's "linker-address as id" trick:
 it cannot be made stable across processes. (And we don't need to —
@@ -450,7 +466,7 @@ When interning is on:
 4. PII redactor still runs on `args` values per the existing
    classification rules.
 
-Auto-typed events (per [tracing-interop-design § 2.5](./tracing-interop-design.md#25-auto-typing--promoting-tracing-events-to-typed-obs-events))
+Auto-typed events (per [30-tracing-bridge § 2.5](./30-tracing-bridge.md#25-auto-typing--promoting-tracing-events-to-typed-obs-events))
 already carry their own `schema_hash` so they DO NOT need a
 `callsite_id`. The interning kicks in only for the forensic /
 non-typed path.
@@ -472,7 +488,7 @@ non-typed path.
    rate-limited.
 
 The metadata cache is the same `DashMap<MetadataKey, &'static Metadata>`
-introduced in [tracing-interop-design § 3.2](./tracing-interop-design.md#32-the-obstotracingsink),
+introduced in [30-tracing-bridge § 3.2](./30-tracing-bridge.md#32-the-obstotracingsink),
 keyed on `MetadataKey::ByCallsiteId(id)` for interned envelopes and
 `MetadataKey::ByFullName(name)` otherwise. Same `Box::leak` strategy
 for the `'static` lifetime.
@@ -486,7 +502,7 @@ into a tracing event with the **same** `Metadata` shape (same
 ### 6.3 Loop avoidance still holds
 
 The thread-local guards from
-[tracing-interop-design § 4.1](./tracing-interop-design.md#41-loop-avoidance)
+[30-tracing-bridge § 4.1](./30-tracing-bridge.md#41-loop-avoidance)
 are unaffected. The `ObsCallsiteRegistered` envelope flows through
 the standard sink chain; `ObsToTracingSink` sees it like any other
 envelope. A naive concern: "will the bridge's own
@@ -565,7 +581,7 @@ high-throughput case.
 
 ## 9. Performance budget
 
-Beyond [architecture-design § 11](./architecture-design.md#11-test-strategy):
+Beyond the budgets in [71-performance-budgets.md § 3.3](./71-performance-budgets.md#33-callsite-interning-when-enabled):
 
 | Path | Budget | Notes |
 | --- | --- | --- |
@@ -622,7 +638,7 @@ catches up within minutes. Cost is one extra event per callsite per
 
 ### KD5 — Native `obs::emit!` is unchanged by default
 
-`schema_hash` is already a `u64` (architecture-design § 1.4 / D8) so
+`schema_hash` is already a `u64` ([10-data-model.md § 6](./10-data-model.md#6-envelope) / [99-key-decisions.md § D2](./99-key-decisions.md)) so
 native emits already have the wire-size benefit defmt-style interning
 would otherwise provide. The optional `elide_full_name` flag exists
 for the throughput-obsessed but is not on by default; the marginal
@@ -667,7 +683,7 @@ registered once and not maintained.
 
 ## 12. CLI surface additions
 
-[cli-design.md](./cli-design.md) gains:
+[50-cli.md](./50-cli.md) gains:
 
 ```
 $ obs callsites dump --out callsites.ndjson

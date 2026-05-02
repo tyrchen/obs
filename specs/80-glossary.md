@@ -1,0 +1,192 @@
+# Glossary — Terminology
+
+Status: draft v1 · Owner: obs-core · Last updated: 2026-05-02
+
+A short reference for terms readers routinely conflate. Tightly
+defined here so the rest of the specs can use a single word where
+the surrounding tooling uses several. Every term links to the spec
+that introduces it.
+
+## Core nouns
+
+**Wide event** — one strongly-typed protobuf message representing a
+whole logical operation. The unit of observation. See
+[10-data-model.md § 1](./10-data-model.md#1-wide-events).
+
+**Envelope** (`ObsEnvelope`) — the transport-neutral wrapper around
+a wide event's encoded bytes plus a flat label projection plus
+correlation/identity fields. Sinks see envelopes.
+[10-data-model.md § 6](./10-data-model.md#6-envelope).
+
+**Batch** (`ObsBatch`) — a frame of envelopes shipped together;
+includes a `schemas` map for per-batch schema-hash dedup.
+[10-data-model.md § 6](./10-data-model.md#6-envelope).
+
+**Schema** — the typed Rust struct + `EventSchema` impl + Arrow
+fragment + protobuf message for one event type. The contract.
+[12-schema-and-codegen.md § 3.2](./12-schema-and-codegen.md).
+
+**`ObsCallsite`** — the `static`-allocated metadata for one emit
+site (full_name, default_sev, file/line/module + atomic Interest
+cache). The thing tracing calls a `Callsite`.
+[11-runtime-core.md § 2](./11-runtime-core.md#2-the-obscallsite-and-atomic-interest-cache).
+
+## Runtime nouns
+
+**Observer** — the global emit dispatcher, swappable via `ArcSwap`,
+overrideable per-thread for tests. The thing tracing calls a
+`Subscriber + Dispatch`. [11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait).
+
+**Sink** — the consumer of envelopes. One observer can have many
+sinks routed by tier and severity. The thing tracing calls a
+`Layer`'s output. [20-otel-and-sinks.md § 3.1](./20-otel-and-sinks.md#31-the-sink-trait).
+
+**Scope** (`obs::scope!`) — a RAII guard that pushes a
+field-allowlist + tail-on-error ring buffer onto a per-task stack.
+**Not** a span; see § "Scope vs span" below.
+[13-emit-scope-and-filter.md § 2](./13-emit-scope-and-filter.md#2-the-obsscope-macro).
+
+**Frame** — the data structure pushed by `obs::scope!`; one frame
+per nested scope; lives in `tokio::task_local!`.
+[13-emit-scope-and-filter.md § 2](./13-emit-scope-and-filter.md#2-the-obsscope-macro).
+
+**`Instrumented<F>`** — a future adapter that carries a scope across
+spawned tasks (since `task_local!` does not propagate to spawns). The
+thing tracing calls `Instrument`.
+[13-emit-scope-and-filter.md § 3](./13-emit-scope-and-filter.md#3-obsinstrumentedf--async-scope-adapter).
+
+## Identity nouns
+
+**`schema_hash`** — first 8 bytes of BLAKE3 over the canonical
+schema descriptor; baked at build time as a `u64` const. Identifies
+an event *type*. [10-data-model.md § 6](./10-data-model.md#6-envelope) +
+D8 in [99-key-decisions.md](./99-key-decisions.md).
+
+**`callsite_id`** — first 8 bytes of BLAKE3 over `(target, file,
+line, level, field_names, template)`; populated only when interning
+is enabled. Identifies an emit *site*. `0` is reserved.
+[31-callsite-interning.md § 3.1](./31-callsite-interning.md#31-id-generation-blake3-truncated-to-64-bits).
+
+**`trace_id` / `span_id` / `parent_span_id`** — W3C trace context
+identifiers; lifted from event fields tagged `FIELD_KIND_TRACE_ID` /
+`SPAN_ID` / `PARENT_SPAN_ID`, or auto-filled from `obs::scope!`.
+[10-data-model.md § 6](./10-data-model.md#6-envelope),
+[20-otel-and-sinks.md § 2.6](./20-otel-and-sinks.md#26-trace-context-propagation).
+
+**Service identity** — `(service, instance, version)` plus the
+`ResourceAttrs` (namespace, environment, host). Set once per
+process lifetime, written into every envelope and into the OTLP
+Resource. [11-runtime-core.md § 7](./11-runtime-core.md#7-service-identity).
+
+## Verbs
+
+**Emit** — call `.emit()` on a builder or `obs::emit!`. Constructs
+the typed event, projects it, and dispatches to the observer.
+[13-emit-scope-and-filter.md § 1](./13-emit-scope-and-filter.md#1-two-emit-forms-builder-is-canonical-macro-is-shorthand).
+
+**Project** — `EventSchema::project(&mut env)` writes labels and
+lifts trace/span ids onto the envelope. Generated; never hand-written.
+[12-schema-and-codegen.md § 3.2](./12-schema-and-codegen.md).
+
+**Encode** — `EventSchema::encode_payload(&mut buf)` writes the
+typed event into a buffa-encoded byte buffer.
+
+**Deliver** — `Sink::deliver(env)` is what worker tasks call on
+each sink for each envelope.
+
+**Bridge** — convert between `tracing` and `obs`; either direction.
+[30-tracing-bridge.md](./30-tracing-bridge.md).
+
+**Promote** (auto-typing) — convert a bridged tracing event into a
+typed `ObsXxx` event via a registered `TypedMatcher`.
+[30-tracing-bridge.md § 2.5](./30-tracing-bridge.md#25-auto-typing--promoting-tracing-events-to-typed-obs-events).
+
+**Intern** (callsite) — replace per-event repeated metadata strings
+(`target`, `file`, `template`) with a single `callsite_id` resolved
+out-of-band via the registry.
+[31-callsite-interning.md](./31-callsite-interning.md).
+
+## Common confusions, disambiguated
+
+### Scope vs span
+
+| | `obs::scope!` | `tracing::span!` |
+| --- | --- | --- |
+| Lifetime model | RAII guard; one open/close | half-open; multiple `enter`/`exit` |
+| Field updates | None — fields are set at scope creation | `Span::record(field, value)` post-hoc |
+| Subscriber state | Single task-local frame | Subscriber-managed Id + extensions |
+| Has duration | No (use a `Started`/`Completed` event pair, or `#[obs::instrument]`) | Yes (entered/exited timestamps) |
+| Use for | Trace correlation + tail buffer | All of the above + diagnostic span |
+
+**The names are not interchangeable.** `obs::scope!` is *not* a
+tracing span analogue. See
+[13-emit-scope-and-filter.md § 4](./13-emit-scope-and-filter.md#4-obsscope-is-not-a-tracingspan).
+
+### Layer vs Sink
+
+| | `tracing-subscriber::Layer` | `obs::Sink` |
+| --- | --- | --- |
+| Composes via | `Subscriber::with(layer)` | sink router on the observer |
+| Sees | typed `Event`/`Span`/`Attributes` | only `ObsEnvelope` |
+| Can mutate observation | yes (via per-span extensions) | no — envelope is read-only |
+| Filtering | `Layer::enabled` + `Filter` trait | static `ObsCallsite::interest` cache + `obs::Filter` DSL |
+
+`obs` deliberately does not have `Layer`-style composability. Sinks
+fan out below the observer. Cross-cutting concerns (sampling,
+redaction, rate limiting) are baked into `StandardObserver`, not
+external middleware.
+
+### Subscriber vs Observer
+
+`tracing::Subscriber` and `obs::Observer` are roughly equivalent — a
+global dispatcher for emissions. `obs::Observer` is simpler (no span
+lifecycle methods) and stricter (one per process, plus per-thread
+override for tests).
+
+### Tier vs Severity
+
+| | Tier | Severity |
+| --- | --- | --- |
+| Selects | which sink the event lands in | how loud the event is |
+| Domain | LOG / METRIC / TRACE / AUDIT | TRACE / DEBUG / INFO / WARN / ERROR / FATAL |
+| Set by | the schema author at compile time | the schema's `default_sev`, optionally overridden via `emit_at` per call |
+
+A LOG-tier event can be ERROR severity; a TRACE-tier event can be
+INFO severity. They are orthogonal axes.
+
+### Forensic vs Tracing-Forensic
+
+- `obs::forensic!` emits `ObsForensicEvent` — a *user-driven*
+  escape hatch for "I don't have a schema yet". Budget-limited,
+  audited. [13-emit-scope-and-filter.md § 8](./13-emit-scope-and-filter.md#8-the-forensic-escape-hatch).
+- `ObsTracingForensicEvent` is the *bridge-driven* default
+  destination for un-promoted bridged tracing events. No user code
+  emits it. [30-tracing-bridge.md § 2.2](./30-tracing-bridge.md#22-mapping-tracingevent--obsenvelope).
+
+### Allow / Promote / Lift
+
+- **Allowlist** — a `FieldPromotions` config naming which bridged
+  tracing fields may become envelope `labels`. Allowlist matches
+  forbid the rest.
+- **Promote** — converts a tracing event into a typed `Obs*` event
+  via a `TypedMatcher`.
+- **Lift** — moves a value out of the typed payload into an
+  envelope-level field (e.g. `FIELD_KIND_TRACE_ID` is *lifted* to
+  `env.trace_id`).
+
+## Acronyms
+
+- **PRD** — Product Requirements Document. [00-prd.md](./00-prd.md).
+- **OTLP** — OpenTelemetry Protocol. The wire/transport contract for
+  OTel data.
+- **OTel** — OpenTelemetry. The data model, separate from OTLP.
+- **MSRV** — Minimum Supported Rust Version.
+- **HLL** — HyperLogLog, a streaming cardinality estimator used to
+  bound bridge field promotions.
+- **UCUM** — Unified Code for Units of Measure (used for `unit:`
+  annotations on `MEASUREMENT` fields).
+- **W3C TC** — W3C Trace Context (the `traceparent` / `tracestate`
+  header standard).
+- **FDS** — `FileDescriptorSet`, the protobuf descriptor blob
+  emitted by `buffa-build` and consumed by `obs-build` via
+  `buffa-reflect`.

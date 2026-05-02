@@ -1,7 +1,15 @@
 # Design — Schema Definition & Code Generation
 
-Status: draft v2 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [architecture-design.md](./architecture-design.md)
+Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [10-data-model.md](./10-data-model.md), [11-runtime-core.md](./11-runtime-core.md)
 
+> v3 changes: pulled in foundational types from the new
+> [10-data-model.md](./10-data-model.md); defined the previously
+> hand-waved `MetricEmitter`, `BuildableTo`, `FieldCapture`, and
+> `EnumCount` traits explicitly (§ 3.7); split off the Rust-first
+> `#[derive(Event)]` rendering rules into § 3.5; cross-references
+> retargeted from the old `architecture-design.md` to the new
+> per-stage specs.
+>
 > v2 changes: replaced `prost`/`prost-build` with `buffa`/`buffa-build`/
 > `buffa-reflect`; codegen now uses the `FileDescriptorSet` emitted by
 > `buffa-build` and walks it with `buffa-reflect` instead of a hand-rolled
@@ -212,7 +220,8 @@ pub trait EventSchema: Send + Sync + Sized + 'static {
     /// First 8 bytes of BLAKE3 over (FULL_NAME, TIER, DEFAULT_SEV, FIELDS);
     /// a build-time const. 64 bits is sized for accidental-collision avoidance
     /// at realistic schema counts; this is an identifier, not a tamper-
-    /// detection primitive. See architecture-design.md § 1.4 / D8.
+    /// detection primitive. See [10-data-model.md § 6](./10-data-model.md#6-envelope)
+    /// and [99-key-decisions.md § D2](./99-key-decisions.md).
     const SCHEMA_HASH: u64;
 
     /// Encode this event's payload using buffa's encoder into a reused buffer.
@@ -315,9 +324,125 @@ the descriptor — no nightly `variant_count` required.
 `SCHEMA_HASH` is computed at build time (we know `FIELDS` statically)
 and stored as a `u64` constant — the first 8 bytes of
 `blake3::hash(canonical_descriptor_bytes).as_bytes()`, read as
-little-endian. There is no runtime hashing.
+little-endian via `<[u8; 8]>::try_from(&hash[..8])` (panic-free per
+CLAUDE.md `clippy::indexing_slicing`). There is no runtime hashing.
 
-### 3.6 The single-table Arrow schema
+`EnumLabel` rendering: `#[derive(EnumLabel)]` walks variant names and
+renders them as `snake_case` via the `heck` crate
+(`AuthMethod::OAuthGoogle → "oauth_google"`); per-variant override
+through `#[obs(rename = "auth-google")]`. The codegen also emits a
+`const COUNT: usize = N` constant via the generated `EnumCount` impl
+(see § 3.7), so lint L005 is checkable without nightly's
+`variant_count`.
+
+### 3.6 Auxiliary trait surface
+
+The codegen and runtime share a small set of auxiliary traits.
+Earlier drafts referenced these without defining them; this section
+is the contract.
+
+```rust
+// ─── Builder state contract ─────────────────────────────────────────
+
+/// Marker trait implemented by `typed_builder` for the
+/// "all-required-fields-set" builder state. The codegen emits a
+/// blanket impl over the parameter shape `typed_builder` produces, so
+/// `.emit()` only compiles when every required setter has been
+/// called. The `obs::emit!` macro relies on the same shape.
+pub trait BuildableTo<Args> {
+    fn build(self) -> Args;
+}
+
+// ─── Metric emission contract ───────────────────────────────────────
+
+/// Implemented by metric sinks (OTLP metrics, Prometheus exporters);
+/// generated `EventSchema::project_metrics` calls one method per
+/// `MEASUREMENT` field on the event. The trait is `&mut self` so
+/// implementations can hold transient state (e.g. an attribute set
+/// being assembled). The `Sink` itself is `&self`; the trait is
+/// invoked from inside `Sink::deliver` with a per-call mutable view.
+pub trait MetricEmitter {
+    fn record_counter(&mut self, instrument: &'static str, value: u64,
+                      unit: Option<&'static str>);
+    fn record_gauge_u64(&mut self, instrument: &'static str, value: u64,
+                        unit: Option<&'static str>);
+    fn record_gauge_f64(&mut self, instrument: &'static str, value: f64,
+                        unit: Option<&'static str>);
+    fn record_histogram(&mut self, instrument: &'static str, value: f64,
+                        unit: Option<&'static str>, bounds: &'static [f64]);
+    /// Attribute set carried into every record_* on the same event.
+    fn with_attributes(&mut self, attrs: &[(&'static str, &str)]);
+}
+
+// ─── Bridge field capture (used by tracing→obs auto-typing) ─────────
+
+/// Visitor used by tracing's `Event::record(visitor)` to extract
+/// typed values into a thread-local scratch space; reused across
+/// emissions (zero per-event allocation in the steady state).
+pub struct FieldCapture {
+    strings:  Vec<(&'static str, String)>,
+    u64s:     Vec<(&'static str, u64)>,
+    i64s:     Vec<(&'static str, i64)>,
+    f64s:     Vec<(&'static str, f64)>,
+    bools:    Vec<(&'static str, bool)>,
+    /// Reused encoder scratch for `record_debug` / `record_display`.
+    scratch:  bytes::BytesMut,
+}
+
+impl FieldCapture {
+    pub fn default() -> Self;
+    pub fn clear(&mut self);              // preserves capacity
+    pub fn string(&self, name: &str) -> Option<&str>;
+    pub fn u64(&self, name: &str)    -> Option<u64>;
+    pub fn i64(&self, name: &str)    -> Option<i64>;
+    pub fn f64(&self, name: &str)    -> Option<f64>;
+    pub fn bool(&self, name: &str)   -> Option<bool>;
+    pub fn duration(&self, name: &str) -> Option<Duration>;
+}
+
+impl tracing::field::Visit for FieldCapture { /* … */ }
+
+// ─── Span context (used by tracing→obs auto-typing) ─────────────────
+
+/// Read-only view of the active scope/span context that
+/// `register_typed`-style closures receive. Carries the labels the
+/// user has named in `obs::scope!` plus the span ancestry (for
+/// `tracing` source spans).
+pub struct SpanCtx<'a> {
+    /// Labels from the active `obs::scope!` allowlist, in
+    /// outermost-first order.
+    pub labels: &'a [(&'static str, &'a str)],
+    /// Tracing span ancestry, oldest first; empty if this `SpanCtx`
+    /// originates from a non-bridge path.
+    pub spans:  &'a [SpanFrame<'a>],
+}
+
+pub struct SpanFrame<'a> {
+    pub name:   &'a str,
+    pub target: &'a str,
+}
+
+impl<'a> SpanCtx<'a> {
+    pub fn label(&self, name: &str) -> Option<&'a str>;
+    pub fn span_path(&self) -> Cow<'a, str>;   // "request:auth:db_query"
+    pub fn target(&self) -> Option<&'a str>;
+}
+
+// ─── Enum cardinality (used by lint L005) ────────────────────────────
+
+/// Compile-time variant count for any enum used as a LABEL field.
+/// Generated by `#[derive(EnumLabel)]`.
+pub trait EnumCount {
+    const COUNT: usize;
+}
+```
+
+These traits are re-exported from `obs-sdk` under the `__private`
+module — they are intended for codegen consumers, not human
+implementers, but they are documented because reading the generated
+output is a routine debugging activity.
+
+### 3.7 The single-table Arrow schema
 
 The Parquet/ClickHouse sinks emit into one wide table per service. The
 codegen contributes a per-event-type Arrow `Field` (a struct of the
@@ -394,7 +519,7 @@ custom proto-text grammar in `obs-build`.
 
 ## 5. Schema evolution & versioning
 
-Rules enforced by `obs schema diff` (CLI, see [cli-design.md](./cli-design.md)):
+Rules enforced by `obs schema diff` (CLI, see [50-cli.md § 3.6](./50-cli.md#36-obs-diff)):
 
 | Change | Verdict |
 | --- | --- |

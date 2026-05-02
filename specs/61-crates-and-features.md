@@ -1,7 +1,15 @@
 # Design — Workspace Crates & Public API
 
-Status: draft v2 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [architecture-design.md](./architecture-design.md), [schema-codegen-design.md](./schema-codegen-design.md)
+Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [10-data-model.md](./10-data-model.md), [11-runtime-core.md](./11-runtime-core.md), [12-schema-and-codegen.md](./12-schema-and-codegen.md), [20-otel-and-sinks.md](./20-otel-and-sinks.md), [22-analytics-storage.md](./22-analytics-storage.md), [40-http-middleware.md](./40-http-middleware.md)
 
+> v3 changes: cross-references retargeted to the post-split spec
+> structure; the `obs-tower` surface moved to its own spec
+> ([40-http-middleware.md](./40-http-middleware.md)); sink details
+> moved to [20-otel-and-sinks.md](./20-otel-and-sinks.md) and
+> [22-analytics-storage.md](./22-analytics-storage.md); this file
+> now focuses on workspace layout, dependency graph, and feature
+> flags only.
+>
 > v2 changes: switched proto runtime to `buffa`; analytics sinks
 > default to single-table layout; envelope/builder examples use the
 > `Obs*` prefix; shorter envelope field names; added `obs-cli` and
@@ -21,7 +29,7 @@ obs/
 │   ├── obs-otel/                 # OTLP/gRPC sinks for logs, metrics, traces
 │   ├── obs-parquet/              # Single-table Arrow/Parquet sink
 │   ├── obs-clickhouse/           # Single-table ClickHouse sink
-│   ├── obs-tracing-bridge/       # bidirectional tracing ↔ obs (see tracing-interop-design.md)
+│   ├── obs-tracing-bridge/       # bidirectional tracing ↔ obs (see 30-tracing-bridge.md)
 │   ├── obs-tower/                # tower::Layer for HTTP propagation + ObsHttpRequest events
 │   └── obs-sdk/                  # façade: re-exports the everyday API
 └── apps/
@@ -309,7 +317,7 @@ Internally:
 2. Loads the FDS into `buffa_reflect::DescriptorPool`.
 3. Walks messages, reads `(obs.v1.event)` and `(obs.v1.field)`
    extensions, and emits the `obs/*.rs` files described in
-   [schema-codegen-design.md § 3.1](./schema-codegen-design.md#31-generated-artifacts-per-proto-file).
+   [12-schema-and-codegen.md § 3.1](./12-schema-and-codegen.md#31-generated-artifacts-per-proto-file).
 
 User crates include the output via:
 
@@ -327,7 +335,7 @@ OpenTelemetry sinks. Depends on `opentelemetry`, `opentelemetry-otlp`,
 policy). The OTLP `Resource` is built once at sink construction
 (`service`, `instance`, `version` from the observer plus optional
 `service.namespace`, `deployment.environment`, host detection) and
-reused across exports — see architecture-design § 4.1.
+reused across exports — see [20-otel-and-sinks.md § 2.1](./20-otel-and-sinks.md#21-otel-resource-set-once).
 
 ```rust
 pub struct OtlpLogSink { ... }
@@ -359,7 +367,7 @@ impl OtlpLogSinkBuilder {
 
 impl Sink for OtlpLogSink {
     fn deliver(&self, env: &ObsEnvelope) {
-        // Map per architecture-design §4.3.
+        // Map per [20-otel-and-sinks.md § 2.3](../20-otel-and-sinks.md#23-to-otlp-logs).
         // Reuses the prebuilt Resource; never re-stamps service/instance/version
         // as per-LogRecord attributes.
     }
@@ -389,7 +397,7 @@ constructor reads these so a 12-factor deployment needs no code.
 
 Writes batches as Parquet files using a **single Arrow schema** that
 contains all event types as sparse struct columns (per
-[architecture-design.md § 3](./architecture-design.md#3-storage-model--single-sparse-table)).
+[22-analytics-storage.md § 1](./22-analytics-storage.md#1-single-sparse-table)).
 
 ```rust
 pub struct ParquetSink { ... }
@@ -449,7 +457,7 @@ pub struct ClickHouseSinkBuilder {
 }
 ```
 
-The CLI `obs migrate clickhouse` (see [cli-design.md](./cli-design.md))
+The CLI `obs migrate clickhouse` (see [50-cli.md](./50-cli.md))
 emits the DDL for the schemas at build time so production DBs are
 migrated by an explicit step, not at runtime.
 
@@ -484,7 +492,7 @@ ORDER BY (ts_ns, full_name, trace_id);
 
 Bidirectional bridge between `tracing` and `obs`. The full design,
 loop-avoidance proof, performance budget, migration playbook, and
-key decisions live in [tracing-interop-design.md](./tracing-interop-design.md).
+key decisions live in [30-tracing-bridge.md](./30-tracing-bridge.md).
 This entry summarises the public API surface.
 
 ```rust
@@ -501,7 +509,7 @@ impl TracingToObsLayer {
     pub fn with_redactor(self, r: Arc<dyn Redactor>) -> Self;
     pub fn with_span_events(self, mode: SpanEventMode) -> Self;
     pub fn with_filter(self, f: tracing_subscriber::EnvFilter) -> Self;
-    pub fn with_interning(self, mode: InterningMode) -> Self;  // see callsite-interning-design.md
+    pub fn with_interning(self, mode: InterningMode) -> Self;  // see 31-callsite-interning.md
 
     /// Promote a matching tracing callsite into a typed obs event
     /// instead of `ObsTracingForensicEvent`. Cached per callsite id.
@@ -555,7 +563,7 @@ pub enum RedactAction { Keep, Replaced, Drop }
 /// authorization|cookie|ssn|credit[_-]?card|bearer/ on field names.
 pub struct DefaultPiiPatternRedactor;
 
-/// Callsite interning mode (see callsite-interning-design.md). v1 default: Off.
+/// Callsite interning mode (see 31-callsite-interning.md). v1 default: Off.
 pub enum InterningMode { Off, Hybrid, Compact }
 
 // =================================================================
@@ -586,7 +594,7 @@ pub enum SpanEmissionMode {
 
 // =================================================================
 // Typical wiring (both directions; loop-break and span correlation
-// per tracing-interop-design.md § 4)
+// per 30-tracing-bridge.md § 4)
 // =================================================================
 
 fn init() -> anyhow::Result<()> {

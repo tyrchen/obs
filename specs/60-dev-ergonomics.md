@@ -1,11 +1,21 @@
 # Design — Developer Ergonomics
 
-Status: draft · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [architecture-design.md](./architecture-design.md), [crates-design.md](./crates-design.md), [schema-codegen-design.md](./schema-codegen-design.md)
+Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md), [61-crates-and-features.md](./61-crates-and-features.md), [12-schema-and-codegen.md](./12-schema-and-codegen.md), [72-testing-strategy.md](./72-testing-strategy.md)
+
+> v3 changes: cross-references retargeted to the post-split spec
+> structure; clarified that `obs::scope!` is *not* a tracing-`Span`
+> analogue (see [80-glossary.md](./80-glossary.md) and
+> [13-emit-scope-and-filter.md § 4](./13-emit-scope-and-filter.md#4-obsscope-is-not-a-tracingspan));
+> parallel-test fix references the per-thread observer override slot
+> in [11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait)
+> and the `#[obs::test]` attribute now uses
+> `obs::with_test_observer` so cargo's default parallelism is safe;
+> removed the misleading "scope ≈ Span::enter()" line in the v2 draft.
 
 The PRD's bar is "match `tracing` ergonomics with stronger guarantees".
 This document is the contract for what that actually feels like to use.
 Every example here must compile against the API surface in
-[crates-design.md](./crates-design.md) — if it doesn't, the spec is
+[61-crates-and-features.md](./61-crates-and-features.md) — if it doesn't, the spec is
 wrong, not the example.
 
 ## 1. North star
@@ -115,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 That is the entire setup. From here, swap `dev()` for the OTLP wiring
-in [crates-design.md § 3](./crates-design.md#3-end-to-end-usage-example)
+in [61-crates-and-features.md § 3](./61-crates-and-features.md#3-end-to-end-usage-example)
 when ready for production.
 
 ## 3. Mental model
@@ -133,7 +143,7 @@ handles the fan-out.
 | Each field with `MEASUREMENT` | A metric data point (counter/gauge/histogram) emitted on each `.emit()` |
 | Each field with `ATTRIBUTE` | A column in the analytics row; not on metrics |
 | Each field with `TRACE_ID` | The `trace_id` on the envelope (auto-filled from `obs::scope!`) |
-| `obs::scope!` | A RAII guard that holds field defaults and a tail-on-error buffer |
+| `obs::scope!` | A RAII guard that holds a field allowlist + tail-on-error buffer. **Not a tracing-`Span` analogue** — see [80-glossary.md](./80-glossary.md). |
 | `obs::forensic!` | The escape hatch for "I haven't typed this yet"; budgeted, surfaced in audits |
 
 ## 4. Authoring patterns
@@ -461,9 +471,19 @@ error: the trait bound `…BuilderState<((), ((), ()))>: BuildableTo<…Args>` i
   and `count(filter)` helpers — no third-party mock framework.
 - `obs::test::assert_emitted!(handle, MyEvent { route: ..., .. })` —
   pattern-match assertion macro that ignores untouched fields.
-- A `#[obs::test]` attribute installs an `InMemoryObserver` for the
-  duration of the test and removes it after, so tests cannot leak
-  observers across each other.
+- A `#[obs::test]` attribute installs an `InMemoryObserver` *on the
+  current thread only* (via `obs::with_test_observer`, see
+  [11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait))
+  for the duration of the test and removes it after. This means:
+  - cargo's default parallel test runner is safe; tests do not leak
+    observers across each other,
+  - no `serial_test` annotation is required,
+  - library code called from inside the test still sees the test
+    observer because the per-thread slot wins over the global.
+
+The full testing strategy — including trybuild fixtures for compile
+errors, the mock OTLP collector, property tests, and the dev-erg
+suite layout — lives in [72-testing-strategy.md](./72-testing-strategy.md).
 
 ```rust
 // `#[obs::test]` accepts `Result<(), E>` returns so error paths use `?`

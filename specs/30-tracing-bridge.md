@@ -1,12 +1,16 @@
-# Design — `tracing` ↔ `obs` Interop
+# Design — `tracing` ↔ `obs` Bridge
 
-Status: draft · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [architecture-design.md](./architecture-design.md), [crates-design.md](./crates-design.md), [schema-codegen-design.md](./schema-codegen-design.md), [dev-ergonomics-design.md](./dev-ergonomics-design.md)
+Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [11-runtime-core.md](./11-runtime-core.md), [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md), [12-schema-and-codegen.md](./12-schema-and-codegen.md), [20-otel-and-sinks.md](./20-otel-and-sinks.md)
+
+> v3 changes: cross-references retargeted to the post-split spec
+> structure; previously hand-waved `SpanCtx<'a>` and `FieldCapture`
+> now defined in [12-schema-and-codegen.md § 3.6](./12-schema-and-codegen.md#36-auxiliary-trait-surface);
+> bridge metadata cache uses the same atomic-Interest model as native
+> emit ([11-runtime-core.md § 2](./11-runtime-core.md#2-the-obscallsite-and-atomic-interest-cache)).
 
 This spec defines the bidirectional bridge between the `tracing`
-ecosystem and `obs`. It replaces the placeholder one-way design
-described in [crates-design.md § 2.9](./crates-design.md#29-obs-tracing-bridge)
-and lifts the `obs-tracing-bridge` crate to a first-class interop
-layer.
+ecosystem and `obs`. It is the canonical design for the
+`obs-tracing-bridge` crate.
 
 ## 1. Motivation
 
@@ -430,7 +434,7 @@ path.
 
 The full design — modes, lifecycle, wire-size analysis, CLI
 tooling, hash-collision handling — lives in
-[callsite-interning-design.md](./callsite-interning-design.md).
+[31-callsite-interning.md](./31-callsite-interning.md).
 
 ## 3. Direction B — `obs` → `tracing`
 
@@ -667,7 +671,7 @@ and increment `obs.runtime.v1.ObsBridgeCallsiteUnresolved`,
 rate-limited.
 
 The full design lives in
-[callsite-interning-design.md](./callsite-interning-design.md).
+[31-callsite-interning.md](./31-callsite-interning.md).
 
 ## 4. Coexistence
 
@@ -931,7 +935,7 @@ The bridge ships its own test harness in
 ## 7. Performance budget
 
 Targets, in addition to the native emit budgets in
-[architecture-design.md § 11](./architecture-design.md#11-test-strategy):
+[71-performance-budgets.md § 3.2](./71-performance-budgets.md#32-bridge):
 
 | Path | Budget P50 | Notes |
 | --- | --- | --- |

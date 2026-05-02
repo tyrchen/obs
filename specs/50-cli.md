@@ -1,6 +1,6 @@
 # Design — `obs` CLI
 
-Status: draft v2 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [crates-design.md](./crates-design.md), [schema-codegen-design.md](./schema-codegen-design.md)
+Status: draft v2 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [61-crates-and-features.md](./61-crates-and-features.md), [12-schema-and-codegen.md](./12-schema-and-codegen.md)
 
 > v2 changes: scope is **Rust only** in v1 — no Go/Python/TypeScript
 > codegen here; query model is the single sparse `obs_events` table
@@ -16,7 +16,7 @@ or a daemon; everything is short-lived, predictable, and CI-friendly.
 
 The CLI **only** manages Rust crates. It does not generate code for
 other languages. That is a deliberate scope choice for v1; see
-[schema-codegen-design.md § 9](./schema-codegen-design.md#9-v1-scope-rust-only).
+[12-schema-and-codegen.md § 9](./12-schema-and-codegen.md#9-v1-scope-rust-only).
 
 ## 2. Top-level layout
 
@@ -261,7 +261,7 @@ ClickHouse / object storage URIs (via `opendal`).
 The query model is **the single sparse `obs_events` table**: every
 filter, projection, and ordering is expressed against the
 unified-table column set defined in
-[crates-design.md § 2.8](./crates-design.md#28-obs-clickhouse).
+[61-crates-and-features.md § 2.8](./61-crates-and-features.md#28-obs-clickhouse).
 
 ```
 obs query [SOURCE] [filters...]
@@ -357,7 +357,7 @@ obs migrate clickhouse --root . --diff baseline=v1.4.0 --out migrations/0002.sql
 ```
 
 DDL strategy (single table with sparse Nested columns, see
-[crates-design.md § 2.8](./crates-design.md#28-obs-clickhouse) for the
+[61-crates-and-features.md § 2.8](./61-crates-and-features.md#28-obs-clickhouse) for the
 template):
 
 - Envelope columns are first-class

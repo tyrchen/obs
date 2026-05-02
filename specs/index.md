@@ -11,30 +11,132 @@ Stack: `buffa` for wire types, `buffa-reflect` for schema introspection,
 the `Obs*` event-name convention, single sparse `obs_events` analytics
 table, and a Rust-only toolchain in v1.
 
+The specs are numbered to reflect the **build order**. Reading them
+top-to-bottom matches the milestone progression in [90-roadmap.md](./90-roadmap.md):
+M0 covers 10–13, M1 closes 12 and adds 60/72, M2 covers 20 and parts
+of 30/71, M3 closes everything else.
+
 ## Documents
+
+### Vision
 
 | File | Type | Purpose |
 | --- | --- | --- |
-| [wide-events-prd.md](./wide-events-prd.md) | PRD | Vision, users, success metrics, non-goals |
-| [architecture-design.md](./architecture-design.md) | Design | Runtime data model, observer, sinks, OTel mapping (incl. SeverityNumber + Resource), trace context propagation, production concerns, defaults table, **Key Design Decisions** |
-| [schema-codegen-design.md](./schema-codegen-design.md) | Design | `.proto` annotations and build-time codegen pipeline (buffa + buffa-reflect) |
-| [crates-design.md](./crates-design.md) | Design | Workspace layout, per-crate public API (incl. `obs-tower`, `obs-tracing-bridge` bidirectional) |
-| [cli-design.md](./cli-design.md) | Design | `obs` CLI: lint, validate, codegen, query, diff (Rust-only in v1) |
-| [dev-ergonomics-design.md](./dev-ergonomics-design.md) | Design | North star, quickstart, mental model, errors, testing, migration, AI authoring; **emit-form rationale** |
-| [tracing-interop-design.md](./tracing-interop-design.md) | Design | Bidirectional `tracing` ↔ `obs` bridge: Layer + Subscriber, auto-typing, span correlation, loop break, recommended init |
-| [callsite-interning-design.md](./callsite-interning-design.md) | Design | `defmt`-style callsite interning for the bridged tracing path: BLAKE3 ids, registry, `Off`/`Hybrid`/`Compact` modes, wire-size analysis |
-| [impl-plan.md](./impl-plan.md) | Impl Plan | Phased delivery M0 → M3 with exit criteria |
+| [00-prd.md](./00-prd.md) | PRD | Vision, users, success metrics, non-goals |
+
+### Foundation (M0)
+
+| File | Type | Purpose |
+| --- | --- | --- |
+| [10-data-model.md](./10-data-model.md) | Design | Wide events, envelope, schema_hash, the `Obs*` naming convention |
+| [11-runtime-core.md](./11-runtime-core.md) | Design | Observer + per-thread test override, `ObsCallsite` with atomic `Interest`, sinks, workers, config + reload, AUDIT delivery, panic hook, threading |
+| [12-schema-and-codegen.md](./12-schema-and-codegen.md) | Design | `.proto` annotations, `#[derive(Event)]`, lints L001–L013, `EventSchema`, generated builder, the `MetricEmitter` / `BuildableTo` / `FieldCapture` / `SpanCtx` / `EnumCount` trait surface, single-table Arrow fragments |
+| [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md) | Design | `obs::emit!`, `obs::scope!`, `obs::context!`, `obs::Instrumented<F>`, `#[obs::instrument]` (single-event default), `obs::Filter` DSL + precedence, `obs::forensic!`, `obs::SpanTrace` |
+
+### Sinks & analytics (M2 → M3)
+
+| File | Type | Purpose |
+| --- | --- | --- |
+| [20-otel-and-sinks.md](./20-otel-and-sinks.md) | Design | OTLP mapping (Logs / Metrics / Traces, Resource, severity, propagation); built-in sinks, `MakeWriter` abstraction, time + size rolling, formatter styles |
+| [22-analytics-storage.md](./22-analytics-storage.md) | Design | Single sparse `obs_events` table; `ParquetSink`; `ClickHouseSink`; Iceberg/Delta positioning |
+
+### Bridge & interning (M2 → M3)
+
+| File | Type | Purpose |
+| --- | --- | --- |
+| [30-tracing-bridge.md](./30-tracing-bridge.md) | Design | Bidirectional `tracing` ↔ `obs` bridge: `Layer` + `Subscriber`, auto-typing, span correlation, loop break, recommended init |
+| [31-callsite-interning.md](./31-callsite-interning.md) | Design | `defmt`-style callsite interning for the bridged tracing path: BLAKE3 ids (with `0`-reserved fix), registry, `Off`/`Hybrid`/`Compact` modes, wire-size analysis |
+
+### Ecosystem (M3)
+
+| File | Type | Purpose |
+| --- | --- | --- |
+| [40-http-middleware.md](./40-http-middleware.md) | Design | `obs-tower`: HTTP `tower::Layer` for W3C trace context propagation + typed HTTP request events |
+| [50-cli.md](./50-cli.md) | Design | `obs` CLI: lint, validate, codegen, query, diff, callsites, migrate (Rust-only in v1) |
+
+### Cross-cutting
+
+| File | Type | Purpose |
+| --- | --- | --- |
+| [60-dev-ergonomics.md](./60-dev-ergonomics.md) | Design | North star, quickstart, mental model, errors, AI authoring, the **emit-form rationale** |
+| [61-crates-and-features.md](./61-crates-and-features.md) | Design | Workspace layout, dependency graph, feature flags |
+| [70-security-and-classification.md](./70-security-and-classification.md) | Design | Threat model, `Classification` lints, payload scrubber, bridge PII redactor, `secrecy::Secret*` integration, AUDIT-tier semantics |
+| [71-performance-budgets.md](./71-performance-budgets.md) | Design | All P50/P99 budgets, the atomic-`Interest` cache pattern, criterion bench harness, CI gates |
+| [72-testing-strategy.md](./72-testing-strategy.md) | Design | Test pyramid, `InMemoryObserver`, `#[obs::test]` parallel-safe attribute, trybuild compile-error fixtures, mock OTLP collector, dev-erg suite |
+
+### Reference
+
+| File | Type | Purpose |
+| --- | --- | --- |
+| [80-glossary.md](./80-glossary.md) | Reference | Terminology disambiguation (envelope vs event, scope vs span, sink vs layer, …) |
+| [90-roadmap.md](./90-roadmap.md) | Roadmap | Phased delivery M0 → M3 with exit criteria, build-order graph, perf gates, definition of done |
+| [99-key-decisions.md](./99-key-decisions.md) | Reference | Consolidated load-bearing design decisions (D1–D37) |
 
 ## Reading order
 
-1. **PRD** — what we are building and for whom
-2. **Architecture** — the data model and runtime; **read § 10 Key
-   Design Decisions** for the load-bearing choices
-3. **Schema codegen** — how a `.proto` file becomes typed Rust + lints
-4. **Crates** — how the surface area is split into shippable units
-5. **Dev ergonomics** — the contract for what using the SDK feels like
-6. **CLI** — the developer-facing tooling
-7. **Impl plan** — how we cut milestones
+For first-time readers:
+
+1. **[00-prd.md](./00-prd.md)** — what we are building and for whom.
+2. **[80-glossary.md](./80-glossary.md)** — vocabulary, especially
+   the *scope vs span* distinction.
+3. **[10-data-model.md](./10-data-model.md)** — the wire shape every
+   downstream system sees.
+4. **[60-dev-ergonomics.md](./60-dev-ergonomics.md)** — the contract
+   for what using the SDK feels like; concrete code examples.
+5. **[11-runtime-core.md](./11-runtime-core.md)** — the engine.
+6. **[13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md)** —
+   the macros and scope semantics.
+7. **[12-schema-and-codegen.md](./12-schema-and-codegen.md)** — how
+   a `.proto` becomes typed Rust + lints.
+8. **[20-otel-and-sinks.md](./20-otel-and-sinks.md)** — sinks and
+   OpenTelemetry mapping.
+9. **[22-analytics-storage.md](./22-analytics-storage.md)** — the
+   analytical view.
+10. **[30-tracing-bridge.md](./30-tracing-bridge.md)** and
+    **[31-callsite-interning.md](./31-callsite-interning.md)** —
+    interop and the wire-size optimisation.
+11. **[40-http-middleware.md](./40-http-middleware.md)**,
+    **[50-cli.md](./50-cli.md)** — ecosystem.
+12. **[70-security-and-classification.md](./70-security-and-classification.md)**,
+    **[71-performance-budgets.md](./71-performance-budgets.md)**,
+    **[72-testing-strategy.md](./72-testing-strategy.md)** —
+    cross-cutting contracts.
+13. **[99-key-decisions.md](./99-key-decisions.md)** — *why* it is
+    shaped this way (read after #1–#12 for max signal).
+14. **[61-crates-and-features.md](./61-crates-and-features.md)** —
+    workspace shape, what to put where.
+15. **[90-roadmap.md](./90-roadmap.md)** — milestone exit criteria.
+
+## Build-order graph (summary)
+
+```
+00-prd
+  │
+  ▼
+10-data-model
+  │
+  ▼
+11-runtime-core ────┐
+  │                 │
+  ▼                 ▼
+12-schema-and-     13-emit-scope-
+codegen            and-filter
+  │                 │
+  └─────┬───────────┘
+        ▼
+20-otel-and-sinks ──► 22-analytics-storage
+        │
+        ▼
+30-tracing-bridge ──► 31-callsite-interning
+        │
+        ▼
+40-http-middleware    50-cli
+```
+
+`60-dev-ergonomics`, `61-crates-and-features`,
+`70-security-and-classification`, `71-performance-budgets`,
+`72-testing-strategy`, `80-glossary`, `99-key-decisions` are
+cross-cutting and read alongside the build-order specs.
 
 ## Naming conventions (binding)
 
@@ -42,10 +144,10 @@ table, and a Rust-only toolchain in v1.
 - Public proto namespace: `obs.v1`
 - CLI binary: `obs`
 - **Event message names: `Obs<EventName>`** (enforced by lint L011;
-  see [architecture-design.md § 1.5](./architecture-design.md#15-naming-convention-obs-event-types))
+  see [10-data-model.md § 7](./10-data-model.md#7-naming-convention-obs-event-types))
 - Envelope field names use short forms: `ts_ns`, `sev`, `service`,
   `instance`, `version`, `format_ver` — see
-  [architecture-design.md § 1.4](./architecture-design.md#14-envelope)
+  [10-data-model.md § 6](./10-data-model.md#6-envelope)
 
-Where this document refers to "the runtime", it means the collection
-of crates listed in [crates-design.md](./crates-design.md).
+Where these documents refer to "the runtime", they mean the collection
+of crates listed in [61-crates-and-features.md](./61-crates-and-features.md).
