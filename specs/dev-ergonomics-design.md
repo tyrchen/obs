@@ -1,0 +1,486 @@
+# Design — Developer Ergonomics
+
+Status: draft · Owner: obs-core · Last updated: 2026-05-02 · Depends on: [architecture-design.md](./architecture-design.md), [crates-design.md](./crates-design.md), [schema-codegen-design.md](./schema-codegen-design.md)
+
+The PRD's bar is "match `tracing` ergonomics with stronger guarantees".
+This document is the contract for what that actually feels like to use.
+Every example here must compile against the API surface in
+[crates-design.md](./crates-design.md) — if it doesn't, the spec is
+wrong, not the example.
+
+## 1. North star
+
+A user should be able to:
+
+1. **Add the dep, scaffold a schema, emit an event in 60 seconds.**
+2. **Read a call site in 1 second** and know which event it is, what
+   its semantics are, and where to look it up.
+3. **Get a clear compile error** when they violate a guarantee
+   (cardinality, classification, naming), with a fix suggestion.
+4. **Trust that local dev "just works"** with no observer setup
+   (events go nowhere, like `tracing` without a subscriber).
+5. **Migrate from `tracing`** without a flag day — both can coexist
+   in the same binary.
+6. **Test events with `assert_eq!` ergonomics** — no mock framework.
+
+The non-negotiable: a `obs::emit!` call site should be no longer than
+the equivalent `tracing::info!` call site for the same set of fields.
+The `Obs*` type prefix and field annotations are extra characters at
+the *schema* file, not at every call site.
+
+## 2. Quickstart (60 seconds)
+
+```bash
+$ cargo new myapp --bin && cd myapp
+$ obs init --mode rust .
+   added obs-sdk = "0.1" to dependencies
+   created src/events.rs with example ObsHelloEmitted
+   created obs.yaml with default observer config
+   updated src/main.rs to install observer
+
+$ cargo run
+2026-05-02T14:23:11.123Z INFO  myapp.v1.ObsHelloEmitted who=world
+```
+
+`src/events.rs` after `obs init --mode rust`:
+
+```rust
+use obs::Event;
+
+#[derive(Event)]
+#[event(tier = "log", default_sev = "info")]
+pub struct ObsHelloEmitted {
+    #[obs(label, cardinality = "low")]
+    pub who: Audience,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, obs::EnumLabel)]
+pub enum Audience { World, Universe }
+```
+
+`src/main.rs`:
+
+```rust
+mod events;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    obs_sdk::install_observer(
+        obs_sdk::StandardObserver::dev()  // stdout sink, dev-friendly
+    );
+
+    obs::emit!(events::ObsHelloEmitted { who: events::Audience::World });
+
+    obs_sdk::observer().shutdown().await;
+    Ok(())
+}
+```
+
+That is the entire setup. From here, swap `dev()` for the OTLP wiring
+in [crates-design.md § 3](./crates-design.md#3-end-to-end-usage-example)
+when ready for production.
+
+## 3. Mental model
+
+> **One event = one log record + N metric data points + (optionally) one
+> span + one analytics row, all from one `.emit()` call.**
+
+The user's job is to define the *shape* of the event once. The runtime
+handles the fan-out.
+
+| Mental hook | What it maps to in the runtime |
+| --- | --- |
+| The event *type* (`ObsRequestCompleted`) | A protobuf message + Rust struct + `EventSchema` impl |
+| Each field with `LABEL` | A bounded dimension on the metric, an attribute on the OTLP log/span, a low-cardinality column in `obs_events` |
+| Each field with `MEASUREMENT` | A metric data point (counter/gauge/histogram) emitted on each `.emit()` |
+| Each field with `ATTRIBUTE` | A column in the analytics row; not on metrics |
+| Each field with `TRACE_ID` | The `trace_id` on the envelope (auto-filled from `obs::scope!`) |
+| `obs::scope!` | A RAII guard that holds field defaults and a tail-on-error buffer |
+| `obs::forensic!` | The escape hatch for "I haven't typed this yet"; budgeted, surfaced in audits |
+
+## 4. Authoring patterns
+
+### 4.1 Proto-first vs Rust-first
+
+| Use proto-first when… | Use rust-first when… |
+| --- | --- |
+| Schema is shared across crates / services / future languages | Schema is single-crate, single-binary |
+| Team has a proto registry / lint tooling | Want to stay in Rust toolchain only |
+| Want the `.proto` to be the canonical artifact | Want to colocate event definitions with code that emits them |
+
+Both modes generate the *same* `EventSchema` impls and the same
+builder. The only user-visible difference is where the schema text
+lives.
+
+### 4.2 Naming
+
+- Event message name: **`Obs<Concept>` + past tense** for things that
+  happened (`ObsRequestCompleted`, `ObsUserSignedUp`,
+  `ObsCheckoutAbandoned`).
+- Event message name: **`Obs<Concept>Started`** for the front edge of
+  a long-running operation; matching `Completed` event for the back
+  edge.
+- Field name: `snake_case`, descriptive, no `_ms`/`_ns` if the unit
+  is implied by the metric annotation (but include if standalone).
+- Enum variants: `PascalCase`, no prefix.
+
+### 4.3 The ten most-used patterns
+
+#### A. Request handler (HTTP)
+
+```rust
+async fn handle(req: Request) -> Response {
+    let _scope = obs::scope!(trace_id = req.id.clone(),
+                              tenant_id = req.tenant.clone());
+
+    obs::emit!(ObsRequestStarted { route: req.route() });
+
+    let started = std::time::Instant::now();
+    let resp   = serve(req).await;
+    let ms     = started.elapsed().as_millis() as u64;
+
+    obs::emit!(ObsRequestCompleted {
+        route:      resp.route(),
+        status:     resp.status_class(),
+        latency_ms: ms,
+        bytes_out:  resp.bytes(),
+    });
+
+    resp
+    // _scope drops; if any ERROR was emitted in `serve`, the tail
+    // buffer flushes; otherwise discarded.
+}
+```
+
+#### B. Background batch job
+
+```rust
+async fn nightly_recompute() {
+    let _scope = obs::scope!(job = "nightly_recompute".to_string());
+    obs::emit!(ObsJobStarted { job_kind: JobKind::NightlyRecompute });
+
+    let stats = run_recompute().await;
+
+    obs::emit!(ObsJobCompleted {
+        job_kind: JobKind::NightlyRecompute,
+        rows_processed: stats.rows,
+        elapsed_ms: stats.elapsed.as_millis() as u64,
+    });
+}
+```
+
+#### C. Library crate (no observer assumed)
+
+```rust
+pub fn parse_widget(input: &[u8]) -> Result<Widget, Error> {
+    let started = std::time::Instant::now();
+    let result  = parse_inner(input);
+    obs::emit!(ObsWidgetParsed {
+        ok:          result.is_ok(),
+        bytes_in:    input.len() as u64,
+        elapsed_ns:  started.elapsed().as_nanos() as u64,
+    });
+    result
+}
+```
+
+`parse_widget` works whether or not the binary installed an observer.
+No observer = events are discarded after one atomic load.
+
+#### D. Spanning function with attribute macro
+
+```rust
+#[obs::instrument(fields(route, tenant_id), skip(raw_body))]
+async fn handle_list_users(req: Request, raw_body: Bytes) -> Response {
+    // body emits events; trace_id, route, tenant_id auto-flow
+}
+```
+
+#### E. Conditional severity escalation
+
+```rust
+let sev = if elapsed_ms > 5000 { Severity::Warn } else { Severity::Info };
+obs::emit!(sev, ObsRequestCompleted { /* ... */ });
+```
+
+#### F. Forensic escape (rare; audited)
+
+```rust
+// Crate's metadata.obs.forensic_max governs the budget.
+obs::forensic!(
+    site = "billing::reconcile",
+    message = "ledger drift",
+    {
+        "ledger_id" => ledger_id,
+        "delta_cents" => delta.to_string(),
+    }
+);
+```
+
+#### G. Test assertion
+
+```rust
+#[tokio::test]
+async fn signup_emits_event() {
+    let (obs, handle) = obs::InMemoryObserver::new();
+    obs::install_observer(obs);
+
+    signup_flow().await;
+
+    let events = handle.drain();
+    assert!(events.iter().any(|e|
+        e.full_name == "myapp.v1.ObsUserSignedUp"
+        && e.labels.get("channel") == Some(&"web".into())
+    ));
+}
+```
+
+#### H. Streaming sink under load
+
+```rust
+// Configured in obs.yaml; no code change.
+sinks:
+  - type: parquet
+    base_dir: s3://obs-events/myapp/
+    layout: single
+    roll: { max_bytes: 268435456, max_age_secs: 60 }
+```
+
+#### I. CLI inspection during dev
+
+```bash
+$ obs tail --file ./events.ndjson | jq 'select(.sev=="ERROR")'
+$ obs query --from ./events.ndjson --since 5m --event myapp.v1.ObsUpstreamFailed
+$ obs schema show myapp.v1.ObsRequestCompleted
+```
+
+#### J. Migrating from tracing in place
+
+```rust
+fn main() {
+    // Both tracing and obs work; tracing events become forensic obs events.
+    obs::install_observer(StandardObserver::dev());
+    tracing_subscriber::registry()
+        .with(obs::tracing_bridge::ObsBridgeSubscriber::new())
+        .init();
+
+    tracing::info!(user_id = 42, "still works");      // → ObsTracingForensicEvent
+    obs::emit!(ObsUserSignedIn { user_id: 42 });       // → ObsUserSignedIn
+}
+```
+
+## 5. IDE & autocomplete
+
+The codegen is intentionally optimised for `rust-analyzer`:
+
+- **`ObsXxx::builder()`** opens a typed-builder with one method per
+  required field. RA shows missing-field errors inline as the user
+  types `.build()` (or `.emit()`).
+- **Builder method docs** carry through from the proto comments via
+  `obs-build` — `///` doc-comments on `.proto` fields are emitted
+  onto the corresponding builder setter.
+- **Hover on `ObsXxx`** shows: tier, default severity, schema hash,
+  source file path. (Generated `///` on the type.)
+- **Goto-definition** on a generated type lands in `OUT_DIR/obs/...`,
+  which is fine for inspection. Goto-implementation on `EventSchema`
+  also works.
+- **Generated builder is concrete**, not behind a `dyn Trait`, so RA
+  can chain-complete.
+
+## 6. Compile error quality
+
+The runtime intentionally produces compile errors that name the
+offending field, file, and rule. Examples:
+
+### L001 — Cardinality on LABEL
+
+```
+error[L001]: field `user_id` is LABEL but cardinality `High` is not label-compatible
+   --> src/events.rs:14:5
+    |
+ 14 |     #[obs(label, cardinality = "high")]
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: LABEL fields must be Low or Medium cardinality.
+            High and Unbounded are illegal because they would explode
+            the metric attribute set.
+    = help: change to `#[obs(attribute, cardinality = "high")]`
+            (an ATTRIBUTE is logged but never becomes a metric dim)
+```
+
+### L002 — PII on LABEL
+
+```
+error[L002]: field `email` is LABEL with classification PII
+   --> proto/myapp/v1/events.proto:18:3
+    |
+ 18 |   string email = 4 [(obs.v1.field) = { kind: LABEL, classification: PII }];
+    |                                                ^^^^^             ^^^
+    = note: PII fields cannot be LABEL because labels become metric
+            attributes that are kept indefinitely and leak into vendor backends.
+    = help: change kind to ATTRIBUTE so the value is logged + analytics-only,
+            and the redactor can scrub it on the durable path.
+```
+
+### L011 — Missing `Obs` prefix
+
+```
+error[L011]: event type `RequestDone` does not start with `Obs`
+   --> proto/myapp/v1/events.proto:42:1
+    |
+ 42 | message RequestDone { ... }
+    |         ^^^^^^^^^^^
+    = help: rename to `ObsRequestDone`. The Obs prefix gives every event
+            type a unique visual identity at call sites.
+```
+
+### Generated-builder: missing required field
+
+```
+error: the trait bound `…BuilderState<((), ((), ()))>: BuildableTo<…Args>` is not satisfied
+   --> src/handler.rs:31:9
+    |
+ 31 |         .emit();
+    |          ^^^^ required field `latency_ms` was not set
+```
+
+(Provided by `typed-builder`; we improve the message via a custom
+`#[builder(crate_module_path = ..., type_name_format = ...)]` config.)
+
+## 7. Local dev experience
+
+- **No observer = no panic.** A `obs::emit!` in a binary that never
+  called `install_observer` is a noop. Cost: one atomic load.
+- **`OBS_DEV=1`** flips the default observer (`StandardObserver::dev()`)
+  to render events as one-line text on stdout. Format matches `obs tail`.
+- **Hot reload of `obs.yaml`.** Sending `SIGHUP` to the process (or
+  modifying the file when `reload_on_sighup()` is set) reloads
+  sampling, rate limits, classification, and filter without restart.
+- **`OBS_FILTER`** environment variable applies an `EnvFilter`-style
+  allowlist before the observer dispatches. Same DSL as
+  `tracing-subscriber::EnvFilter`:
+  ```
+  OBS_FILTER="info,myapp::auth=debug,myapp.v1.ObsRequestCompleted=trace"
+  ```
+- **`obs tail --stdin`** lets a developer pipe `cargo run` output
+  through the pretty-printer if running with the NDJSON sink:
+  ```bash
+  $ cargo run | obs tail --stdin
+  ```
+
+## 8. Test ergonomics
+
+- `InMemoryObserver` returns a handle with `drain()`, `wait_for(predicate, timeout)`,
+  and `count(filter)` helpers — no third-party mock framework.
+- `obs::test::assert_emitted!(handle, MyEvent { route: ..., .. })` —
+  pattern-match assertion macro that ignores untouched fields.
+- A `#[obs::test]` attribute installs an `InMemoryObserver` for the
+  duration of the test and removes it after, so tests cannot leak
+  observers across each other.
+
+```rust
+#[obs::test]
+async fn billing_emits_charge_event() {
+    charge_card("4242…").await.unwrap();
+
+    obs::test::assert_emitted!(ObsChargeAttempted {
+        outcome: ChargeOutcome::Approved,
+        ..
+    });
+}
+```
+
+## 9. Production parity
+
+- The same code that ran with `StandardObserver::dev()` in dev runs
+  with `StandardObserver::builder()...` in production. There are no
+  `#[cfg(debug_assertions)]` branches inside the SDK that change
+  semantics — the observer is the single point of variation.
+- The `OBS_DEV` env var, when present, switches the renderer but does
+  not change which events fire. Useful for `kubectl exec` debugging
+  on a production pod.
+- Every internal SDK metric is itself an `obs.runtime.v1.Obs*` event,
+  so it lands in the same dashboards as user events. This means
+  "the SDK is broken" is observable through the SDK, which is
+  unavoidably circular but at least the observer's own emissions go
+  through a separate channel that always has at least the
+  `StdoutSink` available.
+
+## 10. Migration from `tracing`
+
+Strategy in three steps:
+
+1. **Bridge.** Add `obs-tracing-bridge` to `tracing_subscriber::registry()`.
+   Every existing `tracing::info!(...)` becomes an
+   `ObsTracingForensicEvent`. No code changes.
+2. **Audit.** Run `obs audit` weekly to see which targets emit the
+   most tracing-bridge events. Those are the candidates to type up
+   into proper schemas.
+3. **Schema-ify in batches.** For each high-volume target:
+   - Define the `ObsXxx` schema (proto or rust).
+   - Replace the `tracing::info!` calls in that module.
+   - The bridge volume drops; the audit dashboard makes progress
+     visible.
+
+There is **no flag day**. A binary can run with both for as long as
+it takes; the only cost is the one extra event type
+(`ObsTracingForensicEvent`) flowing through the unified table.
+
+## 11. Anti-patterns and the SDK's prevention
+
+| Anti-pattern | How the SDK prevents it |
+| --- | --- |
+| Logging a JSON-serialised request body into `tracing::info!` | No `String`-message API on `obs::emit!`; the only inputs are typed event structs |
+| Using `user_id` as a metric label | L001 + L002 lint catch it at compile time |
+| Adding a SECRET token to a long-retained tier | L003 lint catches it; the scrub dispatcher strips it at the boundary even if L003 is silenced |
+| Drift between `service`/`route` naming across crates | L013 lint catches conflicting LABEL definitions across the workspace |
+| Forgetting to flush before exit | `observer().shutdown().await` is documented in scaffold; failing to call it leaves events in-flight (warned in dev mode) |
+| Reaching for `forensic!` to avoid writing a schema | `forensic_max` budget + audit report turn this into a visible team-level signal |
+| Multiple subscribers disagreeing on event shape | Single global observer; sinks are children, cannot mutate the envelope |
+
+## 12. AI-assisted authoring
+
+This SDK is designed *for* AI authoring as well as human authoring.
+Specific affordances:
+
+- **Schema is the prompt.** An agent reading `proto/myapp/v1/events.proto`
+  has the entire contract in one file. Builder method names match
+  field names exactly; there is no naming layer between schema and
+  call site.
+- **Compile errors are addressable.** Each lint emits a stable error
+  ID (`L001` … `L013`) and a `help:` line with a fix. Agents can
+  pattern-match on the ID and apply the fix without re-reading the
+  whole file.
+- **Codegen is deterministic.** Same input proto → byte-identical
+  output every time. An agent that has cached "the builder for
+  `ObsXxx` is `ObsXxx::builder().route(...).status(...)...`" can
+  rely on it across runs.
+- **`obs schema show` is the lookup.** When an agent doesn't recall
+  whether `tenant_id` exists on a given event, one CLI call gives
+  the full surface area in a stable text format.
+- **Naming convention is a syntactic check.** `Obs*` prefix is a
+  trivial regex an agent applies to every event type it generates.
+  No semantic ambiguity about whether a struct is an event type.
+- **`obs init --mode rust`** scaffolds an idiomatic minimum and gives
+  the agent a starting point with the conventions baked in.
+
+## 13. The dev-erg test suite
+
+A dedicated test suite in `crates/obs-sdk/tests/dev_ergonomics/`
+backs every claim in this document:
+
+- `test_quickstart_60s.rs` — verifies `obs init` + `cargo run` works
+  end-to-end against a fixture crate.
+- `test_compile_errors.rs` — `trybuild` test cases for each lint
+  ID, asserting the *exact* error message format documented above.
+- `test_no_observer_noop.rs` — emit on a fresh process; verify
+  no panic, no allocation beyond one atomic load.
+- `test_hot_reload.rs` — write `obs.yaml`, send `SIGHUP`, verify
+  the new sampling rate applies to the next emit.
+- `test_in_memory_observer.rs` — verify `assert_emitted!` matches
+  on partial fields and timeouts on `wait_for`.
+- `test_tracing_bridge.rs` — install bridge; emit
+  `tracing::info!`; assert the result is an
+  `ObsTracingForensicEvent`.
+
+CI runs this suite on every PR; failure here is treated as severely
+as a clippy regression.
