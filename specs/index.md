@@ -21,7 +21,8 @@ table, and a Rust-only toolchain in v1.
 | [crates-design.md](./crates-design.md) | Design | Workspace layout, per-crate public API (incl. `obs-tower`, `obs-tracing-bridge` bidirectional) |
 | [cli-design.md](./cli-design.md) | Design | `obs` CLI: lint, validate, codegen, query, diff (Rust-only in v1) |
 | [dev-ergonomics-design.md](./dev-ergonomics-design.md) | Design | North star, quickstart, mental model, errors, testing, migration, AI authoring; **emit-form rationale** |
-| [tracing-interop-design.md](./tracing-interop-design.md) | Design | Bidirectional `tracing` ↔ `obs` bridge (scheduled remote agent will produce; fold in when delivered) |
+| [tracing-interop-design.md](./tracing-interop-design.md) | Design | Bidirectional `tracing` ↔ `obs` bridge: Layer + Subscriber, auto-typing, span correlation, loop break, recommended init |
+| [callsite-interning-design.md](./callsite-interning-design.md) | Design | `defmt`-style callsite interning for the bridged tracing path: BLAKE3 ids, registry, `Off`/`Hybrid`/`Compact` modes, wire-size analysis |
 | [impl-plan.md](./impl-plan.md) | Impl Plan | Phased delivery M0 → M3 with exit criteria |
 
 ## Reading order

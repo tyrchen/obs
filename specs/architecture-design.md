@@ -111,7 +111,7 @@ in `protoc --decode` output, dashboards, and ad-hoc CLI views.
 ```proto
 message ObsEnvelope {
   string  full_name   = 1;   // "myapp.v1.ObsRequestCompleted"
-  bytes   schema_hash = 2;   // BLAKE3-256 of (full_name, tier, default_sev, FIELDS[])
+  fixed64 schema_hash = 2;   // first 8 bytes of BLAKE3 over (full_name, tier, default_sev, FIELDS[])
   Tier    tier        = 3;
   Severity sev        = 4;
   fixed64 ts_ns       = 5;   // Unix epoch nanoseconds
@@ -136,6 +136,12 @@ message ObsEnvelope {
 
   // Sampling provenance (head-rate / tail-on-error / forensic / always)
   SamplingReason sampling_reason = 14;
+
+  // Stable BLAKE3-derived id for the originating callsite (bridge / forensic /
+  // span / instrument). 0 = no interning. When non-zero, downstream resolves
+  // (target, file, line, template, field_names) via `ObsCallsiteRegistered`.
+  // See callsite-interning-design.md.
+  fixed64 callsite_id = 15;
 }
 
 message ObsBatch {
@@ -150,10 +156,24 @@ message ObsBatch {
 }
 ```
 
-`schema_hash` is BLAKE3 over `(full_name, tier, default_sev, FIELDS[])`,
-computed at build time and stored as a `[u8; 32]` constant. It lets a
-downstream consumer detect schema evolution without registry lookup, and
-lets the batch dedupe schema names.
+`schema_hash` is the first 8 bytes of BLAKE3 over
+`(full_name, tier, default_sev, FIELDS[])`, computed at build time and
+stored as a `u64` constant. It lets a downstream consumer detect schema
+evolution without registry lookup, and lets the batch dedupe schema
+names.
+
+64 bits is sized for the role this id plays — distinguishing schemas
+across services and time, **not** authenticating payloads. Birthday
+bound on accidental collision at 64 bits is ~4 × 10⁹ distinct schemas;
+realistic workspaces have ≤ 10⁴, an entire industry's lifetime maybe
+10⁸. The schema_hash is not a tamper-detection primitive (buffa
+payloads are not signed); the only failure mode of a contrived
+collision is "downstream picks the wrong typed view and produces
+nonsense fields", which is contained by the existing classification
+machinery. Saves 24 bytes per envelope vs the 32-byte BLAKE3-256 we
+considered, and lines up uniformly with the 64-bit `callsite_id`
+(see [callsite-interning-design.md](./callsite-interning-design.md))
+so the runtime treats the two id namespaces the same way.
 
 ### 1.5 Naming convention: `Obs*` event types
 
@@ -490,7 +510,7 @@ A wide event maps 1:1 to an OTel `LogRecord`:
 | `Instant::now()` at `emit_envelope` | `observed_time_unix_nano` |
 | `env.sev` | `severity_number` + `severity_text` per § 4.2 |
 | `env.full_name` | `attributes["event.name"]` (semconv `event.name`) |
-| `env.schema_hash` (hex) | `attributes["obs.schema_hash"]` |
+| `env.schema_hash` | `attributes["obs.schema_hash"]` (as `int_value`, u64) |
 | `env.trace_id` (16-byte hex → 16 raw bytes) | `trace_id` |
 | `env.span_id`  (8-byte hex → 8 raw bytes)   | `span_id` |
 | `env.parent_span_id` | `attributes["obs.parent_span_id"]` (OTLP LogRecord has no parent_span_id) |
@@ -1129,11 +1149,18 @@ atomics (the obvious answer) makes mid-test reset awkward. ArcSwap
 splits the difference: cheap reads, simple replacement, no atomics
 fighting.
 
-### D8 — Schema hash is a build-time constant, not runtime
+### D8 — Schema hash is a build-time `u64`, not runtime, not 32 bytes
 
-We BLAKE3 the descriptor at build time and store a `[u8; 32]` const.
-Runtime hashing on every emit would be wasteful and would forfeit the
-ability to verify schema versions in CI without running the binary.
+We BLAKE3 the descriptor at build time and truncate to a `u64`
+constant. Runtime hashing on every emit would be wasteful and would
+forfeit the ability to verify schema versions in CI without running
+the binary. 64 bits is sized for accidental-collision avoidance at
+realistic schema counts (~10⁴ per workspace, < 10⁸ industry-wide)
+with multiple orders of magnitude of birthday-bound headroom; the
+hash is not used as a tamper-detection primitive (buffa payloads are
+not signed). Saves 24 bytes per envelope vs the 32-byte natural
+BLAKE3-256 output and matches `callsite_id`'s shape so the two id
+namespaces compose uniformly.
 
 ### D9 — No panic on emit, ever
 
@@ -1234,6 +1261,202 @@ The SDK emits its own internal events under `obs.runtime.v1`:
 | `obs.runtime.v1.ObsBridgeNoDispatcher` | LOG (DEBUG) | `ObsToTracingSink` ran without a tracing default; rate-limited 1/min |
 | `obs.v1.ObsSpanCompleted` | LOG (DEBUG) | bridged `tracing::Span::close` carries name + latency + fields (see tracing-interop § 2.3) |
 | `obs.v1.ObsSpanEntered` | LOG (TRACE) | bridged `tracing::Span::new_span` (only when `SpanEventMode::Both`) |
+| `obs.runtime.v1.ObsCallsiteRegistered` | LOG (DEBUG) | callsite interning broadcast: `(callsite_id, target, file, line, template, field_names)` (see callsite-interning § 3.4) |
+| `obs.runtime.v1.ObsCallsiteHashCollision` | LOG (WARN) | distinct callsites computed the same `callsite_id`; second falls back to verbose |
+| `obs.runtime.v1.ObsCallsiteRegistryConflict` | LOG (WARN) | two processes registered the same `callsite_id` with conflicting metadata |
+| `obs.runtime.v1.ObsBridgeCallsiteUnresolved` | LOG (DEBUG) | Direction B sink received an interned envelope without a matching registry entry; rate-limited |
+| `obs.v1.ObsTracingInternedEvent` | LOG (INFO) | bridged `tracing::Event` body when interning mode != Off |
+| `obs.v1.ObsForensicInternedEvent` | LOG (INFO) | `obs::forensic!` body when interning mode != Off |
 
 These events flow through the same observer, so they appear in the
 same sinks as user events — there is exactly one signal channel.
+
+## 13. Callsite interning (cross-reference)
+
+Native `obs::emit!` is already "interned" in the defmt sense: the
+compile-time `schema_hash` (`u64`, the first 8 bytes of BLAKE3 over
+the descriptor, build-time const) is the analogue of defmt's interned
+format-string id, and the buffa-encoded payload uses tag-numbered
+fields rather than field names on the wire.
+
+The opportunity for additional wire savings is on the **bridged
+tracing path** and the **forensic path**, where today's envelopes
+carry repeated literal `target` / `file:line` / message-template
+strings. The optional `callsite_id = 15` envelope field plus the
+`ObsCallsiteRegistered` self-event implement this. Interning is
+**off by default in v1** and opt-in via `obs.yaml`'s `interning:`
+block.
+
+The full design — modes (`Off`/`Hybrid`/`Compact`), registry
+lifecycle, re-emit cadence, downstream consumer story, OTel
+mapping, CLI tooling, and the bidirectional bridge integration —
+lives in [callsite-interning-design.md](./callsite-interning-design.md).
+
+## 14. Project-policy compliance (CLAUDE.md)
+
+This section records how the runtime design satisfies the project
+policies in `CLAUDE.md` and where it takes documented exceptions.
+
+### 14.1 Required at every workspace crate root
+
+```rust
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
+```
+
+- `forbid(unsafe_code)` is non-negotiable per CLAUDE.md § Rust Safety.
+  No crate in this workspace uses `unsafe` blocks. The `Box::leak`
+  patterns used for `'static Metadata` synthesis (tracing-interop
+  § 3.3) and for static label keys are safe Rust.
+- `missing_docs` enforces doc comments on every public item, satisfied
+  by the per-event `///` doc comments emitted by codegen
+  (schema-codegen § 3.3).
+- `missing_debug_implementations` is satisfied by `#[derive(Debug)]`
+  on every public type. Sensitive types (envelopes carrying PII or
+  SECRET-classified payload) get a manual `Debug` that delegates to
+  the existing scrubber (see § 14.4).
+
+### 14.2 Concurrent maps: `DashMap`, never `RwLock<HashMap>`
+
+CLAUDE.md § Async & Concurrency mandates `DashMap` for concurrent
+hash maps. All caches in the runtime follow this:
+
+| Cache | Type | Justification |
+| --- | --- | --- |
+| `ObsCallsiteRegistry` (callsite-interning § 3.2) | `DashMap<CallsiteId, Arc<CallsiteRecord>>` | write-once-per-key, read-many |
+| Bridge metadata cache (tracing-interop § 3.3) | `DashMap<MetadataKey, &'static Metadata>` | same pattern |
+| Per-callsite filter decisions (`obs::Filter`) | `DashMap<&'static ObsCallsite, FilterDecision>` | hot read on every emit |
+
+For *infrequently-updated* shared data (the live-reloaded
+`EventsConfig`, the `ServiceIdentity`), we use `ArcSwap` per
+CLAUDE.md's parallel guidance — see § 6 and § 9.
+
+### 14.3 Async traits — documented `async-trait` exception
+
+`Observer` and `Sink` (§ 2.1, § 2.2) declare async methods via
+`Pin<Box<dyn Future + Send + '_>>` rather than native `async fn`
+because both traits are used as `dyn Trait`:
+
+```rust
+static OBSERVER: ArcSwap<Box<dyn Observer>> = …;
+pub struct SinkRouter { fallback: Arc<dyn Sink>, … }
+```
+
+Native `async fn` in traits (stable since Rust 1.75) is not
+object-safe with arbitrary returned futures. CLAUDE.md § Async &
+Concurrency calls this out as an explicit exception: "When traits
+require object safety (used with `dyn Trait` for dynamic dispatch
+like `Arc<dyn TaskStorage>`), use `async-trait` crate and document
+the reason in module-level docs." The `Pin<Box<dyn Future>>` form
+is equivalent to the `async-trait` macro expansion; we use it
+directly to avoid the proc-macro dependency on the SDK's hot path.
+
+### 14.4 Error types — `thiserror` libraries, `anyhow` apps
+
+| Crate | Error policy |
+| --- | --- |
+| `obs-types`, `obs-proto`, `obs-core`, `obs-build`, `obs-otel`, `obs-parquet`, `obs-clickhouse`, `obs-tracing-bridge`, `obs-tower`, `obs-macros`, `obs-sdk` | Library crates: domain-specific `enum` errors via `#[derive(thiserror::Error)]` with `#[source]` for chained causes. Public surface returns `Result<T, ThisCrateError>`; internal helpers use `?` with `From` impls between layers. |
+| `apps/obs-cli`, `apps/server` | Application crates: `anyhow::Result<T>` at command/handler boundaries, with `.context()` / `.with_context()` for diagnostic breadcrumbs. |
+| `build.rs` (any crate) | Application-shaped: `anyhow::Result<()>`. |
+
+The runtime's `Observer::emit_envelope` is `&self -> ()` — it never
+returns errors because emit is the hot path and CLAUDE.md § Error
+Handling allows `panic!` only in unrecoverable cases. Emit failures
+are dropped with metric increment (§ 7), not surfaced.
+
+### 14.5 Public-type stability — `#[non_exhaustive]`
+
+Every public enum and struct exported from a library crate carries
+`#[non_exhaustive]` so future variants/fields don't constitute SemVer
+breaks for downstream pattern-matchers:
+
+```rust
+#[non_exhaustive]
+pub enum Tier { /* ... */ }
+
+#[non_exhaustive]
+pub struct ObsEnvelope { /* ... */ }
+```
+
+The proto-generated wire types are immune (proto3 is implicitly
+non-exhaustive — unknown fields preserved per buffa's
+`preserve_unknown_fields` default).
+
+### 14.6 Secret handling — `secrecy::SecretString`
+
+Fields with `Classification::Secret` are typed as `secrecy::SecretString`
+(or `secrecy::SecretBox<T>` for non-string types) at the boundary
+between user code and the SDK:
+
+- The `#[derive(Event)]` codegen emits `pub field: SecretString` for
+  any `#[obs(classification = "secret")]` field.
+- `SecretString::expose_secret()` is required to read the value;
+  this makes accidental `Debug`/`Display` printing impossible at the
+  type level. `Debug` redacts to `[REDACTED]`.
+- The payload scrubber (schema-codegen § 3.1) strips SECRET fields
+  before durable sinks (LOG/AUDIT) write — defence-in-depth on top
+  of the type-system guarantee.
+- For tracing-bridged events with no declared classification, the
+  `DefaultPiiPatternRedactor` (tracing-interop § 2.6) wraps matching
+  values in `SecretString` before passing them through.
+
+### 14.7 No `unwrap` / `expect` / `panic!` on the hot path
+
+Verified by clippy lints (`-W clippy::unwrap_used -W clippy::expect_used
+-W clippy::panic`) on every emit-path module, per CLAUDE.md § Rust
+Safety. Hot-path code uses panic-free constructions:
+
+- BLAKE3 truncation reads the typed `&[u8; 32]` and does a
+  byte-by-byte `from_le_bytes` (callsite-interning § 3.1) — no
+  `try_into().unwrap()`.
+- Channel sends use `try_send` with explicit drop-on-overflow (§ 2.5),
+  not `send().await` which would block the emit thread.
+- Atomic loads on the `OBSERVER` `ArcSwap` are infallible by type.
+
+Cold-path code (init, config reload) returns `Result` and propagates
+via `?`.
+
+### 14.8 Tokio features and runtime constraints
+
+Per CLAUDE.md § Async & Concurrency, all tokio dependencies in
+`[workspace.dependencies]` specify features explicitly:
+
+```toml
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+```
+
+The `signal` feature is required for `reload_on_sighup()` (§ 6).
+`current_thread` runtime is supported but not the default; the
+collector workers are spawned on whichever runtime is active.
+
+### 14.9 Configuration via the `config` crate, YAML format
+
+`EventsConfig` (§ 6) loads from YAML via the `config` crate, layered
+over env-var overrides (`OBS_*`) — matches CLAUDE.md § Async &
+Concurrency: "Always consider using config crate for configuration
+management. Always use yaml format". Compile-time tuning lives in
+`const` (e.g., `RING_BUFFER_CAP: usize = 64`); runtime tuning lives
+in YAML.
+
+### 14.10 `Bytes`, `SmallVec`, `Cow` per CLAUDE.md § Performance
+
+- Payloads cross the SDK as `bytes::Bytes` (refcounted, zero-copy
+  slicing) rather than `Vec<u8>`.
+- Label projection uses `SmallVec<[(&'static str, String); 8]>` —
+  most events have ≤ 8 labels; the inline buffer eliminates heap
+  allocation for the common case.
+- Filter and config values that may be borrowed or owned use
+  `Cow<'static, str>` to avoid clones at parse time.
+
+### 14.11 Logging & observability of the SDK itself
+
+CLAUDE.md § Logging & Observability says "Use `tracing` for
+structured logging". The SDK's own diagnostics (config-reload
+failures, sink errors) use `tracing::*` macros — *not* `obs::emit!`
+— because the SDK cannot depend on its own observer being installed
+correctly to report its own bootstrap failures. SDK-internal
+diagnostics flow through whichever `tracing::Subscriber` the user
+installed (commonly `tracing-subscriber::fmt::layer()` in dev),
+independent of the observer pipeline. User-facing self-events
+(§ 12) flow through the observer normally.

@@ -390,6 +390,48 @@ tracing_subscriber::registry()
 // Now `log::info!()` from any dep flows into obs as ObsTracingForensicEvent.
 ```
 
+### 2.9 Callsite interning (opt-in, off by default)
+
+The bridge is the highest-leverage place in the SDK to apply
+`defmt`-style callsite interning: the per-event `target` /
+`module_path` / `file:line` / message-template strings are
+literally repeated on every emission of the same call site.
+Interning collapses ~280 B per event to ~30 B at the cost of a
+downstream registry lookup.
+
+```rust
+TracingToObsLayer::new()
+    .with_interning(InterningMode::Hybrid)        // off | hybrid | compact
+    .with_field_promotions(...)
+    .register_typed::<ObsHttpRequestCompleted>(...);
+```
+
+When `with_interning != Off`:
+
+- On first sight of a `tracing::callsite::Identifier`, the bridge
+  computes a stable `callsite_id = BLAKE3(target, file, line, level,
+  field_names)` (truncated to 64 bits), inserts into the
+  `ObsCallsiteRegistry`, and synchronously emits one
+  `obs.runtime.v1.ObsCallsiteRegistered` envelope.
+- The data envelope's `env.callsite_id` carries that id. The
+  payload becomes either `ObsTracingInternedEvent` (Hybrid mode —
+  retains the rendered message + dynamic args) or a compact
+  args-only payload (Compact mode).
+- Subsequent emissions from the same callsite skip registration;
+  one DashMap lookup determines the `callsite_id`.
+- Re-emit cadence (default 10 min / 10 k events) refreshes
+  `ObsCallsiteRegistered` so late or rebatched downstreams catch
+  up.
+
+Auto-typed promotions (§ 2.5) DO NOT interact with interning —
+they already have a stable `schema_hash` carrying the same
+information. Interning kicks in only on the forensic / non-typed
+path.
+
+The full design — modes, lifecycle, wire-size analysis, CLI
+tooling, hash-collision handling — lives in
+[callsite-interning-design.md](./callsite-interning-design.md).
+
 ## 3. Direction B — `obs` → `tracing`
 
 ### 3.1 Why this matters
@@ -411,10 +453,16 @@ registered on the `StandardObserver` like any other.
 
 ```rust
 pub struct ObsToTracingSink {
-    cache: OnceLock<RwLock<HashMap<&'static str, &'static tracing::Metadata<'static>>>>,
+    // Per project CLAUDE.md: prefer DashMap over RwLock<HashMap> for concurrent
+    // maps. Cache is write-once-per-key on cold path, read-many on hot path.
+    cache: DashMap<MetadataKey, &'static tracing::Metadata<'static>>,
     payload_decode: PayloadDecodeMode,
     span_emission: SpanEmissionMode,
 }
+
+/// Cache key — `&'static str` for non-interned envelopes (keyed by `full_name`),
+/// `u64` for interned envelopes (keyed by `callsite_id`).
+enum MetadataKey { ByFullName(&'static str), ByCallsiteId(u64) }
 
 impl ObsToTracingSink {
     pub fn new() -> Self;                                   // sensible defaults
@@ -464,43 +512,52 @@ distinct `(full_name, sev)`:
 
 ```rust
 fn metadata_for(&self, env: &ObsEnvelope) -> &'static tracing::Metadata<'static> {
-    let cache = self.cache.get_or_init(|| RwLock::new(HashMap::new()));
-    if let Some(meta) = cache.read().get(env.full_name.as_str()) {
-        return meta;
-    }
-    let mut w = cache.write();
-    if let Some(meta) = w.get(env.full_name.as_str()) {
-        return meta;
-    }
-    // Synthesise once. Box::leak gives us 'static; bounded by the
-    // number of distinct event types in the binary (typically <1k).
-    let full_name: &'static str = Box::leak(env.full_name.clone().into_boxed_str());
+    let key = if env.callsite_id != 0 {
+        MetadataKey::ByCallsiteId(env.callsite_id)
+    } else {
+        MetadataKey::ByFullName(intern_static_str(&env.full_name))
+    };
+    // DashMap's `entry().or_insert_with` is atomic insert-if-absent.
+    // The closure runs at most once per key (per shard write-lock); on the
+    // hot path subsequent reads take only a shard read-lock.
+    *self.cache.entry(key)
+        .or_insert_with(|| synthesize_metadata(env))
+}
+
+fn synthesize_metadata(env: &ObsEnvelope) -> &'static tracing::Metadata<'static> {
+    // Box::leak gives 'static; bounded by total distinct event types in
+    // the binary (typically <1k). See § 8 for callsite-leak budget.
+    let full_name: &'static str = intern_static_str(&env.full_name);
     let fields: &'static [&'static str] = Box::leak(
         env.labels.keys()
             .chain(["obs.trace_id", "obs.span_id", "obs.full_name", "message"].iter().copied())
-            .map(|s| Box::leak(s.into_boxed_str()) as &'static str)
+            .map(|s| intern_static_str(s) as &'static str)
             .collect::<Vec<_>>()
             .into_boxed_slice(),
     );
     let callsite: &'static dyn tracing_core::Callsite =
         Box::leak(Box::new(BridgeCallsite::new(full_name, severity_to_level(env.sev))));
     tracing_core::callsite::register(callsite);
-    let meta: &'static tracing::Metadata<'static> = Box::leak(Box::new(
-        tracing::Metadata::new(
-            full_name,                    // name
-            "obs.bridge",                 // target — reserved (see § 4.1)
-            severity_to_level(env.sev),
-            None,                         // file
-            None,                         // line
-            None,                         // module path
-            tracing_core::field::FieldSet::new(fields, callsite.identifier()),
-            tracing_core::Kind::EVENT,
-        ),
-    ));
-    w.insert(full_name, meta);
-    meta
+    Box::leak(Box::new(tracing::Metadata::new(
+        full_name,                    // name
+        "obs.bridge",                 // target — reserved (see § 4.1)
+        severity_to_level(env.sev),
+        None,                         // file
+        None,                         // line
+        None,                         // module path
+        tracing_core::field::FieldSet::new(fields, callsite.identifier()),
+        tracing_core::Kind::EVENT,
+    )))
 }
 ```
+
+Cold-path nuance: `DashMap::entry().or_insert_with(...)` holds the
+shard's write-lock for the duration of the closure. On the cold path
+that closure does several `Box::leak`s and a `tracing_core::callsite::register`.
+For our access pattern (cold writes, ~10³ first-sights total per
+process, all in startup) this is fine. If a future workload generates
+sustained high-rate cold inserts, switch to a get-or-compute pattern
+that races outside the lock.
 
 Field set membership is taken from `env.labels.keys()` plus a small
 fixed prefix. The first-time payload structure determines the
@@ -581,6 +638,36 @@ Both can decorate the same function. The expansion order is:
 In practice users should pick one. We document `#[obs::instrument]`
 as preferred when `obs` is installed; the dual-decoration scenario
 above is the safety contract for migration.
+
+### 3.7 Reconstituting interned envelopes for `tracing`
+
+When the producer side has interning enabled (§ 2.9), the data
+envelopes carry `env.callsite_id != 0` and a stripped payload.
+`ObsToTracingSink` reconstitutes the **original** tracing event
+shape so downstream layers (`fmt::layer`, `tracing-opentelemetry`,
+IDE viewers) see no difference between "never interned" and
+"round-tripped through interning":
+
+1. Look up `env.callsite_id` in the same in-process
+   `ObsCallsiteRegistry` populated by Direction A.
+2. Use the registered `(target, name, module_path, file, line,
+   field_names)` to synthesise a `&'static tracing::Metadata`
+   (cached by `MetadataKey::ByCallsiteId(id)` in the same `DashMap`
+   used for non-interned envelopes; see § 3.3).
+3. Build a `tracing::Event` whose `target = registered.target`
+   (NOT `"obs.bridge"` as for non-interned envelopes) so existing
+   target-based filters and IDE colourisation continue to apply.
+4. Field set is the union of `registered.field_names` (rendered
+   from the args payload) plus `obs.callsite_id` and the
+   loop-guard markers.
+
+Registry miss (impossible in single-process; defensive only):
+emit a degraded tracing event with `target = "obs.bridge.unresolved"`
+and increment `obs.runtime.v1.ObsBridgeCallsiteUnresolved`,
+rate-limited.
+
+The full design lives in
+[callsite-interning-design.md](./callsite-interning-design.md).
 
 ## 4. Coexistence
 
@@ -859,10 +946,11 @@ How we achieve the bridge overhead:
   `FieldCapture { strings: Vec<(String, String)>, scratch: BytesMut }`
   reused across calls. The `Vec` is `clear()`ed (preserves capacity)
   after each event. Net: zero allocations on the steady state.
-- **Cached metadata lookup**: `OnceLock<RwLock<HashMap>>` for
-  `full_name → &'static Metadata`. Read path is one `RwLock::read`
-  + one `HashMap::get`. With ≤ 1000 distinct event types in a
-  binary, lookup is ~50 ns.
+- **Cached metadata lookup**: `DashMap<MetadataKey, &'static Metadata>`.
+  Hot path is one shard read-lock + HashMap::get ≈ 60–80 ns. Project
+  policy (CLAUDE.md § Async & Concurrency) mandates DashMap over
+  `RwLock<HashMap>`; the write-once-per-key access pattern fits the
+  DashMap idiom exactly.
 - **Cached promoter dispatch**: typed-promotion lookup is keyed on
   `tracing_core::callsite::Identifier`, which is a `Copy` pointer.
   HashMap lookup ~30 ns.

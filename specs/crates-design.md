@@ -459,7 +459,7 @@ DDL strategy (one table):
 CREATE TABLE obs_events (
     ts_ns                            DateTime64(9),
     full_name                        LowCardinality(String),
-    schema_hash                      FixedString(32),
+    schema_hash                      UInt64,
     sev                              LowCardinality(String),
     trace_id                         String,
     span_id                          String,
@@ -501,6 +501,7 @@ impl TracingToObsLayer {
     pub fn with_redactor(self, r: Arc<dyn Redactor>) -> Self;
     pub fn with_span_events(self, mode: SpanEventMode) -> Self;
     pub fn with_filter(self, f: tracing_subscriber::EnvFilter) -> Self;
+    pub fn with_interning(self, mode: InterningMode) -> Self;  // see callsite-interning-design.md
 
     /// Promote a matching tracing callsite into a typed obs event
     /// instead of `ObsTracingForensicEvent`. Cached per callsite id.
@@ -553,6 +554,9 @@ pub enum RedactAction { Keep, Replaced, Drop }
 /// Default Redactor; matches /(?i)password|secret|token|api[_-]?key|
 /// authorization|cookie|ssn|credit[_-]?card|bearer/ on field names.
 pub struct DefaultPiiPatternRedactor;
+
+/// Callsite interning mode (see callsite-interning-design.md). v1 default: Off.
+pub enum InterningMode { Off, Hybrid, Compact }
 
 // =================================================================
 // Direction B: obs → tracing
@@ -699,7 +703,10 @@ forensic_max  = 5
 
 ```rust
 // myapp/build.rs
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
+    // build.rs is application-shaped, not library-shaped, so anyhow per
+    // CLAUDE.md § Error Handling. obs_build::Config::compile returns
+    // a thiserror enum (CodegenError) which `?`-propagates cleanly.
     obs_build::Config::new()
         .files(&["proto/myapp/v1/events.proto"])
         .include("proto")

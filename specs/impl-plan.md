@@ -78,7 +78,8 @@ fixtures pass.
   - reads custom options via `buffa-reflect::DescriptorPool`
   - emits `obs/schemas.rs`, `obs/builders.rs`, `obs/lints.rs`,
         `obs/arrow_schema.rs` (fragments only at this stage)
-  - schema hash baked in as `[u8; 32]` constant
+  - schema hash baked in as `u64` constant (first 8 bytes of BLAKE3
+        over the canonical descriptor; see architecture-design § 1.4)
 - [ ] `obs-macros::include_schemas!` macro
 - [ ] `apps/obs-cli`:
   - `obs init` (proto-first and rust-first scaffold)
@@ -201,8 +202,8 @@ a CI job rejects breaking proto changes; forensic budget enforced;
 - [ ] `obs.v1.ObsForensicEvent` formalised; `obs::forensic!` macro
 - [ ] `obs-tracing-bridge` Direction B + advanced features
       (per [tracing-interop-design.md § 3](./tracing-interop-design.md#3-direction-b--obs--tracing)):
-  - `ObsToTracingSink` with `OnceLock<RwLock<HashMap>>` cached
-        `&'static Metadata` (Box::leak per distinct `full_name`)
+  - `ObsToTracingSink` with `DashMap<MetadataKey, &'static Metadata>`
+        cache (Box::leak per distinct `full_name` / `callsite_id`)
   - Two thread-local loop guards (`IN_TRACING_BRIDGE`,
         `IN_OBS_BRIDGE`) + `obs.bridge` reserved target
         (defence-in-depth)
@@ -228,6 +229,24 @@ a CI job rejects breaking proto changes; forensic budget enforced;
       `ObsTracingForensicEvent`, `ObsSpanCompleted`, `ObsSpanEntered`,
       `ObsBridgePiiSuspected`, `ObsBridgeMatcherConflict`,
       `ObsBridgeLateSpanRecord`, `ObsBridgeNoDispatcher`
+- [ ] Callsite interning (per
+      [callsite-interning-design.md](./callsite-interning-design.md)):
+  - `fixed64 callsite_id = 15;` added to `ObsEnvelope`
+        (proto-additive)
+  - `ObsCallsiteRegistry` (DashMap-based) on `StandardObserver`
+  - `ObsCallsiteRegistered` self-event with `SamplingReason::OVERRIDE`
+        (always retained); synchronous on first sight + cadence
+        re-emit (`refresh_interval_secs` / `refresh_event_count`)
+  - `ObsTracingInternedEvent` + `ObsForensicInternedEvent` payload
+        types
+  - `TracingToObsLayer::with_interning(InterningMode::{Off,Hybrid,Compact})`
+        wired up; reconstitution path in `ObsToTracingSink`
+  - CLI: `obs callsites dump | load | show <id>`, `obs query
+        --callsite <id>`
+  - Default mode is `Off` in v1; flip-default decision deferred to v1.1
+- [ ] Callsite-interning self-events shipped:
+      `ObsCallsiteRegistered`, `ObsCallsiteHashCollision`,
+      `ObsCallsiteRegistryConflict`, `ObsBridgeCallsiteUnresolved`
 - [ ] End-to-end integration: `apps/server` with realistic handler
       emitting `ObsRequestStarted` / `ObsRequestCompleted` /
       `ObsUpstreamFailed`, sinks routed to OTLP + Parquet +
@@ -289,6 +308,9 @@ Targets:
 - Bridge forward (auto-typed mode): ≤ 3 µs P50
 - Bridge reverse (`obs::emit!` → tracing event, cached metadata): ≤ 2.5 µs P50 (≤ 1.5 µs delta over native obs emit)
 - Bridge span lifecycle (`tracing::span!` → `ObsSpanCompleted`): ≤ 4 µs total amortised across child events
+- Bridge interning Hybrid (cold callsite): ≤ 4 µs P50; (warm): ≤ 2.5 µs P50
+- Direction B sink rendering interned envelope (cold): ≤ 3 µs; (warm): ≤ 1.5 µs
+- BLAKE3 callsite hash (~200 input bytes): ≤ 80 ns
 
 ### 2.3 Documentation
 
@@ -327,6 +349,10 @@ Every milestone closes its docs as part of "done":
 | `Obs*` prefix lint default level | open | Defaults to **error** under `--strict`, warning otherwise; may revisit if friction surfaces in beta |
 | `SpanEmissionMode::OnScope` + `OtlpTraceSink` double-OTel-span | deferred to v1.1 | Document recommends OnScope only in dev; resolution path is either (a) auto-disable `OtlpTraceSink` when OnScope is on, or (b) span-id dedup at the OTel layer. See [tracing-interop-design.md § 10](./tracing-interop-design.md#10-open-questions--risks) |
 | Bridge `Visit::record_debug` allocator cost | accepted | ~150 ns/field via `format!`; within budget. Fast-path opt-in if profiling demands it |
+| Callsite interning default mode | locked for v1 | `Off` is the v1 default; `Hybrid` ships behind a config flag. Flip-default decision is a v1.1 question once registry-snapshot tooling has soaked |
+| `u64` id collision under > 1 M ids (schema_hash + callsite_id share this concern) | open | Birthday bound is < 2⁻⁴⁴ at 1 M for either id; realistic workspaces have ≤ 10⁴ of each. A workspace genuinely above should widen to 96 or 128 bits via feature flag (no wire-format break). CLI lint warns at > 10⁵ |
+| `ObsCallsiteRegistered` re-emit storm at startup | accepted | Bounded by per-tier mpsc channel rate-limiting; ~1 s of self-emit traffic for 10⁴ callsites |
+| Cross-process registry sharing | deferred to v1.1 | Considered a Unix-socket sidecar registry; today registry is per-process |
 
 ## 4. Definition of done (v1.0)
 

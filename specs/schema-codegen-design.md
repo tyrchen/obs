@@ -209,8 +209,11 @@ pub trait EventSchema: Send + Sync + Sized + 'static {
     const DEFAULT_SEV: Severity;
     const FIELDS: &'static [FieldMeta];
 
-    /// BLAKE3 over (FULL_NAME, TIER, DEFAULT_SEV, FIELDS); a build-time const.
-    const SCHEMA_HASH: [u8; 32];
+    /// First 8 bytes of BLAKE3 over (FULL_NAME, TIER, DEFAULT_SEV, FIELDS);
+    /// a build-time const. 64 bits is sized for accidental-collision avoidance
+    /// at realistic schema counts; this is an identifier, not a tamper-
+    /// detection primitive. See architecture-design.md § 1.4 / D8.
+    const SCHEMA_HASH: u64;
 
     /// Encode this event's payload using buffa's encoder into a reused buffer.
     fn encode_payload(&self, buf: &mut bytes::BytesMut);
@@ -310,7 +313,9 @@ the descriptor — no nightly `variant_count` required.
 ### 3.5 Schema hash is a build-time artifact too
 
 `SCHEMA_HASH` is computed at build time (we know `FIELDS` statically)
-and stored as a `[u8; 32]` constant. There is no runtime hashing.
+and stored as a `u64` constant — the first 8 bytes of
+`blake3::hash(canonical_descriptor_bytes).as_bytes()`, read as
+little-endian. There is no runtime hashing.
 
 ### 3.6 The single-table Arrow schema
 
@@ -343,8 +348,9 @@ storage handles this efficiently.
 ## 4. The `obs-build` API
 
 ```rust
-// build.rs
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+// build.rs — anyhow per CLAUDE.md § Error Handling (build scripts are
+// application-shaped, not library-shaped).
+fn main() -> anyhow::Result<()> {
     obs_build::Config::new()
         .files(&["proto/myapp/v1/events.proto"])
         .include("proto")

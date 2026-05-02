@@ -466,14 +466,18 @@ error: the trait bound `…BuilderState<((), ((), ()))>: BuildableTo<…Args>` i
   observers across each other.
 
 ```rust
+// `#[obs::test]` accepts `Result<(), E>` returns so error paths use `?`
+// rather than `.unwrap()` (project policy: no `unwrap`/`expect` —
+// CLAUDE.md § Error Handling).
 #[obs::test]
-async fn billing_emits_charge_event() {
-    charge_card("4242…").await.unwrap();
+async fn billing_emits_charge_event() -> anyhow::Result<()> {
+    charge_card("4242…").await?;
 
     obs::test::assert_emitted!(ObsChargeAttempted {
         outcome: ChargeOutcome::Approved,
         ..
     });
+    Ok(())
 }
 ```
 

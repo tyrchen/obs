@@ -1,0 +1,12 @@
+[submodule "vendors/defmt"]
+	path = vendors/defmt
+	url = https://github.com/knurling-rs/defmt
+[submodule "vendors/buffa-reflect"]
+	path = vendors/buffa-reflect
+	url = https://github.com/tyrchen/buffa-reflect
+[submodule "vendors/buffa"]
+	path = vendors/buffa
+	url = https://github.com/anthropics/buffa
+[submodule "vendors/tracing"]
+	path = vendors/tracing
+	url = https://github.com/tokio-rs/tracing
