@@ -214,25 +214,51 @@ perturbs to a non-zero value if the truncation accidentally yields zero
 
 ## 7. Naming convention: `Obs*` event types
 
-User-defined event types **must** be named `Obs<EventName>`. Examples:
+User-defined event types **must** be prefixed with a workspace-
+configurable string; the default is `Obs`. Examples with the
+default prefix:
 
 ```
 ObsRequestStarted   ObsRequestCompleted   ObsUpstreamFailed
 ObsCheckoutStarted  ObsUserSignedUp       ObsForensicEvent
 ```
 
-Why:
+Why a prefix at all:
 
 - **Visual distinction** — at a call site, `ObsCheckoutCompleted::builder()`
   is unambiguously an observability emission, never confused with a
   domain type called `CheckoutCompleted`.
-- **Greppability** — `rg '\bObs[A-Z]'` finds every emit site in the repo
-  in one shot.
+- **Greppability** — `rg '\b<prefix>[A-Z]'` finds every emit site in
+  the repo in one shot.
 - **Codegen pattern matching** — the codegen and CLI lints use the
   prefix as a sanity check; an event without it is a likely typo.
 
-This is enforced by lint L011 (warning by default, error under
-`--strict`). The `Obs` proto namespace prefix is not required (events
+### 7.1 Configuring the prefix
+
+A team can override the prefix workspace-wide via the workspace root
+`Cargo.toml`:
+
+```toml
+# Cargo.toml at the workspace root (NOT a member crate)
+[workspace.metadata.obs]
+event_prefix = "Evt"     # default "Obs"
+```
+
+Lint L011 reads the configured prefix and enforces it everywhere.
+Built-in events shipped in `obs-proto` (`ObsForensicEvent`,
+`ObsTracingForensicEvent`, the `obs.runtime.v1.*` self-events,
+`ObsHttpRequest*`, etc.) keep the literal `Obs` prefix regardless of
+workspace config — they are part of the SDK's namespace and renaming
+them per-workspace would break cross-service queries.
+
+**Recommendation**: keep `Obs`. The greppability and visual-
+distinction win compounds at scale, and changing it forks your team's
+docs and prompts from the SDK's. The configurable knob exists so
+domain-rich codebases that already have an `Event` prefix on every
+domain type aren't blocked from adopting obs over a name fight.
+
+This convention is enforced by lint L011 (warning by default, error
+under `--strict`). The proto namespace prefix is not required (events
 can live in any package), only the message name.
 
 Rendering rules for `EnumLabel`-derived enums (`AuthMethod::OAuthGoogle

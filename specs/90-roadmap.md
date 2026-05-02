@@ -28,6 +28,12 @@ Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: e
 - **One milestone, one stack of specs.** Each stage below names the
   specs it implements; reading them in order gives a self-contained
   build target.
+- **Honest calibration.** Earlier drafts said M0–M3 in 10 weeks for
+  one developer. That estimate was wrong by 2–3×. The current
+  estimates below are realistic for one focused developer; pad by
+  another 50% for "developer also doing reviews / on-call /
+  meetings". Stakeholders should plan for a v1 in 6 months, not 10
+  weeks.
 
 ## 1. Build-order graph
 
@@ -42,9 +48,11 @@ Status: draft v3 · Owner: obs-core · Last updated: 2026-05-02 · Depends on: e
                      │
         ┌────────────┼────────────┬───────────────────┐
         ▼            ▼            ▼                   ▼
-  12-schema-     13-emit-     20-otel-and-       70-security-and-
-  and-codegen    scope-and-   sinks              classification
+  12-schema-     13-emit-     14-schema-         70-security-and-
+  and-codegen    scope-and-   registry           classification
                  filter           │
+                     │            ▼
+                     │      20-otel-and-sinks
                      │            │
                      │            ▼
                      │      22-analytics-storage
@@ -76,7 +84,60 @@ Reference docs (read alongside, not in order): [80-glossary.md](./80-glossary.md
 
 ## 2. Milestones
 
-### M0 — Foundations (week 1–2)
+### M-1 — Spec hardening + risk spikes (week 1, *before* coding)
+
+Address the design gaps found in the architectural review: things
+that would cost weeks to retrofit if discovered during M0–M3
+implementation.
+
+**Specs touched** (already done in this revision):
+- New: [14-schema-registry.md](./14-schema-registry.md) — the
+  object-safe schema registry that every sink depends on.
+- Updated: [11-runtime-core.md](./11-runtime-core.md) (ArcSwap shape,
+  pipeline order, AUDIT spool format + recovery, `WeakObserver`,
+  cross-platform reload, forensic crate identification).
+- Updated: [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md)
+  (auto-fill is runtime, W3C `traceparent.sampled` propagation,
+  EnvFilter grammar port).
+- Updated: [20-otel-and-sinks.md](./20-otel-and-sinks.md) (OTLP Span
+  for Started/Completed pairs, single-source Resource attrs, two-layer
+  backpressure, `Sink::deliver(ScrubbedEnvelope<'_>)`).
+- Updated: [22-analytics-storage.md](./22-analytics-storage.md)
+  (atomic-rename Parquet, ClickHouse durability bound).
+- Updated: [30-tracing-bridge.md](./30-tracing-bridge.md)
+  (`register_typed` takes `&mut FieldCapture`, lossiness disclosure,
+  `OnScope`+`OtlpTraceSink` warning).
+- Updated: [31-callsite-interning.md](./31-callsite-interning.md)
+  (startup pre-warm).
+- Updated: [10-data-model.md](./10-data-model.md) (configurable prefix).
+- Updated: [50-cli.md](./50-cli.md) (auth model, `--audit-spool`).
+- Updated: [99-key-decisions.md](./99-key-decisions.md) (D38–D46).
+
+**Risk spikes** (a half-day each; goal is ruling out unknowns):
+
+- [ ] `buffa-reflect` custom-option reading: confirm the FDS walk
+      addresses extension `(obs.v1.event)` ergonomically. Fallback
+      plan: parse `.proto` text via `buffa-build`'s parser hook.
+- [ ] `linkme` distributed-slice on macOS arm64, Linux x86_64-musl,
+      and stripped release builds. Validate that stripped binaries
+      still produce a non-empty `EVENT_SCHEMAS` slice.
+- [ ] `ArcSwap<Arc<dyn Trait>>` shape compiles with `Lazy` and
+      `from_pointee`; benchmark `observer()` returning `Arc<dyn>`
+      vs returning a `Guard`. Decide on the public signature.
+- [ ] `tokio::task_local!` propagation behaviour with
+      `tokio::select!` + cancellation. Confirm the `Drop`-runs-on-
+      cancel guarantee documented in [11-runtime-core.md § 8.1](./11-runtime-core.md#81-async-cancellation).
+- [ ] `notify` file-watcher reliability on macOS APFS (a
+      historically flaky combination). Decide whether to ship it as
+      default or behind a feature flag.
+
+**Exit criteria**: each spike yields a 1-page memo committed under
+`./docs/research/`. If any spike fails, the relevant spec gets a
+revised section before M0 begins.
+
+**Estimate**: 1 week, calendar.
+
+### M0 — Foundations (week 2–4)
 
 **Specs implemented**: [10-data-model.md](./10-data-model.md),
 [11-runtime-core.md](./11-runtime-core.md) (subset),
@@ -101,12 +162,18 @@ override slot enables parallel `cargo test`.
       `ObsBatch.schemas` is `map<fixed64, string>`.
 - [ ] `obs-core`:
   - `EventSchema` trait with `SCHEMA_HASH` const.
+  - **`EventSchemaErased` object-safe trait + `linkme`-collected
+    `EVENT_SCHEMAS` distributed slice + `SchemaRegistry`** ([14-schema-registry.md](./14-schema-registry.md)).
+    Sinks added in M2/M3 will not work without this; it must land in M0.
   - `ObsCallsite` with `interest: AtomicU8`, `generation: AtomicU32`.
   - `ObsEnvelope` builder + projection helper.
-  - `Observer` trait, `OBSERVER_GLOBAL` (ArcSwap) +
-    `OBSERVER_LOCAL` (thread-local) + `with_test_observer`.
+  - `Observer` trait, `OBSERVER_GLOBAL` (`Lazy<ArcSwap<Arc<dyn Observer>>>`)
+    + `OBSERVER_LOCAL` (`RefCell<Option<Arc<dyn Observer>>>`) +
+    `with_test_observer` + `WeakObserver`.
   - `NoopObserver`, `InMemoryObserver`.
-  - `StandardObserver` shell with `SinkRouter` (single-tier wired).
+  - `StandardObserver` shell with `SinkRouter` (single-tier wired);
+    `Sink::deliver(ScrubbedEnvelope<'_>)` from day one (no migration
+    later).
   - `StdoutSink` (dev pretty-printer; `FormatterStyle::Full`).
   - `InMemorySink` (test harness).
   - `EventsConfig` + `ArcSwap` reload + `Observer::reload_filter()`
@@ -115,20 +182,23 @@ override slot enables parallel `cargo test`.
 - [ ] `obs-macros`: `#[derive(Event)]` MVP
   - parses `#[event(...)]` and `#[obs(...)]`,
   - emits `EventSchema` impl,
+  - emits `EventSchemaErased` impl + `#[linkme::distributed_slice(EVENT_SCHEMAS)]`
+    registration ([14-schema-registry.md § 7](./14-schema-registry.md#7-codegen-contract-what-obs-build-emits)),
   - emits typed builder via `typed-builder`,
   - emits compile-time lints L001 (cardinality), L002 (PII on LABEL),
-    L003 (SECRET on LOG/AUDIT), L011 (`Obs*` naming).
+    L003 (SECRET on LOG/AUDIT), L011 (configurable-prefix naming;
+    reads `[workspace.metadata.obs] event_prefix` per [10-data-model.md § 7.1](./10-data-model.md#71-configuring-the-prefix)).
 - [ ] `obs-sdk` façade with `dev` feature; `StandardObserver::dev()`
       shortcut.
 - [ ] `apps/server`: hello-world handler emitting `ObsHelloEmitted`.
 - [ ] CI: `cargo build`, `cargo test`, `cargo clippy -D warnings`,
       `cargo +nightly fmt --check`, `cargo deny check`.
 
-**Risks**: `buffa-reflect` extension reads on the FDS — verify in a
-spike on day 1 that the extension number `(obs.v1.event)` is
-addressable from a `DescriptorPool` walk.
+**Risks**: both retired in M-1 spikes (`buffa-reflect` extension
+reads, `linkme` distributed slice reliability). M0 inherits no
+unknown-unknowns from upstream tooling.
 
-### M1 — Schema-first authoring + dev-erg (week 3–4)
+### M1 — Schema-first authoring + dev-erg (week 5–7)
 
 **Specs implemented**: [12-schema-and-codegen.md](./12-schema-and-codegen.md)
 (complete), [60-dev-ergonomics.md](./60-dev-ergonomics.md),
@@ -183,7 +253,7 @@ the spike from M0 confirms feasibility; this milestone makes it
 ergonomic. If extension reads turn out to be brittle, fall back to
 parsing the `.proto` text via `buffa-build`'s parser hook.
 
-### M2 — Sinks, sampling, OTel parity (week 5–7)
+### M2 — Sinks, sampling, OTel parity (week 8–13)
 
 **Specs implemented**: [11-runtime-core.md](./11-runtime-core.md)
 (complete: workers + AUDIT policy + panic hook + payload caps),
@@ -258,7 +328,7 @@ without restart.
 **Risks**: OTLP wire-shape conformance. Mitigation: integration test
 suite runs against an in-process `tonic` mock OTel collector ([72-testing-strategy.md § 6](./72-testing-strategy.md#6-mock-otlp-collector)).
 
-### M3 — Analytics, governance, full bridge, interning (week 8–10)
+### M3 — Analytics, governance, full bridge, interning (week 14–22)
 
 **Specs implemented**: [22-analytics-storage.md](./22-analytics-storage.md),
 remainder of [30-tracing-bridge.md](./30-tracing-bridge.md)
@@ -352,6 +422,36 @@ opt-in and reduces wire bytes per the budget table.
 **Risks**: proto schema diff requires deterministic comparison;
 depend on the FDS round-trip via `buffa-reflect` and golden-file
 tests under `crates/obs-cli/tests/diff/`.
+
+### M4 — Hardening + soak (week 23–24)
+
+The cushion between "code complete" and v1.0. Without it, the
+project ships with N latent issues that show up under sustained
+load.
+
+- [ ] Run `apps/server` under realistic load: 50 k events/sec,
+      100+ distinct event types, **24-hour soak**, all sinks active
+      (OTLP + Parquet + ClickHouse + bridge in both directions).
+- [ ] Watch the SDK self-events; fix the top 5 anomalies.
+- [ ] Validate `obs.runtime.v1.ObsSinkDropped` stays at zero in the
+      steady state with the recommended queue defaults.
+- [ ] `cargo audit`, `cargo deny check`, `cargo clippy -D warnings -W clippy::pedantic`
+      clean across the workspace.
+- [ ] Pre-built CLI binaries for `darwin-{x86_64,arm64}` and
+      `linux-{x86_64,arm64}` via GitHub Releases.
+- [ ] Lock the envelope `format_ver = 1` and freeze the wire shape;
+      fail CI on any change to `obs-proto/proto/obs/v1/envelope.proto`
+      without a `format_ver` bump.
+- [ ] Documentation pass: every public item has a `///` doc; every
+      crate has a module `//!` doc; the top-level `README.md`
+      reflects the real install + emit + tail flow on a 2024-class
+      laptop with cold cache.
+- [ ] Migration guide for `tracing` users (5-page doc) committed
+      under `./docs/migration-from-tracing.md`.
+- [ ] Public RFC: solicit feedback on the API surface before
+      stamping v1.0 (4-week comment window).
+
+**Estimate**: 2 weeks calendar, plus 4 weeks RFC comment window.
 
 ### M-future — Out-of-scope for v1, tracked
 

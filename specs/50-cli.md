@@ -242,6 +242,10 @@ Read a binary `ObsBatch` and emit NDJSON. Works on files or stdin.
 obs decode <file.bin>          # or:  cat file.bin | obs decode
 obs decode --schemas proto/    # supply schemas dir for decoding payloads
 obs decode --raw               # don't decode payload, just envelope + base64
+obs decode --audit-spool path.audit.bin
+                               # consume an AUDIT spool file (binary length-
+                               # prefixed format; see 11 § 6.4) and render
+                               # as NDJSON for ad-hoc inspection
 ```
 
 Each output line is one event:
@@ -290,6 +294,23 @@ compact table is rendered).
 The `query` command is not a replacement for ClickHouse / DuckDB —
 it covers the on-the-fly debugging case ("grep the last hour's
 batches for trace id X").
+
+#### Credentials for non-local sources
+
+Credentials are picked up from the **ambient environment**, never
+from `obs.yaml`:
+
+| Scheme | Credential source |
+| --- | --- |
+| `file://` / bare path | filesystem permissions only |
+| `s3://`, `gs://`, `azblob://` | `opendal`'s standard per-scheme conventions: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_PROFILE` (S3); `GOOGLE_APPLICATION_CREDENTIALS` (GCS); `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY` (Azure). Override profile name with `OBS_S3_PROFILE` / `OBS_GCS_PROJECT` / `OBS_AZURE_PROFILE`. |
+| `clickhouse://` | URI-embedded user/pass (`clickhouse://user:pass@host:port/db`) **or** `OBS_CLICKHOUSE_USER` / `OBS_CLICKHOUSE_PASSWORD`. URI-embedded credentials are stripped from logs. |
+| `https://...` (OTLP / HTTP) | `OBS_HTTP_BEARER` env var; or per-request via `--header "Authorization: Bearer ..."` on the CLI |
+
+The CLI **never reads credentials from `obs.yaml`** because the file
+is intended to be commit-able. If a future workflow demands richer
+credential management, the path is "shell out to a sidecar like
+`aws-vault exec` and feed env vars" — not "embed secrets in YAML".
 
 ### 3.10 `obs tail`
 

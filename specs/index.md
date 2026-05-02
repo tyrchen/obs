@@ -29,9 +29,10 @@ of 30/71, M3 closes everything else.
 | File | Type | Purpose |
 | --- | --- | --- |
 | [10-data-model.md](./10-data-model.md) | Design | Wide events, envelope, schema_hash, the `Obs*` naming convention |
-| [11-runtime-core.md](./11-runtime-core.md) | Design | Observer + per-thread test override, `ObsCallsite` with atomic `Interest`, sinks, workers, config + reload, AUDIT delivery, panic hook, threading |
+| [11-runtime-core.md](./11-runtime-core.md) | Design | Observer + per-thread test override, `ObsCallsite` with atomic `Interest`, sinks, workers, config + reload, AUDIT delivery (binary spool + recovery), pipeline order, panic hook, threading |
 | [12-schema-and-codegen.md](./12-schema-and-codegen.md) | Design | `.proto` annotations, `#[derive(Event)]`, lints L001–L013, `EventSchema`, generated builder, the `MetricEmitter` / `BuildableTo` / `FieldCapture` / `SpanCtx` / `EnumCount` trait surface, single-table Arrow fragments |
-| [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md) | Design | `obs::emit!`, `obs::scope!`, `obs::context!`, `obs::Instrumented<F>`, `#[obs::instrument]` (single-event default), `obs::Filter` DSL + precedence, `obs::forensic!`, `obs::SpanTrace` |
+| [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md) | Design | `obs::emit!`, `obs::scope!`, `obs::context!`, `obs::Instrumented<F>`, `#[obs::instrument]` (single-event default), `obs::Filter` DSL (ports EnvFilter grammar) + precedence, W3C `traceparent.sampled` propagation, `obs::forensic!`, `obs::SpanTrace` |
+| [14-schema-registry.md](./14-schema-registry.md) | Design | `EventSchemaErased` object-safe trait, `linkme`-based link-time schema registration, `ScrubbedEnvelope` worker→sink handoff, sink decode contract |
 
 ### Sinks & analytics (M2 → M3)
 
@@ -88,24 +89,26 @@ For first-time readers:
    the macros and scope semantics.
 7. **[12-schema-and-codegen.md](./12-schema-and-codegen.md)** — how
    a `.proto` becomes typed Rust + lints.
-8. **[20-otel-and-sinks.md](./20-otel-and-sinks.md)** — sinks and
+8. **[14-schema-registry.md](./14-schema-registry.md)** — the
+   object-safe schema registry that lets sinks decode payloads.
+9. **[20-otel-and-sinks.md](./20-otel-and-sinks.md)** — sinks and
    OpenTelemetry mapping.
-9. **[22-analytics-storage.md](./22-analytics-storage.md)** — the
-   analytical view.
-10. **[30-tracing-bridge.md](./30-tracing-bridge.md)** and
+10. **[22-analytics-storage.md](./22-analytics-storage.md)** — the
+    analytical view.
+11. **[30-tracing-bridge.md](./30-tracing-bridge.md)** and
     **[31-callsite-interning.md](./31-callsite-interning.md)** —
     interop and the wire-size optimisation.
-11. **[40-http-middleware.md](./40-http-middleware.md)**,
+12. **[40-http-middleware.md](./40-http-middleware.md)**,
     **[50-cli.md](./50-cli.md)** — ecosystem.
-12. **[70-security-and-classification.md](./70-security-and-classification.md)**,
+13. **[70-security-and-classification.md](./70-security-and-classification.md)**,
     **[71-performance-budgets.md](./71-performance-budgets.md)**,
     **[72-testing-strategy.md](./72-testing-strategy.md)** —
     cross-cutting contracts.
-13. **[99-key-decisions.md](./99-key-decisions.md)** — *why* it is
-    shaped this way (read after #1–#12 for max signal).
-14. **[61-crates-and-features.md](./61-crates-and-features.md)** —
+14. **[99-key-decisions.md](./99-key-decisions.md)** — *why* it is
+    shaped this way (read after #1–#13 for max signal).
+15. **[61-crates-and-features.md](./61-crates-and-features.md)** —
     workspace shape, what to put where.
-15. **[90-roadmap.md](./90-roadmap.md)** — milestone exit criteria.
+16. **[90-roadmap.md](./90-roadmap.md)** — milestone exit criteria.
 
 ## Build-order graph (summary)
 
@@ -123,6 +126,9 @@ For first-time readers:
 codegen            and-filter
   │                 │
   └─────┬───────────┘
+        ▼
+14-schema-registry      ◄── sink decode contract; required by 20/22/30
+        │
         ▼
 20-otel-and-sinks ──► 22-analytics-storage
         │

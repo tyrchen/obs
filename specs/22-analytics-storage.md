@@ -131,6 +131,33 @@ field fragments into one table schema. The Arrow fragments are
 generated from `.proto` annotations by `obs-build`; see
 [12-schema-and-codegen.md § 3.6](./12-schema-and-codegen.md#36-the-single-table-arrow-schema).
 
+### 2.0a Crash and partial-write semantics
+
+Parquet places its footer at the end of the file. A process killed
+mid-batch leaves a footer-less `.parquet` file that **most readers
+refuse to open** (DuckDB, Trino, polars all error). We treat this
+explicitly:
+
+- **Atomic rename**: every batch is written to
+  `obs_events-{batch_id}.parquet.tmp`. On clean close, the file is
+  renamed to `obs_events-{batch_id}.parquet` (POSIX atomic on the
+  same filesystem; `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
+  on Windows). Readers only ever see fully-written files.
+- **Crash recovery**: at observer init, the `ParquetSink` scans
+  `base_dir` for any `*.parquet.tmp` and **deletes them**. They
+  are partial by definition; their data is lost. The runtime emits
+  one `obs.runtime.v1.ObsAnalyticsPartialDropped{file, bytes}`
+  per file removed.
+- **Durability bound**: the data loss window equals the un-flushed
+  in-memory batch (default 256 MiB or 5 min). Operators who need
+  tighter bounds set `roll_max_bytes` and `roll_max_age` lower; the
+  cost is more files in object storage.
+- **Object stores**: S3 / GCS / Azure Blob Storage are
+  natively-atomic on write (the upload is single-shot or multipart-
+  with-commit). The `*.tmp` rename pattern collapses to "do not
+  PUT until the buffer is closed" via `opendal::Operator::write`'s
+  `commit_on_close` semantics. No cleanup pass needed.
+
 ### 2.1 Iceberg / Delta Lake position
 
 `obs-parquet` emits plain Parquet files into a directory layout
@@ -204,6 +231,28 @@ Cardinality dictionary degrades if labels admit very many distinct
 values at runtime. Operators monitor
 `obs.runtime.v1.ObsLabelCardinalityHigh` — see
 [11-runtime-core.md § 6.7](./11-runtime-core.md#67-clickhouse-runtime-cardinality).
+
+### 3.1 ClickHouse durability semantics
+
+ClickHouse accepts batched `INSERT` over its native protocol; each
+batch is committed atomically server-side. The `ClickHouseSink`:
+
+- **Buffers in memory** up to `batch_size` (default 8192) or
+  `flush_interval` (default 1 s), whichever first.
+- On flush, sends one INSERT; on success the batch is durable
+  server-side.
+- On failure (network or 5xx), retries with exponential backoff
+  (1 s → 30 s, 5 attempts). After max attempts, increments
+  `obs.runtime.v1.ObsSinkFailed{sink=clickhouse}` and drops the batch.
+- **Crash bound**: in-memory batches not yet flushed at the time
+  of process kill are lost. The bound equals `batch_size` envelopes
+  or `flush_interval` worth, whichever the user configured.
+
+Operators who need stronger guarantees pair `ClickHouseSink` with
+`ParquetSink` to the same `obs_events` table shape and reconcile
+later — the codegen Arrow schema is identical so this is mechanical.
+ClickHouse's `MergeTree` engine deduplicates on `(ts_ns, full_name,
+trace_id)` if the same row is replayed.
 
 ## 4. Schema evolution rules — analytics view
 

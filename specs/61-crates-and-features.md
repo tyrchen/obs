@@ -513,10 +513,14 @@ impl TracingToObsLayer {
 
     /// Promote a matching tracing callsite into a typed obs event
     /// instead of `ObsTracingForensicEvent`. Cached per callsite id.
+    /// The closure receives a bridge-owned `&mut FieldCapture` already
+    /// populated by `event.record(...)` — do not allocate a fresh one.
+    /// See [30-tracing-bridge.md § 2.5](../30-tracing-bridge.md#25-auto-typing--promoting-tracing-events-to-typed-obs-events).
     pub fn register_typed<E: EventSchema>(
         self,
         matcher: TypedMatcher,
-        promote: impl Fn(&tracing::Event<'_>, &SpanCtx<'_>) -> E + Send + Sync + 'static,
+        promote: impl Fn(&tracing::Event<'_>, &SpanCtx<'_>, &mut FieldCapture) -> E
+            + Send + Sync + 'static,
     ) -> Self;
 }
 

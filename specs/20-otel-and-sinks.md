@@ -57,6 +57,28 @@ built against, e.g. `https://opentelemetry.io/schemas/1.27.0`.
 is also visible to the analytics sinks so a Parquet/ClickHouse row
 isn't missing identity that the OTLP path carries.
 
+#### Single source of truth for service / Resource identity
+
+Identity flows through **one** structure (`ResourceAttrs` on the
+observer) and is read by every sink. To prevent drift, the OTLP
+sink builders' `.resource_attr(k, v)` setter is **shorthand** for
+`StandardObserverBuilder::resource_attr(k, v)` — it writes into the
+observer's `ArcSwap<ResourceAttrs>`, *not* into a sink-local copy.
+The sink later reads from the observer's slot at delivery time.
+
+Consequence: setting `.resource_attr("env", "prod")` on
+`OtlpLogSink::builder()` makes that attribute visible to every sink
+in the observer (Parquet, ClickHouse, even other OTLP sinks for the
+metric / trace tiers), not just the log sink. This is the documented
+behaviour and resolves the foot-gun where an operator might set the
+attribute on the log sink expecting analytics rows to inherit it,
+only to find them missing the field.
+
+Sink-local attribute overrides are deliberately not supported. If a
+sink needs different identity than the rest, install two observers
+(one per sink target) — but in practice the use case for divergent
+identity per sink is too narrow to motivate the API complexity.
+
 ### 2.2 Severity → OTLP `SeverityNumber`
 
 OTLP defines `SeverityNumber` on a 1–24 scale (`opentelemetry-proto`
@@ -123,22 +145,74 @@ via `OtlpMetricSink::builder().push_interval(Duration::from_secs(15))`).
 
 ### 2.5 To OTLP Traces
 
-If `env.trace_id` is non-empty:
+The OTLP `Span` mapping has to handle three different patterns
+without producing duplicate spans for the same logical operation:
 
-- a `Span` is emitted with `name = env.full_name`,
-- `start_time_unix_nano = end_time_unix_nano = env.ts_ns` (point-in-time
-  span), unless the schema declares a `FIELD_KIND_DURATION_NS` field,
-  in which case `start_time = ts_ns - duration`,
+#### A. Schema with `FIELD_KIND_DURATION_NS` — full span
+
+The schema declares a duration field (e.g. `latency_ns`). One OTLP
+span per envelope:
+
+- `name = env.full_name`,
+- `start_time_unix_nano = env.ts_ns - duration`,
+- `end_time_unix_nano = env.ts_ns`,
 - `parent_span_id = env.parent_span_id`,
 - `kind = SPAN_KIND_INTERNAL` by default; set on the schema via
   `option (obs.v1.event).span_kind = SPAN_KIND_SERVER` for inbound
   edge events,
-- `status_code` derived from severity: `SEVERITY_ERROR | FATAL → STATUS_CODE_ERROR`,
-  otherwise `STATUS_CODE_UNSET`,
+- `status_code` derived from severity: `SEVERITY_ERROR | FATAL →
+  STATUS_CODE_ERROR`, otherwise `STATUS_CODE_UNSET`,
 - `attributes := env.labels` plus `event.name = env.full_name`.
 
-Spans for the same `trace_id` are tied together by the OTel exporter;
-the SDK does not attempt span-tree reconstruction in-process.
+#### B. `Started` / `Completed` event pair — one span per pair
+
+The canonical "I want span semantics with duration" pattern in obs
+is the `ObsXxxStarted` + `ObsXxxCompleted` event pair (see
+[60-dev-ergonomics.md § 4.3 A](./60-dev-ergonomics.md#a-request-handler-http)).
+Naive mapping would emit one OTLP span per envelope (two spans),
+plus a third *implied* span derived from `latency_ms` on
+`Completed` — triple-counting the operation in Jaeger.
+
+Correct mapping:
+
+- The `Completed` event becomes the OTLP `Span` (per § A above,
+  using `latency_ms` / `latency_ns`).
+- The `Started` event becomes a `Span Event` (`Span.Events[]` in
+  OTLP) attached to the same span via `(trace_id, span_id)`
+  correlation. `Span Event.name = "started"`,
+  `Span Event.attributes := env.labels`.
+- Correlation requires both events to carry the **same**
+  `(trace_id, span_id)` pair. `obs::scope!` makes this trivial
+  because `span_id` is task-scoped; the runtime stamps the same
+  id on both envelopes.
+
+Naming convention: any schema whose `full_name` ends in `Started`
+plus a sibling schema with the same prefix ending in `Completed`
+is recognised as a span pair by `OtlpTraceSink`. Codegen sets a
+`spans_paired_with: Option<&'static str>` const on the schema so
+this is explicit, not pattern-inferred.
+
+If only one half of the pair arrives (the other was dropped, or
+they are emitted out of order across processes), `OtlpTraceSink`
+emits the half it has as a point-in-time span (per § C below) and
+increments `obs.runtime.v1.ObsSpanPairOrphaned` — this is
+visibility, not error.
+
+#### C. Schema with no duration and no pair — point-in-time span
+
+For events with neither `FIELD_KIND_DURATION_NS` nor a paired
+sibling, the span is point-in-time:
+
+- `start_time_unix_nano = end_time_unix_nano = env.ts_ns`.
+
+OTLP supports zero-duration spans; Jaeger/Tempo render them as
+markers. This is the right shape for one-shot events like
+`ObsUserSignedUp` or `ObsConfigReloaded` where there's no
+operation-spanning interval.
+
+Spans for the same `trace_id` are tied together by the OTel
+collector; the SDK does not attempt span-tree reconstruction
+in-process.
 
 ### 2.6 Trace context propagation
 
@@ -181,20 +255,31 @@ OTel.
 
 ### 3.1 The `Sink` trait
 
-Recap from [11-runtime-core.md § 4](./11-runtime-core.md#4-per-tier-workers-and-sinks):
-
 ```rust
 pub trait Sink: Send + Sync + 'static {
-    fn deliver(&self, env: &ObsEnvelope);
+    fn deliver(&self, env: ScrubbedEnvelope<'_>);
     fn flush(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 ```
 
-Sinks see the envelope only. To inspect typed payload values, a sink
-must decode `env.payload` against the schema referenced by
-`env.schema_hash`. For most sinks (metrics, OTLP attributes, audit
-filter), label projection alone is enough.
+Sinks see a `ScrubbedEnvelope` — a wrapper produced by the per-tier
+worker after running the payload scrubber. The wrapper carries the
+envelope, the (possibly redacted) payload bytes, and a resolved
+`Option<&'static dyn EventSchemaErased>` for sinks that need to
+decode the typed payload (Parquet column population, OTLP body
+expansion, JSON rendering, etc.). Sinks that only consume
+`env.labels` — counters, OTel attribute writers, audit-filter sinks —
+ignore the schema and pay no decode cost.
+
+The contract for `EventSchemaErased`, the link-time schema registry
+that resolves it, and the `ScrubbedEnvelope` lifetime story all
+live in [14-schema-registry.md](./14-schema-registry.md). This spec
+treats them as primitives.
+
+The earlier `Sink::deliver(&self, env: &ObsEnvelope)` shape (showing
+raw, possibly-unscrubbed payloads to sinks) was a soundness gap —
+fixed in spec 14 and reflected here.
 
 ### 3.2 Built-in sinks
 
@@ -392,6 +477,33 @@ batch and increment `ObsSinkFailed{sink=otlp_logs, reason=4xx}`.
 Retryable failures back off exponentially; the queue between the
 worker and the OTLP exporter is bounded — overflow drops with a
 metric increment, never blocks.
+
+#### Two-layer backpressure: where each drop is counted
+
+There are **two** bounded queues in front of the network:
+
+1. The per-tier `mpsc` between the emit thread and the worker
+   ([11-runtime-core.md § 4](./11-runtime-core.md#4-per-tier-workers-and-sinks)).
+   Default capacity 8192. Overflow drops on the emit side and
+   increments `obs.runtime.v1.ObsSinkDropped{tier, reason=channel_full}`.
+2. The OTLP exporter's retry queue inside the sink. Default
+   capacity 16384 envelopes (or 64 batches × 256 envelopes/batch).
+   Overflow drops on the worker side and increments
+   `obs.runtime.v1.ObsSinkFailed{sink=otlp_*, reason=retry_queue_full}`.
+
+The two counters distinguish "the application produced faster than
+the worker could batch" (queue 1) from "the worker batched fine but
+the network/backend is too slow" (queue 2). Operators size each
+queue against a different signal; `obs doctor` shows recommended
+sizes calibrated for "P99 sustained 10k events/s without drops with
+1 s OTLP RTT".
+
+Recommended defaults assume:
+- per-tier mpsc capacity = `max(8192, expected_qps * 1s)`
+- OTLP retry queue capacity = `max(16384, expected_qps * max_backoff)`
+
+Document the relationship between the two so users do not "fix" one
+queue while leaving the other under-sized.
 
 ### 4.3 Convenience constructor
 

@@ -219,6 +219,43 @@ The synchronous registration emit ensures that when the data
 envelope arrives at any sink, the registration envelope has already
 been delivered to that sink's worker (FIFO per-tier mpsc).
 
+#### Startup pre-warm (avoid cold-path cliff)
+
+Under burst at startup with N distinct tracing callsites in a hot
+loop (typical: an axum app with 50 routes × 5 tower-http events),
+the cold-path cost of step 1 (BLAKE3) + step 3 (registration emit)
+serialised on the first request would be N × 4 µs of synchronous
+work before the first response.
+
+Mitigation: at observer init the bridge **pre-warms the registry**
+with a built-in list of well-known third-party callsite identifiers
+shipped in `obs-tracing-bridge`:
+
+```rust
+const PREWARM_CALLSITES: &[(&str, &str, Option<u32>, Severity, &[&str])] = &[
+    // (target,                              file_or_anchor,                line,  level,  field_names)
+    ("tower_http::trace::on_response",       "tower-http",                  None,  Severity::Info,  &["status", "latency"]),
+    ("tower_http::trace::on_request",        "tower-http",                  None,  Severity::Debug, &["uri", "method"]),
+    ("hyper::client::connect",               "hyper",                       None,  Severity::Trace, &[]),
+    ("sqlx::query",                          "sqlx",                        None,  Severity::Debug, &["rows_affected", "elapsed_secs", "summary"]),
+    ("h2::codec",                            "h2",                          None,  Severity::Trace, &[]),
+    ("axum::rejection",                      "axum",                        None,  Severity::Warn,  &["error"]),
+    ("reqwest::async_impl::client",          "reqwest",                     None,  Severity::Debug, &["status", "url"]),
+    // ... extended list maintained in the bridge crate
+];
+```
+
+The pre-warm is opt-out via `TracingToObsLayer::with_prewarm(false)`
+for users with non-typical dependency sets. With pre-warm on, first-
+request latency for matching callsites is the warm-path cost (~2.5 µs)
+not the cold-path cost. The registry entries are real (they are
+emitted as `ObsCallsiteRegistered` self-events at init) so downstream
+consumers see them in the same way as runtime-discovered callsites.
+
+The list is curated; PRs add entries as the ecosystem evolves.
+Adding an entry that doesn't actually exist in the user's dep tree
+is harmless — the registry just holds an unused record.
+
 ### 3.4 The `ObsCallsiteRegistered` event
 
 ```proto

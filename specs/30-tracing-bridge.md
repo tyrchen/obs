@@ -61,7 +61,8 @@ impl TracingToObsLayer {
     pub fn register_typed<E: EventSchema>(
         self,
         matcher: TypedMatcher,
-        promote: impl Fn(&tracing::Event<'_>, &SpanCtx<'_>) -> E + Send + Sync + 'static,
+        promote: impl Fn(&tracing::Event<'_>, &SpanCtx<'_>, &mut FieldCapture) -> E
+            + Send + Sync + 'static,
     ) -> Self;
     pub fn with_span_events(self, mode: SpanEventMode) -> Self;
 }
@@ -255,6 +256,12 @@ impl TypedMatcher {
 
 Three concrete examples:
 
+The promoter receives a `&mut FieldCapture` *owned by the bridge*
+(rented from a thread-local; cleared between events). The closure
+must not allocate its own `FieldCapture` — the borrowed one is
+already populated by `event.record(&mut *cap)` before the closure
+runs, so the closure body is a pure read-out.
+
 ```rust
 // 1. tower-http access logs → ObsHttpRequestCompleted
 let layer = TracingToObsLayer::new()
@@ -263,9 +270,8 @@ let layer = TracingToObsLayer::new()
             .target("tower_http::trace::on_response")
             .field("status")
             .field("latency"),
-        |event, ctx| {
-            let mut cap = FieldCapture::default();
-            event.record(&mut cap);
+        |event, ctx, cap| {
+            // `cap` is bridge-owned and already populated; do not allocate.
             ObsHttpRequestCompleted::builder()
                 .route(ctx.label("http.route").unwrap_or("unknown".into()))
                 .method(ctx.label("http.method").and_then(parse_method).unwrap_or(Method::Other))
@@ -278,9 +284,7 @@ let layer = TracingToObsLayer::new()
 // 2. Anything at ERROR with an `error` field → ObsErrorReported
 let layer = layer.register_typed::<ObsErrorReported>(
     TypedMatcher::new().level_at_least(Level::ERROR).field("error"),
-    |event, _| {
-        let mut cap = FieldCapture::default();
-        event.record(&mut cap);
+    |event, _, cap| {
         ObsErrorReported::builder()
             .source(event.metadata().target())
             .message(cap.string("error")
@@ -293,9 +297,7 @@ let layer = layer.register_typed::<ObsErrorReported>(
 // 3. sqlx queries → ObsDbQueryExecuted
 let layer = layer.register_typed::<ObsDbQueryExecuted>(
     TypedMatcher::new().target("sqlx::query"),
-    |event, _| {
-        let mut cap = FieldCapture::default();
-        event.record(&mut cap);
+    |_event, _, cap| {
         ObsDbQueryExecuted::builder()
             .driver(Driver::Postgres)
             .rows(cap.u64("rows_affected").unwrap_or(0))
@@ -620,6 +622,30 @@ Span emission is opt-in because:
   `#[tracing::instrument]` on handlers; the bridge lets the existing
   tracing span propagate into obs (Direction A § 2.3) instead.
 
+#### Conflict detection at observer init
+
+If `SpanEmissionMode::OnScope` is enabled **and** `OtlpTraceSink`
+is installed in the same observer, the runtime emits one
+`obs.runtime.v1.ObsConfigInconsistent` self-event at observer init
+(severity WARN) naming both components. Reason: each `obs::scope!`
+will produce one OTLP span via `OtlpTraceSink` *and* one tracing
+span (which `tracing-opentelemetry`, if installed, will turn into
+a second OTLP span). Two OTel spans for the same logical
+operation. The runtime does not refuse the configuration — operators
+sometimes want this for migration audits — but the warning makes
+the foot-gun visible.
+
+Resolution recommendations:
+
+- Production: pick one source of OTLP spans. Either `OtlpTraceSink`
+  *or* `SpanEmissionMode::OnScope` + `tracing-opentelemetry`, not
+  both.
+- Development: `OnScope` is fine; use `OtlpTraceSink` only when no
+  tracing-side OTel span pipeline is installed.
+
+Full v1.1 deduplication is tracked in
+[99-key-decisions.md "Open / deferred"](./99-key-decisions.md#open--deferred-decisions).
+
 ### 3.6 `#[obs::instrument]` vs `#[tracing::instrument]`
 
 Both can decorate the same function. The expansion order is:
@@ -903,10 +929,31 @@ The bridge ships its own test harness in
   expected target / level / fields.
 - **`roundtrip_property.rs`** — `proptest`-driven: for arbitrary
   `(level, target, fields)`, build a `tracing::Event` → bridge →
-  `ObsEnvelope` → bridge back → `tracing::Event`. Assert: target
-  preserved (modulo `obs.bridge` for synthesised events), severity
-  preserved, all string-typed fields preserved verbatim, numeric
-  fields preserved within type-conversion limits.
+  `ObsEnvelope` → bridge back → `tracing::Event`. The roundtrip is
+  **conditionally** lossless; the property test asserts each
+  invariant under its preconditions:
+  - **Severity** — preserved exactly, except `Fatal → Error` because
+    tracing has no FATAL ([§ 3.4](#34-field-mapping)).
+  - **Target** — preserved exactly **only when interning is enabled
+    and Direction B reconstitutes from the registry** ([§ 3.7](#37-reconstituting-interned-envelopes-for-tracing)).
+    Without interning, Direction B uses the synthesised
+    `target = "obs.bridge"` and the original target survives only as
+    the field `payload.target`.
+  - **String fields** — preserved verbatim **only when the field
+    name does not match the default PII redactor pattern**
+    ([§ 2.6](#26-pii--classification)). Matched names are replaced
+    with `"[REDACTED:bridge_pattern]"`; the property test seed
+    excludes those names from the input generator.
+  - **Numeric fields** — preserved within `record_*` type-conversion
+    limits (e.g. `f64` → JSON-string → `f64` may lose subnormal
+    precision; `u128` is not supported by tracing's `Visit`).
+  - **Debug-formatted fields** (`record_debug(&dyn Debug)`) — collapse
+    to `format!("{:?}", v)` strings on the way through; the test
+    asserts string-equality on the formatted form, not original
+    structure.
+
+  Documenting these preconditions in the test prevents flakes;
+  callers should not assume the bridge is a transparent passthrough.
 - **`no_infinite_loop.rs`** — installs both directions, emits one
   obs event and one tracing event, asserts each appears exactly
   once in each subscriber/sink. Runs for 1000 iterations under

@@ -161,25 +161,52 @@ pub trait Observer: Send + Sync + 'static {
     fn shutdown_blocking(&self, timeout: Duration);
 }
 
-static OBSERVER_GLOBAL: ArcSwap<Box<dyn Observer>> = …;          // default = NoopObserver
+// `ArcSwap<dyn Trait>` requires `?Sized` support that ArcSwap does not
+// have (the inner pointer must be `Sized`), so we wrap in `Arc<dyn Trait>`
+// explicitly. The thread-local mirrors the same shape with `RefCell`,
+// because `Box<dyn Trait>` is not `Copy` and a bare `Cell::get()` would
+// not compile. `Lazy` gives a const-friendly init for the default
+// `NoopObserver`.
+static OBSERVER_GLOBAL: Lazy<ArcSwap<Arc<dyn Observer>>> = Lazy::new(|| {
+    ArcSwap::from_pointee(Arc::new(NoopObserver) as Arc<dyn Observer>)
+});
+
 thread_local! {
-    static OBSERVER_LOCAL: Cell<Option<Box<dyn Observer>>> = const { Cell::new(None) };
+    static OBSERVER_LOCAL: RefCell<Option<Arc<dyn Observer>>> =
+        const { RefCell::new(None) };
 }
 
-pub fn observer() -> Guard<Arc<Box<dyn Observer>>> {
-    if let Some(local) = OBSERVER_LOCAL.with(|c| c.get_clone_arc()) {
-        // returns a Guard wrapping the per-thread override
+/// Hot path. Returns a cloned `Arc` (one atomic refcount bump) so the
+/// caller does not hold a `Guard` across `await`. Identical perf
+/// characteristics to `tracing::dispatcher::get_default`.
+pub fn observer() -> Arc<dyn Observer> {
+    if let Some(local) = OBSERVER_LOCAL.with(|c| c.borrow().clone()) {
+        local
     } else {
-        OBSERVER_GLOBAL.load()
+        OBSERVER_GLOBAL.load_full()
     }
 }
 
 pub fn install_observer<O: Observer>(o: O) { /* sets OBSERVER_GLOBAL */ }
 pub fn install_panic_hook() { /* opt-in; see § 6.1 */ }
 
+/// Weak handle for code that needs to refer to the observer without
+/// extending its lifetime — chiefly sinks that internally hold callbacks
+/// back into the observer (e.g. `ObsToTracingSink` re-emitting through
+/// the registered tracing dispatcher when `SpanEmissionMode::OnScope`).
+/// `WeakObserver::upgrade()` returns `None` after `shutdown()` so
+/// re-entry during teardown is a no-op rather than a panic.
+pub struct WeakObserver(Weak<dyn Observer>);
+impl WeakObserver {
+    pub fn upgrade(&self) -> Option<Arc<dyn Observer>>;
+}
+pub fn observer_weak() -> WeakObserver;
+
 /// Test-only scoped override. Within the closure, `observer()` returns
 /// `o` on this thread, even while other threads see the global. Cleared
-/// on closure exit. Used by `#[obs::test]`.
+/// on closure exit. Used by `#[obs::test]`. The slot is `RefCell<Option<...>>`
+/// so the closure body may itself call `with_test_observer` (nested
+/// overrides are stacked LIFO).
 pub fn with_test_observer<O: Observer, F, R>(o: O, f: F) -> R
     where F: FnOnce() -> R;
 ```
@@ -225,9 +252,15 @@ The whole-process equivalent of tracing's `rebuild_interest_cache()`
 is `Observer::reload_filter()`; it is called by:
 
 - `EventsConfig::reload_from_file()`
-- `SIGHUP` (when `reload_on_sighup()` is set)
+- `SIGHUP` on Unix (when `reload_on_sighup()` is set; `#[cfg(unix)]`-gated)
+- `notify`-based file watcher on all platforms (when
+  `reload_on_file_change()` is set; this is the cross-platform
+  equivalent of SIGHUP and the recommended default)
 - `with_test_observer` install/restore (per-thread; bumps a thread-
   local generation)
+
+Windows binaries get `reload_on_file_change()` only; Unix binaries
+get both. Either is sufficient.
 
 ## 4. Per-tier workers and sinks
 
@@ -238,7 +271,13 @@ worker `tokio::task` that drains it. Sinks are children of workers.
 pub trait Sink: Send + Sync + 'static {
     /// Called from the worker task — never the emit thread.
     /// Must be non-blocking; long IO must be queued internally.
-    fn deliver(&self, env: &ObsEnvelope);
+    ///
+    /// The argument is a `ScrubbedEnvelope`, not a raw `&ObsEnvelope`:
+    /// the per-tier worker runs the payload scrubber and resolves the
+    /// schema before constructing the wrapper. Lifetime is bounded to
+    /// the per-event call so sinks cannot escape a reference past the
+    /// dispatch boundary. See [14-schema-registry.md § 5](./14-schema-registry.md#5-the-scrubbedenvelope-worker-handoff).
+    fn deliver(&self, env: ScrubbedEnvelope<'_>);
 
     fn flush(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
@@ -265,6 +304,54 @@ pub struct SinkRouter {
 
 The complete catalogue of sinks (built-in and pluggable) plus the
 `MakeWriter` abstraction lives in [20-otel-and-sinks.md](./20-otel-and-sinks.md).
+
+### 4.1 Pipeline order (per envelope)
+
+For each envelope, the pipeline runs in this exact order. Earlier
+drafts described the pieces in different sections; this is the single
+source of truth.
+
+```
+emit thread                                        worker thread
+─────────────────────────────────────────────────  ───────────────────
+1. ObsCallsite::enabled(gen)        — atomic load
+2. Observer::enabled(callsite)      — only if Interest::Sometimes
+3. EventSchema::project(&mut env)   — labels + lift trace/span ids
+4. obs::scope! auto-fill            — runtime read of task-local
+5. Head sampler (per full_name+sev) — one f64 compare; honour
+                                       inbound traceparent.sampled
+                                       (see 13 § 6, 20 § 2.6)
+6. Tail buffer push (TRACE/DEBUG only, when scope is active)
+7. mpsc::try_send → per-tier worker
+                                                   8. Pop from mpsc
+                                                   9. Per-tier scrubber
+                                                      (EventSchemaErased::scrub_for_log;
+                                                       see 14 § 5)
+                                                   10. ScrubbedEnvelope wrapper built
+                                                   11. SinkRouter dispatches to
+                                                       matching Sink::deliver(env)
+                                                   12. Sink batches internally
+```
+
+**Key invariants**:
+
+- The **head sampler runs on the emit thread**, not in the worker. A
+  sampler-dropped event does not consume mpsc bandwidth.
+- The **tail buffer is populated only for events the head sampler
+  kept**; a head-dropped event is invisible to the buffer and
+  therefore to tail-on-error flush. This is intentional: head sampling
+  is an absolute volume cap and tail-on-error is a quality booster on
+  top of it.
+- The **scrubber runs in the worker**, not the emit thread, so
+  redaction cost is off the hot path. Sinks always see a
+  `ScrubbedEnvelope` (the type-system handoff defined in
+  [14-schema-registry.md § 5](./14-schema-registry.md#5-the-scrubbedenvelope-worker-handoff)).
+- `Sink::deliver` is *batched internally* by sinks that benefit
+  (Parquet, ClickHouse, OTLP), not by the worker. The worker's job
+  is solely "dequeue and dispatch."
+
+The AUDIT-tier deviation (bounded blocking + spool, never silent drop)
+applies between step 7 and step 8 only — see § 6.4.
 
 ## 5. Hot path: zero allocations beyond the event itself
 
@@ -334,6 +421,29 @@ When the bucket empties, additional `forensic!` calls become noops
 and increment `ObsForensicBudgetExceeded` (the SDK self-event). The
 intent is "forensic data is precious; blackbox dumps are not".
 
+#### Crate identification
+
+The proc-macro derives `crate` from `module_path!()` at expansion
+time — this is a `&'static str` like `"my_crate::auth::login"`; the
+first `::`-separated segment is the crate name (renamed crates
+produce their renamed identifier here, which is what we want for
+budget-attribution purposes).
+
+Each `obs::forensic!` callsite expands to a `static`:
+
+```rust
+static __FORENSIC_LIMITER: governor::DefaultDirectRateLimiter =
+    governor::RateLimiter::direct(governor::Quota::per_second(
+        nonzero!(100u32)
+    ));
+```
+
+The bucket is per-static, so it is per-callsite (file:line) within
+its crate. Budget is enforced at compile time by `obs lint --strict`
+walking every `obs::forensic!` invocation in the workspace and
+reading the per-crate `forensic_max` from each crate's
+`Cargo.toml`'s `[package.metadata.obs]` table.
+
 ### 6.4 AUDIT-tier delivery policy
 
 AUDIT events have stricter delivery semantics than the other tiers. A
@@ -345,9 +455,12 @@ silent drop on backpressure is a compliance failure. The AUDIT worker:
   on the emit thread — *only* for AUDIT.
 - **Spool to disk on persistent overflow**: if the channel stays
   full for `audit_spool_after_ms` (default 250 ms), envelopes are
-  written to a JSON-lines spool file under
-  `<config.audit.spool_dir>/{batch_id}.audit.jsonl`. A background
-  task drains the spool when the channel recovers.
+  written to a length-prefixed buffa-encoded file (one record =
+  `{u32 length}{ObsEnvelope bytes}`) under
+  `<config.audit.spool_dir>/{batch_id}.audit.bin`, with a sibling
+  `.audit.bin.crc` file holding a per-record CRC32C for tail-of-write
+  verification. A background task drains the spool when the channel
+  recovers.
 - **Never silent-drop**: if the spool itself is unwritable (disk
   full, permission denied), the panic hook is chained — the SDK
   treats AUDIT loss as a crash-equivalent. `EventsConfig.audit.on_failure`
@@ -357,6 +470,59 @@ silent drop on backpressure is a compliance failure. The AUDIT worker:
 This is the only place in the runtime where the emit path can block.
 Documented as a deliberate trade-off; AUDIT volume is by definition
 low (a few hundred per second is a busy auditor day).
+
+#### Spool format and recovery
+
+The spool format is binary, not the NDJSON earlier drafts hinted at.
+NDJSON is human-readable but loses the wire-shape contract (binary
+fields, schema_hash as fixed64, etc.) and triples on-disk size for
+dense AUDIT events. The chosen format:
+
+```
+audit-spool-record := u32_le_length || ObsEnvelope_buffa_bytes
+audit-spool-file   := record* (no header; concatenation of records)
+```
+
+The parallel `.crc` file holds one `u32_le` CRC32C per record. The
+two files are written through `O_APPEND` + `fsync` per batch (default
+batch = 32 records or 100 ms, whichever first). Truncated writes are
+detected at recovery time by CRC mismatch on the last record and
+discarded (the rest of the file is intact).
+
+Recovery semantics:
+
+- **Drain ordering**: when the AUDIT mpsc channel has free space
+  again, the drainer reads the spool **before** dispatching newly
+  enqueued events. This preserves FIFO with respect to original
+  enqueue order. New events queued *during* a drain are admitted
+  to the channel only after the drain catches up to within
+  `audit_drain_lag_max` (default 1024 records).
+- **Crash recovery**: on `StandardObserver::build()`, the runtime
+  scans `config.audit.spool_dir` for any `*.audit.bin` left by a
+  prior process and immediately enqueues their contents to the AUDIT
+  worker. Per-batch CRC validation drops corrupted tails. Recovery
+  emits one `obs.runtime.v1.ObsAuditSpoolRecovered` self-event with
+  the count of recovered records. AUDIT events that were in the
+  channel but not yet spooled at the time of crash are lost; this is
+  the documented bound on AUDIT durability and is bounded by the
+  channel size (default 1024 envelopes).
+- **Spool eviction**: `*.audit.bin` files are deleted by the drainer
+  immediately after the last record is successfully delivered to all
+  AUDIT sinks **and flushed**. There is no time-based eviction —
+  uncommitted spool data persists across restarts. A background sweeper
+  removes files older than `config.audit.spool_max_age` (default 7
+  days) only when their drain cursor confirms full delivery; this
+  guards against an operator who removes a sink without draining the
+  spool first.
+- **Disk pressure**: `config.audit.spool_max_bytes` (default 1 GiB)
+  caps the on-disk spool. When exceeded, the runtime applies the
+  configured `audit.on_failure` (panic / abort / warn_only) — exactly
+  as for an unwritable spool, since "spool full" and "spool
+  unwritable" are the same compliance failure.
+
+Consumers who want NDJSON for ad-hoc inspection can run
+`obs decode --audit-spool path.audit.bin` (CLI addition; see
+[50-cli.md § 3.8](./50-cli.md#38-obs-decode)).
 
 ### 6.5 OTLP transport details
 
@@ -504,6 +670,12 @@ events — there is exactly one signal channel.
 | `obs.runtime.v1.ObsPanicked` | LOG (FATAL) | emitted by panic hook before shutdown_blocking |
 | `obs.runtime.v1.ObsAuditSpooled` | LOG (WARN) | AUDIT envelope written to disk spool because channel was full |
 | `obs.runtime.v1.ObsAuditSpoolFailed` | LOG (FATAL) | AUDIT spool unwritable; behaviour driven by `audit.on_failure` |
+| `obs.runtime.v1.ObsAuditSpoolRecovered` | LOG (INFO) | AUDIT spool from prior process drained on startup; carries record count |
+| `obs.runtime.v1.ObsRegistryInitialized` | LOG (DEBUG) | Schema registry walked at observer init; carries schema count and Arrow assembly time |
+| `obs.runtime.v1.ObsConfigInconsistent` | LOG (WARN) | Two configurations contradict (e.g. `OnScope` bridge mode + `OtlpTraceSink` both installed; see [30-tracing-bridge.md § 3.5](./30-tracing-bridge.md#35-span-emission-mode)) |
+| `obs.runtime.v1.ObsAnalyticsPartialDropped` | LOG (WARN) | Parquet `*.tmp` from prior process removed at startup (incomplete batch; data lost) |
+| `obs.runtime.v1.ObsSpanPairOrphaned` | LOG (DEBUG) | Only one half of a `Started`/`Completed` event pair arrived at `OtlpTraceSink`; emitted as a point-in-time span |
+| `obs.runtime.v1.ObsSchemaUnknown` | LOG (DEBUG) | Sink received an envelope whose `full_name`/`schema_hash` is not in the local schema registry; rate-limited per `(sink, full_name)`; falls back to raw-bytes column |
 | `obs.runtime.v1.ObsBridgePiiSuspected` | LOG (WARN) | tracing-bridge name-pattern PII redactor fired (one-shot per field name) |
 | `obs.runtime.v1.ObsBridgeMatcherConflict` | LOG (WARN) | two `register_typed` matchers matched the same callsite |
 | `obs.runtime.v1.ObsBridgeLateSpanRecord` | LOG (WARN) | `Span::record` arrived after `ObsSpanCompleted` already emitted |

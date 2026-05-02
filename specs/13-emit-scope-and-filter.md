@@ -116,18 +116,40 @@ into events.
 
 ### 2.1 Auto-fill semantics for default-vs-explicit values
 
-Auto-fill rule: a scope-declared field overrides an event field only
-when the event field's value is the type's default sentinel
-(`String::new()` for strings, `0` for numerics with `#[obs(trace_id)]`
-or `#[obs(label)]` annotation marked `default-fillable`).
+**Auto-fill is a runtime check inside generated `EventSchema::project`**,
+not a compile-time builder default. The builder produces an
+`Option<String>` (or `Option<NumericNewtype>`) for each
+`default-fillable` field — typically those annotated `#[obs(trace_id)]`,
+`#[obs(span_id)]`, `#[obs(parent_span_id)]`, or fields explicitly
+marked `#[obs(label, scope_fillable)]`. The user-facing setter still
+takes `impl Into<String>` (or the inner numeric type) so the
+`Option` is invisible to the call site.
 
-There is one sharp edge: an explicit empty string passed at the call
-site is indistinguishable from the default. The codegen mitigates
-this by typing `default-fillable` `String` fields as `Option<String>`
-in the generated `ArgsBuilder` (so `.trace_id("")` → `Some("")` ≠ the
-default `None`), and the auto-fill path only fires when the option is
-`None`. The user never sees `Option`; the typed-builder setter takes
-`impl Into<String>` as before.
+At emit time, the generated `project(&mut env)`:
+
+1. For each default-fillable field whose `Option` is `None`, queries
+   the active `obs::scope!` task-local frame stack (innermost first)
+   for a frame that declares the same field name.
+2. If found, writes the scope value into the corresponding envelope
+   slot (`env.trace_id` for `FIELD_KIND_TRACE_ID`, `env.labels[k]`
+   for `FIELD_KIND_LABEL`).
+3. If not found, the slot is left at the envelope's default
+   (`String::new()` for ids; absent from `env.labels` for labels).
+
+Auto-fill rule: **a scope-declared field overrides an event field
+only when the call site did not pass any value**. An explicit
+`.trace_id("")` produces `Some("")` and bypasses the scope; an
+omitted `.trace_id(...)` produces `None` and inherits.
+
+This sharp distinction (between "explicitly empty" and "not passed")
+is impossible with `Default::default()` semantics alone, which is why
+the codegen routes through `Option`. The user never sees `Option`; the
+typed-builder setter takes `impl Into<String>` as before, internally
+wrapping with `Some(...)`.
+
+The full pipeline order — including where in the emit path the
+auto-fill runs — is documented in
+[11-runtime-core.md § 4.1](./11-runtime-core.md#41-pipeline-order-per-envelope).
 
 ### 2.2 `obs::context!` — broadcasting only, no tail buffer
 
@@ -274,14 +296,35 @@ correctly without leak.
 
 ## 6. Sampling
 
-Two-stage sampling, both configured live via `ArcSwap<EventsConfig>`:
+Three inputs decide whether an envelope is kept, evaluated in this
+order:
 
-- **Head sampling**: per `(event_full_name, severity)` rate. Fast path,
-  one `f64` comparison.
-- **Tail-on-error**: a per-scope ring buffer (capacity 64) holds recent
-  events; if any subsequent event in the same `obs::scope!` is
-  `>= ERROR`, the buffer is flushed. Otherwise the buffer is dropped
-  when the scope guard is dropped.
+1. **W3C `traceparent.sampled` (inbound)** — if the active scope was
+   opened by `obs-tower`'s server middleware extracting a non-empty
+   `traceparent`, the inbound `sampled` flag (bit 0 of `flags`) is
+   stored on the scope frame. The decision flows downstream:
+
+   | inbound `sampled` | local head sampler | result |
+   | --- | --- | --- |
+   | `true` (set) | any rate | **always emit** (record `sampling_reason = OVERRIDE`) |
+   | `false` (cleared) | any rate | **always drop** (the upstream caller already decided we're not sampled) |
+   | absent (no `traceparent`) | local rate | local sampler decides |
+
+   This matches OpenTelemetry's `ParentBasedSampler` defaults and
+   is the only way distributed traces stay coherent across services.
+   See [20-otel-and-sinks.md § 2.6](./20-otel-and-sinks.md#26-trace-context-propagation)
+   for the propagator contract.
+
+2. **Head sampling**: per `(event_full_name, severity)` rate from
+   config. Fast path, one `f64` comparison. Skipped when (1) already
+   decided.
+
+3. **Tail-on-error**: a per-scope ring buffer (capacity 64) holds
+   recent events; if any subsequent event in the same `obs::scope!`
+   is `>= ERROR`, the buffer is flushed (sampling_reason =
+   `TAIL_ERROR`). Otherwise the buffer is dropped when the scope
+   guard is dropped. Tail-on-error operates on what survived the
+   head sampler, so a head-dropped event is invisible to the buffer.
 
 The tail buffer lives in a `tokio::task_local!` storage; entering an
 `obs::scope!` macro pushes a new buffer onto the per-task stack. The
@@ -308,7 +351,15 @@ pub async fn handle_request(req: Request) -> Response {
 
 ## 7. The `obs::Filter` DSL
 
-`obs::Filter` mirrors `tracing-subscriber::EnvFilter`:
+`obs::Filter` adopts `tracing-subscriber::EnvFilter`'s grammar
+**verbatim** — same directive syntax, same precedence rules, same
+field-value matching shape. The implementation **ports** EnvFilter's
+parser (under MIT/Apache-2.0; see `vendors/tracing/tracing-subscriber/src/filter/env/`)
+adapted to operate on `ObsCallsite` + `env.labels` instead of
+`tracing::Metadata` + `tracing::Event`. Reusing the grammar means
+operators do not relearn syntax when migrating from `tracing` to
+`obs`, and the parser's edge cases (already battle-tested for
+years) come for free.
 
 ```
 OBS_FILTER="info,myapp::auth=debug,myapp.v1.ObsRequestCompleted=trace"
@@ -317,6 +368,19 @@ OBS_FILTER="info,myapp::auth=debug,myapp.v1.ObsRequestCompleted=trace"
 Filters apply at the static `ObsCallsite` level so a filtered-out
 emit costs only the atomic `Interest` load + branch (see
 [11-runtime-core.md § 2](./11-runtime-core.md#2-the-obscallsite-and-atomic-interest-cache)).
+
+### 7.0 Directive layout (matches EnvFilter)
+
+A directive is `[target][=level][[field=value,...]]`. Static
+directives (no `[field=value]` clause) are bucketed into a flat
+sorted list checked once per callsite first-sight; dynamic
+directives (with field-value clauses) are bucketed by `full_name`
+into a `HashMap<&'static str, SmallVec<[Directive; 2]>>` so the
+hot path is one HashMap probe followed by a tiny vector walk —
+**not** a linear scan over every directive. Tracing's `EnvFilter`
+uses the same `Statics`/`Dynamics` split (see
+`tracing-subscriber/src/filter/env/directive.rs`); we keep that
+shape so the cost stays sub-100 ns even with many directives.
 
 ### 7.1 Field-value directives
 

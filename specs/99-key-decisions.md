@@ -317,6 +317,84 @@ looks up the original metadata and reconstitutes a faithful tracing
 event so downstream layers see no difference between "never interned"
 and "round-tripped through interning".
 
+## Schema registry & sink contract
+
+### D38 — `linkme` over `inventory` for the schema registry
+
+[14-schema-registry.md](./14-schema-registry.md) introduces an
+object-safe `EventSchemaErased` trait collected at link time. We use
+`linkme::distributed_slice` rather than `inventory::collect!` because
+(a) duplicates produce a link-time error rather than a silent
+last-write-wins, (b) the slice is reliable on musl-static and WASM
+where `inventory`'s `ctor`-style init can be stripped, and (c) there
+is no startup walk cost. Two-line codegen change to switch back if
+upstream breaks.
+
+### D39 — `ScrubbedEnvelope` is the type-system handoff between worker and sink
+
+The `Sink::deliver` signature takes `ScrubbedEnvelope<'_>`, not
+`&ObsEnvelope`. The scrubber runs in the per-tier worker before the
+sink chain ever sees the envelope; the wrapper's lifetime ties the
+scrubbed payload bytes to the worker's reused scratch buffer so a
+sink cannot accidentally receive an unscrubbed payload or escape a
+reference past the per-event boundary. Replaces the implicit "the
+worker scrubs first" rule that was buried in the runtime spec.
+[14-schema-registry.md § 5](./14-schema-registry.md#5-the-scrubbedenvelope-worker-handoff).
+
+### D40 — Sink lookup is `schema_hash`-first, `full_name`-fallback
+
+8-byte u64 hash is faster than string lookup; envelopes carry both;
+the fallback covers `obs decode` against batches from foreign
+producers whose schemas are not link-registered locally. Foreign
+schemas degrade gracefully to a raw-bytes column rather than being
+dropped.
+
+### D41 — Auto-fill is a runtime read of the scope frame, not a builder default
+
+A typed builder cannot reach into a task-local. `Default::default()`
+cannot distinguish "user passed `""`" from "user omitted the field".
+The codegen routes default-fillable fields through `Option<T>`
+internally and `EventSchema::project` is what reads
+`obs::scope!`. The user never sees the `Option`; the builder setter
+takes `impl Into<T>` as before. [13-emit-scope-and-filter.md § 2.1](./13-emit-scope-and-filter.md#21-auto-fill-semantics-for-default-vs-explicit-values).
+
+### D42 — Inbound `traceparent.sampled` is honoured before the local head sampler
+
+OpenTelemetry's `ParentBasedSampler` default. Without this rule
+distributed traces become incoherent across services. The local
+sampler is consulted only when no inbound `traceparent` exists.
+[13-emit-scope-and-filter.md § 6](./13-emit-scope-and-filter.md#6-sampling).
+
+### D43 — AUDIT spool is binary length-prefixed buffa, not NDJSON
+
+NDJSON loses the wire-shape contract (binary fields, schema_hash as
+fixed64) and triples on-disk size for dense AUDIT events. The chosen
+format is `{u32_le length}{ObsEnvelope buffa bytes}` per record with
+a parallel CRC32C file for tail-of-write recovery. CLI `obs decode
+--audit-spool` renders to NDJSON for ad-hoc inspection.
+[11-runtime-core.md § 6.4](./11-runtime-core.md#64-audit-tier-delivery-policy).
+
+### D44 — `obs::Filter` ports `EnvFilter`'s grammar verbatim
+
+Operators do not relearn syntax when migrating from `tracing` to
+`obs`. The implementation ports EnvFilter's `Statics`/`Dynamics`
+parser shape so the hot path stays sub-100 ns even with many
+directives. [13-emit-scope-and-filter.md § 7](./13-emit-scope-and-filter.md#7-the-obsfilter-dsl).
+
+### D45 — Cross-platform config reload uses `notify`-based file watcher
+
+`SIGHUP` is `#[cfg(unix)]`-only. Windows binaries get
+`reload_on_file_change()` (the `notify` crate). Either is sufficient;
+the recommended default is the file watcher because it works everywhere.
+
+### D46 — `WeakObserver` for sinks that may re-enter the observer
+
+Sinks like `ObsToTracingSink` (Direction B in
+`SpanEmissionMode::OnScope`) hold callbacks that go back into the
+observer chain. A bare `Arc<dyn Observer>` would cycle. `WeakObserver`
+upgrades to `None` after `shutdown()` so re-entry during teardown is a
+no-op rather than a panic. [11-runtime-core.md § 3](./11-runtime-core.md#3-the-observer-trait).
+
 ## Open / deferred decisions
 
 | Decision | Status | Notes |
