@@ -1,1 +1,2 @@
 vendors/
+crates/obs-proto/src/pb/*

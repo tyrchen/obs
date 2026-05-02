@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: obs L002: field `email` is LABEL but classification is PII
+ --> tests/trybuild/fail/L002_pii_label.rs:5:26
+  |
+5 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

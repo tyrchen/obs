@@ -1,0 +1,28 @@
+[package]
+name = "obs-sdk"
+description = "Façade for the obs SDK; re-exports the everyday API."
+categories = ["development-tools"]
+keywords = ["observability", "obs"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["dev", "panic-hook"]
+dev = []
+panic-hook = []
+test = []
+
+[dependencies]
+obs-core = { workspace = true }
+obs-macros = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+
+[lints]
+workspace = true

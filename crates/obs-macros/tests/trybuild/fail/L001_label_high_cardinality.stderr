@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: obs L001: field `user_id` is LABEL but cardinality is High/Unbounded
+ --> tests/trybuild/fail/L001_label_high_cardinality.rs:5:26
+  |
+5 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

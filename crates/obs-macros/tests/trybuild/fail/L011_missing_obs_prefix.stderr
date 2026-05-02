@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: obs L011: event type name `CheckoutStarted` must start with `Obs` (default workspace prefix)
+ --> tests/trybuild/fail/L011_missing_obs_prefix.rs:6:26
+  |
+6 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

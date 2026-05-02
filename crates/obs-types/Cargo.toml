@@ -1,0 +1,21 @@
+[package]
+name = "obs-types"
+description = "Foundation enums for the obs SDK: Tier, Severity, FieldKind, Cardinality, Classification, MetricKind, SamplingReason."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "wide-events"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+buffa = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "obs-proto"
+description = "Canonical obs/v1 protobuf schemas: ObsEnvelope, ObsBatch, options, built-in events."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "protobuf"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+buffa = { workspace = true }
+buffa-descriptor = { workspace = true }
+obs-types = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+buffa-build = { workspace = true }
+
+[lints]
+workspace = true

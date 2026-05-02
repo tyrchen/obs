@@ -1,0 +1,27 @@
+[package]
+name = "obs-build"
+description = "Build-time codegen helpers for the obs SDK; reads .proto via buffa-build + buffa-reflect."
+categories = ["development-tools::build-utils"]
+keywords = ["observability", "obs", "protobuf"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+buffa = { workspace = true }
+buffa-build = { workspace = true }
+buffa-descriptor = { workspace = true }
+buffa-reflect = { workspace = true }
+heck = { workspace = true }
+obs-types = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

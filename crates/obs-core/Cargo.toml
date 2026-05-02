@@ -1,0 +1,41 @@
+[package]
+name = "obs-core"
+description = "Runtime engine for the obs SDK: Observer, Sink, schema registry, sampling, config."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "wide-events"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+arc-swap = { workspace = true }
+blake3 = { workspace = true }
+buffa = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+linkme = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "emit_noop"
+harness = false
+
+[lints]
+workspace = true

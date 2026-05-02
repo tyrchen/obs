@@ -1,0 +1,135 @@
+syntax = "proto3";
+package obs.v1;
+
+import "obs/v1/enums.proto";
+import "obs/v1/options.proto";
+
+// User-facing built-in events (specs/61 § 2.2). Phase-1 minimum is
+// ObsHelloEmitted (used by apps/server) plus the SDK self-events the
+// runtime needs at observer init.
+
+message ObsHelloEmitted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string who = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}
+
+message ObsForensicEvent {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string site = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string message = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  map<string, string> attrs = 3 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsFnExecuted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string fn_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  uint64 latency_ns = 2 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_HISTOGRAM, unit: "ns" }
+  }];
+}
+
+message ObsFnEntered {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  string fn_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+// Span carriers from the tracing bridge (spec 30).
+message ObsSpanCompleted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  string name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string target = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  uint64 latency_ns = 3 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_HISTOGRAM, unit: "ns" }
+  }];
+}
+
+message ObsSpanEntered {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_TRACE };
+
+  string name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string target = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsTracingForensicEvent {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string target = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string message = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  string span_path = 3 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  map<string, string> attrs = 4 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsTracingInternedEvent {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  fixed64 callsite_id = 1;
+  map<string, string> values = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsForensicInternedEvent {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  fixed64 callsite_id = 1;
+  map<string, string> values = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+// HTTP middleware events (spec 40).
+message ObsHttpRequestStarted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string method = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string route = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsHttpRequestCompleted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string method = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string route = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string status_class = 3 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 latency_ms = 4 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_HISTOGRAM, unit: "ms" }
+  }];
+  uint64 bytes_out = 5 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_COUNTER, unit: "By" }
+  }];
+}
+
+message ObsHttpClientStarted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string method = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string host = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsHttpClientCompleted {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  string method = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string host = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string status_class = 3 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 latency_ms = 4 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_HISTOGRAM, unit: "ms" }
+  }];
+}
+
+message ObsCallsiteRegistered {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  fixed64 callsite_id = 1;
+  string target = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string file = 3 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  uint32 line = 4 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  string template = 5 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  repeated string field_names = 6;
+}

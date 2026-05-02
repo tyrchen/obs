@@ -1,0 +1,159 @@
+syntax = "proto3";
+package obs.runtime.v1;
+
+import "obs/v1/enums.proto";
+import "obs/v1/options.proto";
+
+// SDK self-events (spec 11 § 10). These flow through the same observer
+// as user events. Tier and default severity per the table in 11 § 10.
+
+message ObsSinkDropped {
+  option (obs.v1.event) = { tier: TIER_METRIC, default_sev: SEVERITY_WARN };
+
+  string tier = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string reason = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 count = 3 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_COUNTER, unit: "1" }
+  }];
+}
+
+message ObsSinkFailed {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string sink = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string reason = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsConfigReloaded {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  fixed64 config_hash = 1;
+}
+
+message ObsConfigReloadFailed {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string reason = 1 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsConfigInconsistent {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string reason = 1 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsSchemaUnknown {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  string sink = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string full_name = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsRegistryInitialized {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  uint64 schema_count = 1;
+  uint64 arrow_assembly_ns = 2;
+}
+
+message ObsForensicBudgetExceeded {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string crate_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string site = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsLabelCardinalityHigh {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string full_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string label_key = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  uint64 estimated_distinct = 3;
+}
+
+message ObsOversizedDropped {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string full_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  uint64 size_bytes = 2;
+}
+
+message ObsPanicked {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_FATAL };
+
+  string message = 1 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  string location = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsAuditSpooled {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string full_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsAuditSpoolFailed {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_FATAL };
+
+  string reason = 1 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsAuditSpoolRecovered {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+
+  uint64 record_count = 1;
+}
+
+message ObsAnalyticsPartialDropped {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string path = 1 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsSpanPairOrphaned {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  string full_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsBridgePiiSuspected {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string field_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsBridgeMatcherConflict {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string callsite = 1 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsBridgeLateSpanRecord {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  string span_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+}
+
+message ObsBridgeNoDispatcher {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+}
+
+message ObsBridgeCallsiteUnresolved {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
+
+  fixed64 callsite_id = 1;
+}
+
+message ObsCallsiteHashCollision {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  fixed64 callsite_id = 1;
+  string first = 2 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+  string second = 3 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
+}
+
+message ObsCallsiteRegistryConflict {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_WARN };
+
+  fixed64 callsite_id = 1;
+}
