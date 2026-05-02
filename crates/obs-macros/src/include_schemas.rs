@@ -33,10 +33,43 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         )
     })?;
 
+    // We wrap the includes in a private module so that the workspace's
+    // strict clippy bans (`clippy::indexing_slicing`,
+    // `clippy::disallowed_*`, etc.) do not fire on the buffa-generated
+    // wire-type code. The user re-exports the generated `myapp::v1::*`
+    // module via `pub use __obs_generated::*` so call-site paths read
+    // identically (`myapp::v1::ObsXxx`). Spec 12 § 3.1.
     Ok(quote! {
-        ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/schemas.rs"));
-        ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/builders.rs"));
-        ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/lints.rs"));
-        ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/arrow_schema.rs"));
+        #[allow(
+            clippy::all,
+            clippy::pedantic,
+            clippy::restriction,
+            clippy::indexing_slicing,
+            clippy::expect_used,
+            clippy::unwrap_used,
+            clippy::panic,
+            clippy::disallowed_methods,
+            clippy::disallowed_types,
+            non_camel_case_types,
+            non_snake_case,
+            dead_code,
+            unused_imports,
+            missing_docs,
+        )]
+        mod __obs_generated {
+            // Stage 1: buffa-build wire types. `obs_buffa.rs` is the
+            // entry file emitted via `include_file("obs_buffa.rs")`;
+            // it brings every proto package's nested `pub mod` into
+            // scope.
+            ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs_buffa.rs"));
+            // Stage 2: obs codegen, including `impl EventSchema for ObsXxx`
+            // which references the wire types loaded just above.
+            ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/schemas.rs"));
+            ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/builders.rs"));
+            ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/lints.rs"));
+            ::std::include!(::std::concat!(::std::env!("OUT_DIR"), "/obs/arrow_schema.rs"));
+        }
+        #[allow(unused_imports)]
+        pub use __obs_generated::*;
     })
 }

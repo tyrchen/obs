@@ -101,7 +101,6 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             }
         }
 
-        #[used]
         #[::obs_core::__private::linkme::distributed_slice(::obs_core::__private::EVENT_SCHEMAS)]
         #[linkme(crate = ::obs_core::__private::linkme)]
         #[doc(hidden)]

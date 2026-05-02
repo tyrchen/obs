@@ -13,13 +13,18 @@
     missing_docs,
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::disallowed_methods,
+    clippy::disallowed_types
 )]
 
+mod test_compile_errors;
 mod test_in_memory_observer;
 mod test_multi_tenant_observer;
 mod test_no_observer_noop;
 mod test_obs_test_attribute;
 mod test_parallel_tests;
+mod test_quickstart_60s;
 mod test_registry_init;
 mod test_scrubbed_envelope;

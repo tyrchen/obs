@@ -48,7 +48,7 @@ pub use obs_types::{
 pub use observer::{
     InMemoryHandle, InMemoryObserver, NoopObserver, Observer, StandardObserver,
     StandardObserverBuilder, ThreadObserverGuard, WeakObserver, install_observer, observer,
-    observer_weak, with_observer_thread_local, with_test_observer,
+    observer_weak, with_observer_task, with_observer_thread_local, with_test_observer,
 };
 pub use registry::{
     ArrowStructBuilder, DecodeError, EVENT_SCHEMAS, EventSchemaErased, OtelAttributeView,
@@ -60,6 +60,7 @@ pub use sink::{FormatterStyle, InMemorySink, NoopSink, Sink, StdoutSink};
 /// `obs-build`. End users should not depend on these directly.
 #[doc(hidden)]
 pub mod __private {
+    pub use buffa;
     pub use bytes::BytesMut;
     pub use linkme;
     pub use obs_proto::__private::*;

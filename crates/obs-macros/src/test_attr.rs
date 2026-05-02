@@ -8,16 +8,23 @@
 //!   runs under `with_test_observer(observer, || #body)`, which routes `obs::observer()` to the
 //!   per-thread slot for this thread only.
 //!
-//! - **Async test (`async fn`)**: same shape, but wrapped in `#[tokio::test(flavor =
-//!   "current_thread")]` so the future runs on the same thread that called `install_thread_handle`.
-//!   The per-thread slot is sufficient under the current_thread runtime; the multi-thread path will
-//!   switch to the per-task observer slot in Phase 3 task 3.3 (`Future::with_observer`) without
-//!   changing user-visible API.
+//! - **Async test (`async fn`)**: same handle install, but the observer is placed in the
+//!   **per-task** slot via `with_observer_task(observer, async move { #body }).await`. The per-task
+//!   slot follows tokio task migrations across worker threads, which the per-thread slot does not.
+//!   Phase 3 task 3.3 lands `WithObserver::with_observer` and `Instrumented<F>` —
+//!   `with_observer_task` is the Phase-2 surface that becomes the primitive both compile down to.
 //!
-//! Note: install_thread_handle uses one InMemoryObserver and stores
-//! that observer's handle in TEST_HANDLE. The expansion threads the
-//! SAME observer through `with_test_observer` so `obs::observer()`
-//! routes emits into the InMemorySink that the test handle reads.
+//! Note: `install_thread_handle` stores the observer's handle in a
+//! thread-local cell that `assert_emitted!` reads. The expansion
+//! threads the SAME observer through `with_observer_task` so
+//! `obs::observer()` routes emits into the `InMemorySink` that the
+//! test handle reads. The thread-local handle is read from whichever
+//! tokio worker thread the test's `await` is on at the moment of the
+//! `assert_emitted!` macro expansion — under the multi-thread tokio
+//! runtime that's the same thread that ran `install_thread_handle`,
+//! because `with_observer_task` routes the per-task observer (which
+//! delivers events synchronously into the `InMemorySink` shared by
+//! observer + handle) regardless of worker.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -43,14 +50,15 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 
     let expanded = if is_async {
         quote! {
-            #[::tokio::test(flavor = "current_thread")]
+            #[::tokio::test]
             #(#user_attrs)*
             #vis #sig {
                 let (__obs_observer, __obs_handle, __obs_guard) =
                     ::obs_core::test::install_thread_handle();
-                let _g = ::obs_core::with_observer_thread_local(__obs_observer);
-                let __obs_result = async move #body.await;
-                drop(_g);
+                let __obs_result = ::obs_core::with_observer_task(
+                    __obs_observer,
+                    async move #body,
+                ).await;
                 drop(__obs_guard);
                 let _ = __obs_handle;
                 __obs_result

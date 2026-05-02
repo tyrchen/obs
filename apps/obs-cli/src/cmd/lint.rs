@@ -24,24 +24,58 @@ pub struct LintArgs {
     /// Treat warnings as errors (CI integration).
     #[arg(long)]
     pub strict: bool,
+
+    /// Allowlist a specific lint id (e.g. `--allow L011`); repeatable.
+    /// Findings whose rule matches are reported as warnings, not errors.
+    #[arg(long, value_name = "ID")]
+    pub allow: Vec<String>,
+
+    /// Restrict scan to events whose `full_name` contains this
+    /// substring; repeatable (any-match). Spec 50 § 3.4.
+    #[arg(long, value_name = "PATTERN")]
+    pub filter: Vec<String>,
 }
 
 pub fn run(args: LintArgs) -> Result<()> {
     let pool = args.source.build_pool()?;
     let events = scan_pool(&pool)?;
     let mut errors = 0usize;
+    let mut warnings = 0usize;
+    let scanned = events
+        .iter()
+        .filter(|e| matches_filter(&e.full_name, &args.filter))
+        .count();
     for e in &events {
+        if !matches_filter(&e.full_name, &args.filter) {
+            continue;
+        }
         let report = lint_one(e, &args.source.event_prefix);
         for f in &report.findings {
-            errors += 1;
-            eprintln!("error[{}] {}: {}", f.rule, e.full_name, f.detail);
+            let allowed = args.allow.iter().any(|a| a.eq_ignore_ascii_case(f.rule));
+            if allowed {
+                warnings += 1;
+                eprintln!("warning[{}] {}: {}", f.rule, e.full_name, f.detail);
+            } else {
+                errors += 1;
+                eprintln!("error[{}] {}: {}", f.rule, e.full_name, f.detail);
+            }
         }
     }
-    println!("{} error(s) · {} event(s) scanned", errors, events.len());
-    if errors > 0 {
+    println!(
+        "{} error(s) · {} warning(s) · {} event(s) scanned",
+        errors, warnings, scanned
+    );
+    if errors > 0 || (args.strict && warnings > 0) {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn matches_filter(full_name: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return true;
+    }
+    patterns.iter().any(|p| full_name.contains(p.as_str()))
 }
 
 #[derive(Debug)]

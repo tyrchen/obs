@@ -200,6 +200,75 @@ message ObsLoggedIn {
     assert!(text.contains("user_id"), "stdout: {text}");
 }
 
+#[test]
+fn test_obs_lint_should_downgrade_to_warning_with_allow() {
+    let tmp = tempdir();
+    let proto_dir = tmp.path().join("proto").join("myapp").join("v1");
+    std::fs::create_dir_all(&proto_dir).unwrap();
+    std::fs::write(
+        proto_dir.join("evt.proto"),
+        r#"syntax = "proto3";
+package myapp.v1;
+import "obs/v1/options.proto";
+message Bad {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+  string who = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}
+"#,
+    )
+    .unwrap();
+    let out = Command::new(obs_bin())
+        .args([
+            "lint",
+            "--allow",
+            "L011",
+            "--schemas",
+            tmp.path().join("proto").to_str().unwrap(),
+        ])
+        .output()
+        .expect("run obs lint --allow L011");
+    assert!(out.status.success(), "expected zero exit with --allow L011");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("warning[L011]"), "stderr: {stderr}");
+}
+
+#[test]
+fn test_obs_lint_should_filter_events_by_pattern() {
+    let tmp = tempdir();
+    let proto_dir = tmp.path().join("proto").join("myapp").join("v1");
+    std::fs::create_dir_all(&proto_dir).unwrap();
+    std::fs::write(
+        proto_dir.join("evt.proto"),
+        r#"syntax = "proto3";
+package myapp.v1;
+import "obs/v1/options.proto";
+message Bad {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+  string who = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}
+message ObsGood {
+  option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_INFO };
+  string who = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}
+"#,
+    )
+    .unwrap();
+    // --filter "ObsGood" should skip the Bad message → exit 0.
+    let out = Command::new(obs_bin())
+        .args([
+            "lint",
+            "--filter",
+            "ObsGood",
+            "--schemas",
+            tmp.path().join("proto").to_str().unwrap(),
+        ])
+        .output()
+        .expect("run obs lint --filter");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 event(s) scanned"), "stdout: {stdout}");
+}
+
 // ─── tiny tempdir helper ──────────────────────────────────────────────
 
 struct TempDir(PathBuf);

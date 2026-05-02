@@ -155,10 +155,20 @@ impl Config {
 
     /// Run codegen.
     ///
+    /// Two-stage pipeline per spec 12 § 3:
+    ///
+    /// 1. **Stage 1 — `buffa-build`**: compile the `.proto` files into Rust wire types under
+    ///    `$OUT_DIR/obs_buffa.rs` (one entry-point file via `include_file`). Skipped when the user
+    ///    pre-built the FDS via `descriptor_source(Precompiled(_))` and there are no `.proto` files
+    ///    set on `Config` (the test path).
+    /// 2. **Stage 2 — obs codegen**: read `(obs.v1.event)` / `(obs.v1.field)` annotations from the
+    ///    descriptor pool and emit `$OUT_DIR/obs/{schemas,builders,lints,arrow_schema}.rs`.
+    ///
     /// # Errors
     ///
     /// Returns `CodegenError` for any step that fails: `protoc`
-    /// invocation, FDS decode, option scan, generated-file IO.
+    /// invocation, `buffa-build` invocation, FDS decode, option scan,
+    /// generated-file IO.
     pub fn compile(self) -> Result<(), CodegenError> {
         let out_dir = self
             .out_dir
@@ -167,7 +177,27 @@ impl Config {
             .ok_or_else(|| CodegenError::Protoc("OUT_DIR not set".into()))?;
         std::fs::create_dir_all(out_dir.join("obs")).map_err(CodegenError::OutputIo)?;
 
-        let fds_bytes = self.produce_fds(&out_dir)?;
+        // Materialise embedded include dir (obs/v1/options.proto) once
+        // so both the buffa-build and protoc invocations share it.
+        let mut effective_includes = self.includes.clone();
+        if effective_includes
+            .iter()
+            .any(|p| p.as_os_str() == "__obs_build_embedded_options__")
+        {
+            let embed_dir = out_dir.join("obs").join("include");
+            materialise_embedded_options(&embed_dir).map_err(CodegenError::OutputIo)?;
+            effective_includes.retain(|p| p.as_os_str() != "__obs_build_embedded_options__");
+            effective_includes.push(embed_dir);
+        }
+
+        // Stage 1: buffa-build for wire types. Skip when the user has
+        // no .proto files (the test path uses a precompiled FDS only).
+        if !self.files.is_empty() {
+            self.invoke_buffa_build(&out_dir, &effective_includes)?;
+        }
+
+        // Stage 2: obs codegen.
+        let fds_bytes = self.produce_fds(&out_dir, &effective_includes)?;
         let fds = FileDescriptorSet::decode_from_slice(&fds_bytes)
             .map_err(|e| CodegenError::DescriptorDecode(e.to_string()))?;
         let pool = DescriptorPool::from_file_descriptor_set(fds)
@@ -216,35 +246,66 @@ impl Config {
         Ok(())
     }
 
-    fn produce_fds(&self, out_dir: &Path) -> Result<Vec<u8>, CodegenError> {
+    fn invoke_buffa_build(
+        &self,
+        _out_dir: &Path,
+        effective_includes: &[PathBuf],
+    ) -> Result<(), CodegenError> {
+        // buffa-build's `include_file` mode is path-aware:
+        //
+        // - When `out_dir` is **unset** (default), buffa reads `OUT_DIR` from the env and emits the
+        //   entry file with `include!(concat!(env!("OUT_DIR"), "/foo.rs"))` paths. The user can
+        //   therefore `include!` the entry from any source file in their crate.
+        // - When `out_dir` is **explicitly set**, buffa emits sibling-relative `include!("foo.rs")`
+        //   paths, which only resolve correctly when the user `mod foo;`'s the parent.
+        //
+        // We want the first form (env!("OUT_DIR")-rooted) so
+        // `obs::include_schemas!` can drop the entry into any
+        // `src/*.rs`. Therefore: only pass `.out_dir(...)` to
+        // buffa-build when the user explicitly overrode `obs-build`'s
+        // `Config::out_dir`. The OS env `OUT_DIR` cargo supplies
+        // covers the production path; tests that override `out_dir`
+        // are responsible for `include!`'ing via `mod`s instead.
+        let mut cfg = buffa_build::Config::new()
+            .files(&self.files)
+            .includes(effective_includes)
+            .include_file("obs_buffa.rs")
+            .generate_views(true);
+        if let Some(explicit_out) = &self.out_dir {
+            cfg = cfg.out_dir(explicit_out);
+        }
+        if let DescriptorSource::Precompiled(path) = &self.descriptor_source {
+            cfg = cfg.descriptor_set(path);
+        }
+        cfg.compile()
+            .map_err(|e| CodegenError::Buffa(e.to_string()))?;
+        Ok(())
+    }
+
+    fn produce_fds(
+        &self,
+        out_dir: &Path,
+        effective_includes: &[PathBuf],
+    ) -> Result<Vec<u8>, CodegenError> {
         match &self.descriptor_source {
-            DescriptorSource::Protoc => self.invoke_protoc(out_dir),
+            DescriptorSource::Protoc => self.invoke_protoc(out_dir, effective_includes),
             DescriptorSource::Precompiled(path) => {
                 std::fs::read(path).map_err(CodegenError::DescriptorIo)
             }
         }
     }
 
-    fn invoke_protoc(&self, out_dir: &Path) -> Result<Vec<u8>, CodegenError> {
+    fn invoke_protoc(
+        &self,
+        out_dir: &Path,
+        effective_includes: &[PathBuf],
+    ) -> Result<Vec<u8>, CodegenError> {
         let protoc = std::env::var("PROTOC").unwrap_or_else(|_| "protoc".to_string());
         let fds_path = out_dir.join("obs").join("fds.bin");
         let mut cmd = Command::new(&protoc);
         cmd.arg("--include_imports");
         cmd.arg(format!("--descriptor_set_out={}", fds_path.display()));
-
-        // Materialise embedded includes (e.g. obs/v1/options.proto)
-        // when the user asked for `include_obs_options()`.
-        let mut effective_includes = self.includes.clone();
-        if effective_includes
-            .iter()
-            .any(|p| p.as_os_str() == "__obs_build_embedded_options__")
-        {
-            let embed_dir = out_dir.join("obs").join("include");
-            materialise_embedded_options(&embed_dir).map_err(CodegenError::OutputIo)?;
-            effective_includes.retain(|p| p.as_os_str() != "__obs_build_embedded_options__");
-            effective_includes.push(embed_dir);
-        }
-        for inc in &effective_includes {
+        for inc in effective_includes {
             cmd.arg(format!("--proto_path={}", inc.display()));
         }
         for f in &self.files {

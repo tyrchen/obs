@@ -32,6 +32,16 @@ impl EventDecl {
         self.full_name.rsplit('.').next().unwrap_or(&self.full_name)
     }
 
+    /// Path to the buffa-generated message type, written so it
+    /// resolves at the include-site of `obs::include_schemas!`. The
+    /// buffa codegen produces `pub mod {pkg_seg} { pub mod ... { pub
+    /// struct ObsXxx; } }` for each proto package, and we include the
+    /// resulting `obs_buffa.rs` into the same scope as the obs codegen
+    /// files. `myapp.v1.ObsXxx` therefore lives at `myapp::v1::ObsXxx`.
+    pub(crate) fn rust_path(&self) -> String {
+        self.full_name.replace('.', "::")
+    }
+
     pub(crate) fn schema_static_ident(&self) -> String {
         format!("__OBS_SCHEMA_{}", self.rust_name().to_shouty_snake_case())
     }
@@ -96,6 +106,7 @@ pub(crate) fn render_schemas(events: &[EventDecl]) -> String {
 fn render_one_schema(decl: &EventDecl) -> String {
     let erased_struct = decl.erased_struct_ident();
     let static_ident = decl.schema_static_ident();
+    let rust_path = decl.rust_path();
     let tier = decl.event.tier.unwrap_or(Tier::Log);
     let sev = decl.event.default_sev.unwrap_or(Severity::Info);
     let schema_hash = decl.schema_hash();
@@ -117,22 +128,44 @@ fn render_one_schema(decl: &EventDecl) -> String {
     }
     fields_lit.push(']');
 
+    let project_body = render_project_body(&decl.fields);
+
     format!(
-        r#"#[doc(hidden)]
+        r#"impl ::obs_core::EventSchema for {rust_path} {{
+    const FULL_NAME: &'static str = "{full_name}";
+    const TIER: ::obs_core::__private::Tier = {tier_path};
+    const DEFAULT_SEV: ::obs_core::__private::Severity = {sev_path};
+    const FIELDS: &'static [::obs_core::FieldMeta] = {fields};
+    const SCHEMA_HASH: u64 = {hash}u64;
+
+    fn encode_payload(&self, buf: &mut ::obs_core::__private::BytesMut) {{
+        // Delegate to buffa's `Message::write_to`. The size cache is
+        // a per-call scratch; we accept the small allocation cost
+        // here in exchange for keeping `EventSchema` infallible.
+        let mut __cache = ::buffa::SizeCache::default();
+        let _ = <Self as ::buffa::Message>::compute_size(self, &mut __cache);
+        <Self as ::buffa::Message>::write_to(self, &mut __cache, buf);
+    }}
+
+    fn project(&self, env: &mut ::obs_core::ObsEnvelope) {{
+{project_body}    }}
+}}
+
+#[doc(hidden)]
+#[derive(Debug)]
 #[allow(non_camel_case_types)]
 pub struct {erased_struct};
 
 impl ::obs_core::__private::Sealed for {erased_struct} {{}}
 
 impl ::obs_core::__private::EventSchemaErased for {erased_struct} {{
-    fn full_name(&self) -> &'static str {{ "{full_name}" }}
-    fn schema_hash(&self) -> u64 {{ {hash}u64 }}
-    fn tier(&self) -> ::obs_core::__private::Tier {{ {tier_path} }}
-    fn default_sev(&self) -> ::obs_core::__private::Severity {{ {sev_path} }}
-    fn fields(&self) -> &'static [::obs_core::FieldMeta] {{ {fields} }}
+    fn full_name(&self) -> &'static str {{ <{rust_path} as ::obs_core::EventSchema>::FULL_NAME }}
+    fn schema_hash(&self) -> u64 {{ <{rust_path} as ::obs_core::EventSchema>::SCHEMA_HASH }}
+    fn tier(&self) -> ::obs_core::__private::Tier {{ <{rust_path} as ::obs_core::EventSchema>::TIER }}
+    fn default_sev(&self) -> ::obs_core::__private::Severity {{ <{rust_path} as ::obs_core::EventSchema>::DEFAULT_SEV }}
+    fn fields(&self) -> &'static [::obs_core::FieldMeta] {{ <{rust_path} as ::obs_core::EventSchema>::FIELDS }}
 }}
 
-#[used]
 #[::obs_core::__private::linkme::distributed_slice(::obs_core::__private::EVENT_SCHEMAS)]
 #[linkme(crate = ::obs_core::__private::linkme)]
 #[doc(hidden)]
@@ -140,12 +173,57 @@ static {static_ident}: &'static dyn ::obs_core::__private::EventSchemaErased = &
 "#,
         erased_struct = erased_struct,
         full_name = decl.full_name,
+        rust_path = rust_path,
         hash = schema_hash,
         tier_path = tier_path(tier),
         sev_path = sev_path(sev),
         fields = fields_lit,
         static_ident = static_ident,
+        project_body = project_body,
     )
+}
+
+fn render_project_body(fields: &[FieldDecl]) -> String {
+    let mut out = String::new();
+    for f in fields {
+        let kind = f.options.kind.unwrap_or(FieldKind::Attribute);
+        match kind {
+            FieldKind::Label => {
+                out.push_str(&format!(
+                    "        env.labels.insert(\"{name}\".to_string(), \
+                     ::std::string::ToString::to_string(&self.{name}));\n",
+                    name = f.name
+                ));
+            }
+            FieldKind::TraceId => {
+                out.push_str(&format!(
+                    "        env.trace_id = ::std::string::ToString::to_string(&self.{name});\n",
+                    name = f.name
+                ));
+            }
+            FieldKind::SpanId => {
+                out.push_str(&format!(
+                    "        env.span_id = ::std::string::ToString::to_string(&self.{name});\n",
+                    name = f.name
+                ));
+            }
+            FieldKind::ParentSpanId => {
+                out.push_str(&format!(
+                    "        env.parent_span_id = \
+                     ::std::string::ToString::to_string(&self.{name});\n",
+                    name = f.name
+                ));
+            }
+            _ => {}
+        }
+    }
+    if out.is_empty() {
+        // EventSchema::project must be a `fn`, not an empty body.
+        // Insert a no-op statement so rustfmt doesn't complain about
+        // empty fn bodies if the user inspects the output.
+        out.push_str("        let _ = env;\n");
+    }
+    out
 }
 
 // ─── builders.rs ───────────────────────────────────────────────────────
@@ -171,39 +249,40 @@ pub(crate) fn render_builders(events: &[EventDecl]) -> String {
 }
 
 fn render_one_builder(decl: &EventDecl) -> String {
-    let rust_name = decl.rust_name();
+    let rust_path = decl.rust_path();
     let builder = decl.builder_struct_ident();
     let setters: String = decl
         .fields
         .iter()
-        .map(|f| render_setter(f, rust_name))
+        .map(|f| render_setter(f, &rust_path))
         .collect();
     format!(
         r#"/// Builder generated by `obs-build` for `{full}`.
+#[derive(Debug)]
 pub struct {builder} {{
-    inner: {rust_name},
+    inner: {rust_path},
 }}
 
 impl {builder} {{
 {setters}
     /// Finalise the builder.
-    pub fn build(self) -> {rust_name} {{ self.inner }}
+    pub fn build(self) -> {rust_path} {{ self.inner }}
 
     /// Build and emit at the schema-declared default severity.
     pub fn emit(self) {{
         let evt = self.build();
         static __CALLSITE: ::obs_core::__private::ObsCallsite =
             ::obs_core::__private::ObsCallsite::new(
-                <{rust_name} as ::obs_core::EventSchema>::FULL_NAME,
-                <{rust_name} as ::obs_core::EventSchema>::DEFAULT_SEV,
+                <{rust_path} as ::obs_core::EventSchema>::FULL_NAME,
+                <{rust_path} as ::obs_core::EventSchema>::DEFAULT_SEV,
                 module_path!(),
                 file!(),
                 line!(),
             );
-        ::obs_core::emit::emit_with_callsite::<{rust_name}>(
+        ::obs_core::emit::emit_with_callsite::<{rust_path}>(
             &__CALLSITE,
             &evt,
-            <{rust_name} as ::obs_core::EventSchema>::DEFAULT_SEV,
+            <{rust_path} as ::obs_core::EventSchema>::DEFAULT_SEV,
         );
     }}
 
@@ -212,31 +291,31 @@ impl {builder} {{
         let evt = self.build();
         static __CALLSITE: ::obs_core::__private::ObsCallsite =
             ::obs_core::__private::ObsCallsite::new(
-                <{rust_name} as ::obs_core::EventSchema>::FULL_NAME,
-                <{rust_name} as ::obs_core::EventSchema>::DEFAULT_SEV,
+                <{rust_path} as ::obs_core::EventSchema>::FULL_NAME,
+                <{rust_path} as ::obs_core::EventSchema>::DEFAULT_SEV,
                 module_path!(),
                 file!(),
                 line!(),
             );
-        ::obs_core::emit::emit_with_callsite::<{rust_name}>(&__CALLSITE, &evt, sev);
+        ::obs_core::emit::emit_with_callsite::<{rust_path}>(&__CALLSITE, &evt, sev);
     }}
 }}
 
-impl {rust_name} {{
+impl {rust_path} {{
     /// Begin building a `{full}` event.
     pub fn builder() -> {builder} {{
-        {builder} {{ inner: <{rust_name} as ::std::default::Default>::default() }}
+        {builder} {{ inner: <{rust_path} as ::std::default::Default>::default() }}
     }}
 }}
 "#,
         full = decl.full_name,
-        rust_name = rust_name,
+        rust_path = rust_path,
         builder = builder,
         setters = setters,
     )
 }
 
-fn render_setter(field: &FieldDecl, rust_name: &str) -> String {
+fn render_setter(field: &FieldDecl, rust_path: &str) -> String {
     let kind = field.options.kind.unwrap_or(FieldKind::Attribute);
     // For LABEL fields whose buffa type is String, we accept
     // `impl Into<String>` to keep call sites short. Other fields take
@@ -273,12 +352,12 @@ fn render_setter(field: &FieldDecl, rust_name: &str) -> String {
         _ => format!("self.inner.{} = value.into();", field.name),
     };
     format!(
-        "    /// Setter for `{name}` (proto field {num}); generated for `{rust_name}`.\n    \
+        "    /// Setter for `{name}` (proto field {num}); generated for `{rust_path}`.\n    \
          #[allow(clippy::needless_pass_by_value, clippy::missing_const_for_fn)]\n    pub fn \
          {name}(mut self, value: {param}) -> Self {{ {assign} self }}\n",
         name = field.name,
         num = field.number,
-        rust_name = rust_name,
+        rust_path = rust_path,
         param = setter_param,
         assign = assign,
     )

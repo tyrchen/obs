@@ -1,0 +1,25 @@
+syntax = "proto3";
+package myapp.v1;
+
+import "obs/v1/options.proto";
+
+message ObsRequestCompleted {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string route = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  string status = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string trace_id = 3 [(obs.v1.field) = { kind: TRACE_ID }];
+  uint64 latency_ms = 4 [(obs.v1.field) = { kind: MEASUREMENT }];
+}
+
+message ObsHelloEmitted {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string who = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}

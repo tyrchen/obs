@@ -25,7 +25,7 @@ pub use obs_core::{
     MetricEmitter, MetricKind, NoopObserver, NoopSink, ObsBatch, ObsCallsite, ObsEnvelope,
     Observer, SamplingConfig, SamplingReason, Severity, Sink, SpanCtx, SpanFrame, StandardObserver,
     StandardObserverBuilder, StdoutSink, Tier, install_observer, observer, observer_weak,
-    with_observer_thread_local, with_test_observer,
+    with_observer_task, with_observer_thread_local, with_test_observer,
 };
 pub use obs_macros::{Event, emit, include_schemas};
 
