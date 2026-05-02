@@ -35,12 +35,17 @@ impl std::fmt::Debug for ScrubbedEnvelope<'_> {
 impl<'a> ScrubbedEnvelope<'a> {
     /// Worker-side: run the scrubber, build the wrapper.
     ///
+    /// **`pub(crate)`** by design — only the per-tier worker may
+    /// construct a `ScrubbedEnvelope`. Sinks receive it through
+    /// `Sink::deliver`. Spec 14 § 5.
+    ///
     /// # Errors
     ///
     /// Returns `ScrubError` when the schema's scrubber fails to
     /// re-encode the payload. The unscrubbed envelope is **never**
     /// passed to a sink (spec 14 § 8 last row).
-    pub fn scrub(
+    #[allow(dead_code)] // wired by Phase-3 task 3.1 worker pool
+    pub(crate) fn scrub(
         env: &'a ObsEnvelope,
         registry: &SchemaRegistry,
         scratch: &'a mut BytesMut,
@@ -61,11 +66,12 @@ impl<'a> ScrubbedEnvelope<'a> {
     /// without running the scrubber. Used by paths that have already
     /// scrubbed (the test `InMemorySink`) or for which scrubbing is
     /// not applicable (Phase-1 stdout pretty-printer).
+    ///
+    /// `pub(crate)` since only the runtime constructs this; the per-tier
+    /// worker switches between `scrub` and `pass_through` based on the
+    /// schema's classification annotations. Spec 14 § 5.
     #[must_use]
-    pub fn pass_through(
-        env: &'a ObsEnvelope,
-        registry: &SchemaRegistry,
-    ) -> Self {
+    pub(crate) fn pass_through(env: &'a ObsEnvelope, registry: &SchemaRegistry) -> Self {
         Self {
             inner: env,
             payload: &env.payload,

@@ -31,9 +31,21 @@ pub struct EventsConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
+    /// AUDIT-tier delivery policy (Phase 3 task 3.12 implements the
+    /// spool; the config struct lives here so user `obs.yaml` files
+    /// already have a stable shape).
+    #[serde(default)]
+    pub audit: AuditConfig,
+
     /// Per-tier mpsc queue capacities (Phase 3 worker pool).
     #[serde(default)]
     pub queues: QueuesConfig,
+
+    /// Per-sink configuration (Phase 3+ implements the sinks; the
+    /// config struct lives here so user `obs.yaml` files already have
+    /// a stable shape).
+    #[serde(default)]
+    pub sinks: SinksConfig,
 
     /// Service identity (overrides defaults read from env).
     #[serde(default)]
@@ -55,38 +67,36 @@ impl EventsConfig {
     /// Returns a `ConfigError` describing the first invalid setting.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(0.0..=1.0).contains(&self.sampling.default_rate) {
-            return Err(ConfigError::InvalidRange {
-                field: "sampling.default_rate",
-                detail: "must be in [0.0, 1.0]",
-            });
+            return Err(ConfigError::invalid_range(
+                "sampling.default_rate",
+                "must be in [0.0, 1.0]",
+            ));
         }
         for (name, rate) in &self.sampling.per_event {
             if !(0.0..=1.0).contains(rate) {
-                return Err(ConfigError::InvalidRange {
-                    field: "sampling.per_event[..]",
-                    detail: Box::leak(
-                        format!("{name} = {rate} is outside [0.0, 1.0]").into_boxed_str(),
-                    ),
-                });
+                return Err(ConfigError::invalid_range(
+                    "sampling.per_event[..]",
+                    format!("{name} = {rate} is outside [0.0, 1.0]"),
+                ));
             }
         }
         if self.limits.max_payload_bytes < 1024 {
-            return Err(ConfigError::InvalidRange {
-                field: "limits.max_payload_bytes",
-                detail: "must be ≥ 1 KiB",
-            });
+            return Err(ConfigError::invalid_range(
+                "limits.max_payload_bytes",
+                "must be ≥ 1 KiB",
+            ));
         }
         if self.limits.max_payload_bytes > 16 * 1024 * 1024 {
-            return Err(ConfigError::InvalidRange {
-                field: "limits.max_payload_bytes",
-                detail: "must be ≤ 16 MiB",
-            });
+            return Err(ConfigError::invalid_range(
+                "limits.max_payload_bytes",
+                "must be ≤ 16 MiB",
+            ));
         }
         if self.queues.log < 64 || self.queues.metric < 64 || self.queues.trace < 64 {
-            return Err(ConfigError::InvalidRange {
-                field: "queues.{log,metric,trace}",
-                detail: "must be ≥ 64",
-            });
+            return Err(ConfigError::invalid_range(
+                "queues.{log,metric,trace}",
+                "must be ≥ 64",
+            ));
         }
         Ok(())
     }
@@ -148,6 +158,89 @@ impl Default for LimitsConfig {
     }
 }
 
+/// AUDIT-tier delivery policy. Phase-1 ships only the type shape so
+/// `obs.yaml` files already validate; the runtime implementation
+/// (bounded blocking + binary spool + recovery) lands in Phase 3
+/// task 3.12. Spec 11 § 6.4 + spec 15 § 2.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+#[non_exhaustive]
+pub struct AuditConfig {
+    /// Channel capacity for the AUDIT tier worker. Default 1024.
+    #[serde(default = "default_1024_u32")]
+    pub channel_capacity: u32,
+    /// Bounded blocking on emit when AUDIT channel is full (ms).
+    #[serde(default = "default_100_u32")]
+    pub block_ms_max: u32,
+    /// After this duration of channel-full, switch to disk spool (ms).
+    #[serde(default = "default_250_u32")]
+    pub spool_after_ms: u32,
+    /// Spool directory; created if absent.
+    #[serde(default = "default_audit_dir")]
+    pub spool_dir: std::path::PathBuf,
+    /// Cap total spool size on disk (bytes).
+    #[serde(default = "default_1gib")]
+    pub spool_max_bytes: u64,
+    /// On-failure behaviour when spool is unwritable.
+    #[serde(default)]
+    pub on_failure: AuditFailureMode,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            channel_capacity: default_1024_u32(),
+            block_ms_max: default_100_u32(),
+            spool_after_ms: default_250_u32(),
+            spool_dir: default_audit_dir(),
+            spool_max_bytes: default_1gib(),
+            on_failure: AuditFailureMode::default(),
+        }
+    }
+}
+
+/// Behaviour when AUDIT delivery cannot complete (spec 11 § 6.4).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditFailureMode {
+    /// Production default: panic so the supervisor restarts the process.
+    #[default]
+    Panic,
+    /// `process::abort()`; tighter than `panic` for compliance shops.
+    Abort,
+    /// Dev only: log a warning and drop. Compliance failure.
+    WarnOnly,
+}
+
+/// Per-sink configuration. Phase-1 ships only the type shape so
+/// `obs.yaml` files already validate; the per-sink fields are filled
+/// in by their respective Phase-3+ implementations. Spec 15 § 2 + spec
+/// 20 / spec 22.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+#[non_exhaustive]
+pub struct SinksConfig {
+    /// Stdout sink — opaque map until Phase 3 task 3.7 lands the typed
+    /// schema. We accept anything (`serde_json::Value`) so users can
+    /// already write `sinks.stdout.style: full` without a config-load
+    /// error.
+    #[serde(default)]
+    pub stdout: serde_json::Value,
+    /// OTLP sinks (logs/metrics/traces). Phase 3 task 3.8 lands the
+    /// typed schema.
+    #[serde(default)]
+    pub otlp: serde_json::Value,
+    /// NDJSON file sink. Phase 3 task 3.7 lands the typed schema.
+    #[serde(default)]
+    pub ndjson: serde_json::Value,
+    /// Parquet sink. Phase 4A task 4A.2 lands the typed schema.
+    #[serde(default)]
+    pub parquet: serde_json::Value,
+    /// ClickHouse sink. Phase 4A task 4A.3 lands the typed schema.
+    #[serde(default)]
+    pub clickhouse: serde_json::Value,
+}
+
 /// Per-tier mpsc capacity (spec 15 § 2 + spec 11 § 4).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
@@ -204,9 +297,21 @@ pub enum ConfigError {
     InvalidRange {
         /// Dotted path to the offending field.
         field: &'static str,
-        /// Human-readable detail.
-        detail: &'static str,
+        /// Human-readable detail (heap-owned to support runtime-formatted
+        /// messages without leaking via `Box::leak`).
+        detail: String,
     },
+}
+
+impl ConfigError {
+    /// Convenience constructor for [`ConfigError::InvalidRange`]; takes
+    /// either a `&'static str` or a `String` for the detail.
+    pub(crate) fn invalid_range(field: &'static str, detail: impl Into<String>) -> Self {
+        Self::InvalidRange {
+            field,
+            detail: detail.into(),
+        }
+    }
 }
 
 /// Builder for [`EventsConfig`].
@@ -241,6 +346,20 @@ impl EventsConfigBuilder {
     #[must_use]
     pub fn queues(mut self, q: QueuesConfig) -> Self {
         self.cfg.queues = q;
+        self
+    }
+
+    /// Replace the AUDIT-tier config.
+    #[must_use]
+    pub fn audit(mut self, a: AuditConfig) -> Self {
+        self.cfg.audit = a;
+        self
+    }
+
+    /// Replace the per-sink config.
+    #[must_use]
+    pub fn sinks(mut self, s: SinksConfig) -> Self {
+        self.cfg.sinks = s;
         self
     }
 
@@ -279,6 +398,21 @@ const fn default_1kib_u16() -> u16 {
 }
 const fn default_8192_u32() -> u32 {
     8192
+}
+const fn default_100_u32() -> u32 {
+    100
+}
+const fn default_250_u32() -> u32 {
+    250
+}
+const fn default_1024_u32() -> u32 {
+    1024
+}
+const fn default_1gib() -> u64 {
+    1 << 30
+}
+fn default_audit_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("./obs-audit-spool")
 }
 
 #[cfg(test)]

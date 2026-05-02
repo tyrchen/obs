@@ -17,6 +17,8 @@
 //!
 //! See spec 12 § 4 + spec 14 § 7.
 
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility, missing_debug_implementations)]
 // `obs-build` runs in the user's `build.rs` (sync, before the async
 // runtime exists), so the workspace's tokio-fs / no-expect lints don't
 // apply here. Tests use `.unwrap()` freely.

@@ -115,4 +115,12 @@ pub trait EventSchema: Send + Sync + Sized + 'static {
     /// Project labels and lift trace/span ids onto the envelope.
     /// Generated; never hand-written. See spec 11 pipeline § 4.1.
     fn project(&self, env: &mut ObsEnvelope);
+
+    /// For `MEASUREMENT`-annotated fields, emit metric data points.
+    /// Phase-1 default impl is a no-op so MEASUREMENT-bearing schemas
+    /// authored in Phase 1 do not error in metric sinks; Phase 2
+    /// codegen overrides this. Spec 12 § 3.2.
+    fn project_metrics(&self, sink: &mut dyn crate::metric::MetricEmitter) {
+        let _ = sink;
+    }
 }

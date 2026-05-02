@@ -12,10 +12,12 @@
 //! The generated buffa code lives under `src/pb/` (checked in, regenerated
 //! by `build.rs` on every build).
 
-#![allow(clippy::all)]
-#![allow(missing_docs)]
-#![allow(missing_debug_implementations)]
-#![allow(clippy::pedantic)]
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility)]
+// The generated `pb/` module is large and machine-emitted; we accept that
+// it does not satisfy our usual lint set. Restrict the relaxation to that
+// module (see the inner `#[allow(...)] mod pb` below).
+#![allow(missing_docs, missing_debug_implementations)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 #[allow(

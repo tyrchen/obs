@@ -1,3 +1,6 @@
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
+
 //! Façade crate — re-exports the everyday obs API.
 //!
 //! Most downstream apps depend only on `obs-sdk`. Spec 61 § 2.11.

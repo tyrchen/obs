@@ -126,15 +126,41 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             }
 
             /// Build and emit at the schema's default severity.
+            ///
+            /// Inlines a `static __CALLSITE: ObsCallsite` so the
+            /// atomic-Interest cache short-circuits filtered-out
+            /// callsites (spec 11 § 2.1).
+            #[allow(clippy::let_underscore_must_use, dead_code)]
             #vis fn emit(self) {
                 let evt = self.build();
-                ::obs_core::Emit::emit(evt);
+                static __CALLSITE: ::obs_core::__private::ObsCallsite =
+                    ::obs_core::__private::ObsCallsite::new(
+                        <#name as ::obs_core::EventSchema>::FULL_NAME,
+                        <#name as ::obs_core::EventSchema>::DEFAULT_SEV,
+                        module_path!(),
+                        file!(),
+                        line!(),
+                    );
+                ::obs_core::emit::emit_with_callsite::<#name>(
+                    &__CALLSITE,
+                    &evt,
+                    <#name as ::obs_core::EventSchema>::DEFAULT_SEV,
+                );
             }
 
             /// Build and emit at a specific severity (escalate or demote).
+            #[allow(clippy::let_underscore_must_use, dead_code)]
             #vis fn emit_at(self, sev: ::obs_core::__private::Severity) {
                 let evt = self.build();
-                ::obs_core::Emit::emit_at(evt, sev);
+                static __CALLSITE: ::obs_core::__private::ObsCallsite =
+                    ::obs_core::__private::ObsCallsite::new(
+                        <#name as ::obs_core::EventSchema>::FULL_NAME,
+                        <#name as ::obs_core::EventSchema>::DEFAULT_SEV,
+                        module_path!(),
+                        file!(),
+                        line!(),
+                    );
+                ::obs_core::emit::emit_with_callsite::<#name>(&__CALLSITE, &evt, sev);
             }
         }
 
@@ -159,7 +185,24 @@ struct ContainerAttrs {
 
 impl ContainerAttrs {
     fn full_name(&self, ident: &Ident) -> LitStr {
-        let value = self.full_name.clone().unwrap_or_else(|| ident.to_string());
+        // Spec 10 § 7 + spec 12 § 1: the canonical full_name is
+        // `<package>.v1.<TypeName>`. When the user supplies one
+        // explicitly via `#[event(full_name = ...)]` we honour that;
+        // otherwise we synthesise from `CARGO_PKG_NAME` set by cargo
+        // for the *consuming* crate (proc-macros run during the
+        // consumer's compile so this resolves correctly per crate).
+        let value = self.full_name.clone().unwrap_or_else(|| {
+            let pkg = std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "anon".to_string());
+            // Replace dashes/colons with underscore so the package
+            // segment is a valid proto identifier; downstream consumers
+            // (analytics column names, OTLP attribute keys) require
+            // `[a-z][a-z0-9_]*`-shaped tokens.
+            let pkg_norm = pkg
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect::<String>();
+            format!("{pkg_norm}.v1.{ident}")
+        });
         LitStr::new(&value, Span::call_site())
     }
 
@@ -429,11 +472,18 @@ fn lint_block(
 ) -> syn::Result<TokenStream> {
     let mut asserts = Vec::new();
 
-    // L011: name starts with `Obs`.
+    // L011: name starts with the workspace event prefix. The default
+    // is `Obs` (spec 10 § 7); a workspace can override via the
+    // `OBS_EVENT_PREFIX` env var which `obs-build`/`build.rs` sets
+    // from `[workspace.metadata.obs] event_prefix`. Phase 1 honours
+    // the env var; Phase 2 task 2.5 will read the workspace metadata
+    // directly.
     let n_str = name.to_string();
-    if !n_str.starts_with("Obs") {
+    let prefix = std::env::var("OBS_EVENT_PREFIX").unwrap_or_else(|_| "Obs".to_string());
+    if !n_str.starts_with(&prefix) {
         let msg = format!(
-            "obs L011: event type name `{n_str}` must start with `Obs` (default workspace prefix)"
+            "obs L011: event type name `{n_str}` must start with `{prefix}` (workspace \
+             event_prefix)"
         );
         asserts.push(quote! {
             const _: () = ::std::panic!(#msg);

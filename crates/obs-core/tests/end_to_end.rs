@@ -80,6 +80,7 @@ impl EventSchemaErased for TestEventSchema {
 fn test_should_emit_through_in_memory_observer() {
     let observer = InMemoryObserver::new();
     let handle = observer.handle();
+    let observer: Arc<dyn Observer> = Arc::new(observer);
 
     with_test_observer(observer, || {
         let cs = ObsCallsite::new(
@@ -154,6 +155,7 @@ fn test_three_tier_resolution_should_pick_thread_local() {
     // it instead of the global Noop.
     let captured = InMemoryObserver::new();
     let handle = captured.handle();
+    let captured: Arc<dyn Observer> = Arc::new(captured);
     with_test_observer(captured, || {
         let cs = ObsCallsite::new(
             TestEvent::FULL_NAME,

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
 // Tests routinely use `.unwrap()` for clarity; production code uses `?`.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 

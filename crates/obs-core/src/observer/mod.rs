@@ -19,8 +19,8 @@ mod noop;
 mod standard;
 
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 
 use arc_swap::ArcSwap;
 use once_cell::sync::Lazy;
@@ -69,10 +69,24 @@ pub trait Observer: Send + Sync + 'static {
     fn shutdown(&self) -> crate::sink::SinkFut<'_> {
         Box::pin(async {})
     }
+
+    /// Synchronous shutdown for use in panic hooks and `Drop` impls
+    /// where awaiting is not possible. Best-effort within `timeout`.
+    /// Spec 11 § 3, § 6.1.
+    fn shutdown_blocking(&self, timeout: std::time::Duration) {
+        let _ = timeout;
+    }
 }
 
 // ─── Resolution slots (spec 11 § 3) ───────────────────────────────────
 
+/// Global observer slot. `ArcSwap<T>` requires `T: Sized` (arc_swap's
+/// `RefCnt` is sized-only), and `dyn Observer` is unsized, so we
+/// store `Arc<dyn Observer>` (a sized fat pointer) inside the
+/// `ArcSwap`. `load_full()` therefore returns
+/// `Arc<Arc<dyn Observer>>`; `observer()` derefs the outer `Arc` to
+/// hand back `Arc<dyn Observer>` directly. See
+/// `docs/research/spike-arcswap.md`.
 static OBSERVER_GLOBAL: Lazy<ArcSwap<Arc<dyn Observer>>> = Lazy::new(|| {
     let initial: Arc<dyn Observer> = Arc::new(NoopObserver);
     ArcSwap::from_pointee(initial)
@@ -109,23 +123,27 @@ static OVERRIDE_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Hot path: returns a cloned `Arc` (one atomic refcount bump) so the
 /// caller does not hold a `Guard` across `await`. With no overrides
 /// ever installed, this collapses to `OVERRIDE_COUNT == 0` test +
-/// `OBSERVER_GLOBAL.load_full()`.
+/// `OBSERVER_GLOBAL.load_full()`. Spec 11 § 3.
 #[inline]
 #[must_use]
-pub fn observer() -> Arc<Arc<dyn Observer>> {
+pub fn observer() -> Arc<dyn Observer> {
     if !CAN_ENTER.with(Cell::get) {
-        return Arc::new(noop_observer_arc());
+        return noop_observer_arc();
     }
     if OVERRIDE_COUNT.load(Ordering::Relaxed) == 0 {
-        return OBSERVER_GLOBAL.load_full();
+        // load_full() returns Arc<Arc<dyn Observer>>; (*x).clone()
+        // extracts the inner Arc<dyn Observer> with one refcount bump.
+        let outer = OBSERVER_GLOBAL.load_full();
+        return (*outer).clone();
     }
-    if let Ok(per_task) = OBSERVER_TASK.try_with(|o| Arc::new(o.clone())) {
+    if let Ok(per_task) = OBSERVER_TASK.try_with(Clone::clone) {
         return per_task;
     }
     if let Some(per_thread) = OBSERVER_THREAD.with(|c| c.borrow().clone()) {
-        return Arc::new(per_thread);
+        return per_thread;
     }
-    OBSERVER_GLOBAL.load_full()
+    let outer = OBSERVER_GLOBAL.load_full();
+    (*outer).clone()
 }
 
 fn noop_observer_arc() -> Arc<dyn Observer> {
@@ -149,14 +167,22 @@ pub fn install_observer_arc(o: Arc<dyn Observer>) {
     OBSERVER_GLOBAL.store(Arc::new(o));
 }
 
-/// Run `Observer::emit_envelope` with the re-entry guard held. Used
-/// by `Emit::emit` and the macro path so any sink that synthesises an
-/// envelope sees `observer()` returning a `NoopObserver` and the
-/// inner emit becomes a no-op.
-pub fn enter_emit<F: FnOnce(&dyn Observer)>(observer: &dyn Observer, f: F) {
-    let prev = CAN_ENTER.with(|c| c.replace(false));
-    f(observer);
-    CAN_ENTER.with(|c| c.set(prev));
+/// Dispatch one envelope through the observer with the re-entry
+/// guard held. Spec 11 § 3.1 "Re-entry and the CAN_ENTER cell".
+///
+/// All emit paths (`Emit::emit`, the `obs::emit!` macro, the
+/// `<EventBuilder>::emit` setter) route through this so a sink that
+/// synthesises a new envelope from inside `Observer::emit_envelope`
+/// sees `observer()` returning `NoopObserver` and the inner emit
+/// becomes a no-op.
+#[inline]
+pub fn enter_emit_envelope(observer: &Arc<dyn Observer>, env: ObsEnvelope) {
+    let was_in = CAN_ENTER.with(|c| c.replace(false));
+    if was_in {
+        observer.emit_envelope(env);
+    }
+    // else: re-entry — the inner emit silently drops, matching spec.
+    CAN_ENTER.with(|c| c.set(was_in));
 }
 
 /// Weak handle for code that needs to refer to the observer without
@@ -165,13 +191,13 @@ pub fn enter_emit<F: FnOnce(&dyn Observer)>(observer: &dyn Observer, f: F) {
 /// `ObsToTracingSink` re-emitting through the registered tracing
 /// dispatcher).
 #[derive(Clone)]
-pub struct WeakObserver(Weak<Arc<dyn Observer>>);
+pub struct WeakObserver(Weak<dyn Observer>);
 
 impl WeakObserver {
     /// Upgrade to a strong reference. Returns `None` after
     /// `shutdown()` has dropped the last strong reference.
     #[must_use]
-    pub fn upgrade(&self) -> Option<Arc<Arc<dyn Observer>>> {
+    pub fn upgrade(&self) -> Option<Arc<dyn Observer>> {
         self.0.upgrade()
     }
 }
@@ -229,13 +255,16 @@ impl Drop for ThreadObserverGuard {
 /// (Phase 2 task 2.6) and by users that want to assert what was
 /// emitted from a synchronous block.
 ///
+/// Takes `Arc<dyn Observer>` so the caller can keep a clone and
+/// inspect it after the closure (e.g. `InMemoryObserver::handle()`).
+/// Spec 11 § 3.1.
+///
 /// Nested calls stack LIFO via the per-thread `RefCell` slot.
-pub fn with_test_observer<O: Observer, F, R>(o: O, f: F) -> R
+pub fn with_test_observer<F, R>(observer: Arc<dyn Observer>, f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let arc: Arc<dyn Observer> = Arc::new(o);
-    let _g = with_observer_thread_local(arc);
+    let _g = with_observer_thread_local(observer);
     f()
 }
 
@@ -257,6 +286,7 @@ mod tests {
     fn test_with_test_observer_should_capture() {
         let observer = InMemoryObserver::new();
         let handle = observer.handle();
+        let observer: Arc<dyn Observer> = Arc::new(observer);
         with_test_observer(observer, || {
             // The thread-local is now set; observer() returns the
             // InMemoryObserver, which is wired to its own InMemorySink.

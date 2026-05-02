@@ -10,9 +10,11 @@
     clippy::expect_used
 )]
 
+use std::sync::Arc;
+
 use obs_core::{
-    Cardinality, Classification, Emit, EventSchema, FieldRole, InMemoryObserver, Severity, Tier,
-    with_test_observer,
+    Cardinality, Classification, Emit, EventSchema, FieldRole, InMemoryObserver, Observer,
+    Severity, Tier, with_test_observer,
 };
 
 #[derive(Debug, Default, obs_macros::Event)]
@@ -24,7 +26,10 @@ pub struct ObsHelloEmitted {
 
 #[test]
 fn test_derive_should_set_associated_consts() {
-    assert_eq!(ObsHelloEmitted::FULL_NAME, "ObsHelloEmitted");
+    // FULL_NAME is `<crate>.v1.<TypeName>` — the obs-macros test crate
+    // is built with CARGO_PKG_NAME=obs-macros (normalised to obs_macros).
+    assert!(ObsHelloEmitted::FULL_NAME.ends_with(".ObsHelloEmitted"));
+    assert!(ObsHelloEmitted::FULL_NAME.contains(".v1."));
     assert_eq!(ObsHelloEmitted::TIER, Tier::Log);
     assert_eq!(ObsHelloEmitted::DEFAULT_SEV, Severity::Info);
     assert_eq!(ObsHelloEmitted::FIELDS.len(), 1);
@@ -43,12 +48,15 @@ fn test_derive_should_set_associated_consts() {
 fn test_derive_builder_should_emit_through_observer() {
     let observer = InMemoryObserver::new();
     let handle = observer.handle();
+    let observer: Arc<dyn Observer> = Arc::new(observer);
     with_test_observer(observer, || {
         ObsHelloEmitted::builder().who("world").emit();
     });
     let drained = handle.drain();
     assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].full_name, "ObsHelloEmitted");
+    // L011 default prefix uses CARGO_PKG_NAME; obs-macros's own test
+    // sees "obs_macros" as the package, so FULL_NAME is "obs_macros.v1.ObsHelloEmitted".
+    assert!(drained[0].full_name.ends_with("ObsHelloEmitted"));
     assert_eq!(drained[0].labels.get("who"), Some(&"world".to_string()));
 }
 
@@ -56,6 +64,7 @@ fn test_derive_builder_should_emit_through_observer() {
 fn test_derive_emit_at_should_override_severity() {
     let observer = InMemoryObserver::new();
     let handle = observer.handle();
+    let observer: Arc<dyn Observer> = Arc::new(observer);
     with_test_observer(observer, || {
         ObsHelloEmitted {
             who: "world".to_string(),

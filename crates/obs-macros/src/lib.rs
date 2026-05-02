@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
 // Proc-macro crate: runs at build time only, so the runtime hot-path
 // lints are not relevant here.
 #![allow(
