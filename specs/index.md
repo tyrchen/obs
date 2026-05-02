@@ -33,6 +33,7 @@ of 30/71, M3 closes everything else.
 | [12-schema-and-codegen.md](./12-schema-and-codegen.md) | Design | `.proto` annotations, `#[derive(Event)]`, lints L001–L013, `EventSchema`, generated builder, the `MetricEmitter` / `BuildableTo` / `FieldCapture` / `SpanCtx` / `EnumCount` trait surface, single-table Arrow fragments |
 | [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md) | Design | `obs::emit!`, `obs::scope!`, `obs::context!`, `obs::Instrumented<F>`, `#[obs::instrument]` (single-event default), `obs::Filter` DSL (ports EnvFilter grammar) + precedence, W3C `traceparent.sampled` propagation, `obs::forensic!`, `obs::SpanTrace` |
 | [14-schema-registry.md](./14-schema-registry.md) | Design | `EventSchemaErased` object-safe trait, `linkme`-based link-time schema registration, `ScrubbedEnvelope` worker→sink handoff, sink decode contract |
+| [15-config.md](./15-config.md) | Design | `EventsConfig` Rust type, `obs.yaml` schema, env-var override layer, reload semantics |
 
 ### Sinks & analytics (M2 → M3)
 
