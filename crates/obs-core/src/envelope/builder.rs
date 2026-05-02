@@ -3,12 +3,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::BytesMut;
-use obs_proto::__private::Message;
-use obs_proto::obs::v1::ObsEnvelope;
+use obs_proto::{__private::Message, obs::v1::ObsEnvelope};
 use obs_types::{SamplingReason, Severity};
 
-use crate::callsite::ObsCallsite;
-use crate::envelope::projection::EventSchema;
+use crate::{callsite::ObsCallsite, envelope::projection::EventSchema};
 
 thread_local! {
     /// Per-thread reusable encode buffer. Cleared and reused every emit

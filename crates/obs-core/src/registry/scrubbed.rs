@@ -10,8 +10,10 @@
 use bytes::BytesMut;
 use obs_proto::obs::v1::ObsEnvelope;
 
-use super::erased::{EventSchemaErased, ScrubError};
-use super::SchemaRegistry;
+use super::{
+    SchemaRegistry,
+    erased::{EventSchemaErased, ScrubError},
+};
 
 /// Read-only view of an envelope whose payload has already been run
 /// through the per-tier scrubber. Constructed by the worker; consumed
@@ -77,6 +79,21 @@ impl<'a> ScrubbedEnvelope<'a> {
             payload: &env.payload,
             schema: registry.lookup(env),
         }
+    }
+
+    /// Test-only constructor that mirrors [`Self::pass_through`].
+    /// Gated behind the `test` feature so production sinks cannot
+    /// fabricate envelopes — only test code that opts into the `test`
+    /// feature gets this constructor. Spec 14 § 5 / KD3.
+    ///
+    /// # Panics
+    ///
+    /// Never panics. Returns a `ScrubbedEnvelope` whose payload borrows
+    /// directly from `env.payload`.
+    #[cfg(feature = "test")]
+    #[must_use]
+    pub fn for_test(env: &'a ObsEnvelope, registry: &SchemaRegistry) -> Self {
+        Self::pass_through(env, registry)
     }
 
     /// Borrow the underlying envelope (without payload mutation).

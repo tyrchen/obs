@@ -4,10 +4,13 @@
 //! Spec 61 § 2.4. The macro path emits straight calls to these
 //! methods. Hand-rolled tests can call them directly.
 
-use crate::callsite::ObsCallsite;
-use crate::envelope::{EventSchema, build_envelope_at};
-use crate::observer::{enter_emit_envelope, observer};
 use obs_types::Severity;
+
+use crate::{
+    callsite::ObsCallsite,
+    envelope::{EventSchema, build_envelope_at},
+    observer::{enter_emit_envelope, observer},
+};
 
 /// Blanket trait giving every `EventSchema` an `.emit()` /
 /// `.emit_at(sev)` shortcut.
@@ -76,7 +79,11 @@ fn emit_one<E: EventSchema>(callsite: &ObsCallsite, event: &E, sev: Severity) {
         EnabledOutcome::ReProbe => {
             let allowed = o.enabled(callsite);
             callsite.cache(
-                if allowed { Interest::Always } else { Interest::Never },
+                if allowed {
+                    Interest::Always
+                } else {
+                    Interest::Never
+                },
                 cur_gen,
             );
             allowed
@@ -89,4 +96,3 @@ fn emit_one<E: EventSchema>(callsite: &ObsCallsite, event: &E, sev: Severity) {
     event.project(&mut env);
     enter_emit_envelope(&o, env);
 }
-

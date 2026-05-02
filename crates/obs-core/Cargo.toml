@@ -33,6 +33,13 @@ tokio = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 
+[features]
+default = []
+# Test ergonomics: in-memory observer helpers, `assert_emitted!` macro
+# support. Cfg-only flag — no runtime cost in release builds because the
+# items it gates are only used by tests.
+test = []
+
 [[bench]]
 name = "emit_noop"
 harness = false

@@ -5,11 +5,12 @@ use std::sync::Arc;
 
 use obs_proto::obs::v1::ObsEnvelope;
 
-use crate::sink::{InMemorySink, Sink};
-pub use crate::sink::InMemoryHandle;
-use crate::registry::{ScrubbedEnvelope, SchemaRegistry};
-
 use super::Observer;
+pub use crate::sink::InMemoryHandle;
+use crate::{
+    registry::{SchemaRegistry, ScrubbedEnvelope},
+    sink::{InMemorySink, Sink},
+};
 
 /// Test-grade observer: every envelope is delivered to an
 /// [`InMemorySink`]. Spec 61 § 2.4 example.

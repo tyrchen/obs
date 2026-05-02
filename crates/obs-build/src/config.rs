@@ -3,29 +3,37 @@
 //! Walks the FDS via `buffa-reflect`, reads `(obs.v1.event)` /
 //! `(obs.v1.field)` custom options out of the
 //! `__buffa_unknown_fields` byte stream (per
-//! `docs/research/spike-buffa-reflect.md`), and emits per-event
-//! `EventSchema` impls + `linkme` registrations into
-//! `$OUT_DIR/obs/schemas.rs`.
+//! `docs/research/spike-buffa-reflect.md`), and emits four files into
+//! `$OUT_DIR/obs/`:
 //!
-//! The user wires the generated file in via:
+//! - `schemas.rs`  — `EventSchemaErased` impls + `linkme` registrations
+//! - `builders.rs` — fluent setter + `.emit()` per event
+//! - `lints.rs`    — const-eval lint asserts (L001/L002/L003/L011)
+//! - `arrow_schema.rs` — Arrow fragment dispatch table (Phase-2 stub)
+//!
+//! The user wires every file in via:
 //!
 //! ```ignore
-//! obs::include_schemas!("myapp.v1");   // expands to include!(...)
+//! obs::include_schemas!("myapp.v1");   // one macro, four `include!`s
 //! ```
 //!
-//! That macro lands in Phase 2; for Phase 1 the user can `include!`
-//! the generated file directly.
+//! Spec 12 § 3.1 + § 4.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use buffa::Message;
 use buffa_descriptor::generated::descriptor::FileDescriptorSet;
 use buffa_reflect::DescriptorPool;
-use heck::ToShoutySnakeCase;
-use obs_types::{Cardinality, Classification, FieldKind, Severity, Tier};
 
-use crate::options::{CodegenError, EventOptions, FieldOptions, read_event_options, read_field_options};
+use crate::{
+    codegen::{
+        EventDecl, FieldDecl, render_arrow_schema, render_builders, render_lints, render_schemas,
+    },
+    options::{CodegenError, read_event_options, read_field_options},
+};
 
 /// Source of the `FileDescriptorSet`. Spec 12 § 4.
 #[derive(Debug, Clone, Default)]
@@ -46,19 +54,34 @@ pub struct Config {
     includes: Vec<PathBuf>,
     out_dir: Option<PathBuf>,
     descriptor_source: DescriptorSource,
+    event_prefix: Option<String>,
+    /// Codegen feature toggles per spec 12 § 4. The defaults are
+    /// conservative: lints + schemas + builders + arrow on; render and
+    /// scrub off (deferred to later phases).
+    arrow_schema: bool,
+    json_render: bool,
+    payload_scrub: bool,
+    otel_attribute_view: bool,
 }
 
 impl Config {
-    /// New config with sane defaults.
+    /// New config with sane defaults (lints + schemas + builders + arrow on).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            arrow_schema: true,
+            json_render: false,
+            payload_scrub: true,
+            otel_attribute_view: true,
+            ..Self::default()
+        }
     }
 
     /// Add proto file paths.
     #[must_use]
     pub fn files(mut self, files: &[impl AsRef<Path>]) -> Self {
-        self.files.extend(files.iter().map(|p| p.as_ref().to_owned()));
+        self.files
+            .extend(files.iter().map(|p| p.as_ref().to_owned()));
         self
     }
 
@@ -77,12 +100,12 @@ impl Config {
     }
 
     /// Pull `obs/v1/options.proto` from the embedded `obs-build`
-    /// package so the user does not need to vendor it.
+    /// package so the user does not need to vendor it. The proto file
+    /// is bundled at compile time and extracted to `$OUT_DIR/obs/include/`.
     #[must_use]
-    pub fn include_obs_options(self) -> Self {
-        // Phase-1: a no-op convenience — we recommend the user add
-        // their own `import "obs/v1/options.proto"` and include the
-        // path. Phase-2 ships the embedded copy.
+    pub fn include_obs_options(mut self) -> Self {
+        self.includes
+            .push(PathBuf::from("__obs_build_embedded_options__"));
         self
     }
 
@@ -90,6 +113,43 @@ impl Config {
     #[must_use]
     pub fn descriptor_source(mut self, src: DescriptorSource) -> Self {
         self.descriptor_source = src;
+        self
+    }
+
+    /// Override the workspace event prefix used by lint L011. Defaults
+    /// to reading `OBS_EVENT_PREFIX` env var, then falling back to
+    /// `"Obs"`. Spec 12 § 3.4.
+    #[must_use]
+    pub fn event_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.event_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Toggle Arrow schema fragment emission. On by default. Spec 12 § 4.
+    #[must_use]
+    pub fn with_arrow_schema(mut self, on: bool) -> Self {
+        self.arrow_schema = on;
+        self
+    }
+
+    /// Toggle JSON-render dispatcher. Off by default; lands in Phase 4. Spec 12 § 4.
+    #[must_use]
+    pub fn with_json_render(mut self, on: bool) -> Self {
+        self.json_render = on;
+        self
+    }
+
+    /// Toggle payload scrub dispatcher. On by default. Spec 12 § 4.
+    #[must_use]
+    pub fn with_payload_scrub(mut self, on: bool) -> Self {
+        self.payload_scrub = on;
+        self
+    }
+
+    /// Toggle OTel attribute view emission. On by default. Spec 12 § 4.
+    #[must_use]
+    pub fn with_otel_attribute_view(mut self, on: bool) -> Self {
+        self.otel_attribute_view = on;
         self
     }
 
@@ -113,53 +173,46 @@ impl Config {
         let pool = DescriptorPool::from_file_descriptor_set(fds)
             .map_err(|e| CodegenError::DescriptorDecode(e.to_string()))?;
 
-        let mut events: Vec<EventDecl> = Vec::new();
-        for msg in pool.all_messages() {
-            let dp = msg.descriptor_proto();
-            if !dp.options.is_set() {
-                continue;
-            }
-            let mut bytes = Vec::new();
-            dp.options.__buffa_unknown_fields.write_to(&mut bytes);
-            let Some(event_opts) = read_event_options(&bytes, msg.full_name())? else {
-                continue;
-            };
-            let mut decl = EventDecl {
-                full_name: msg.full_name().to_string(),
-                event: event_opts,
-                fields: Vec::new(),
-            };
-            for f in msg.fields() {
-                let fdp = f.descriptor_proto();
-                if !fdp.options.is_set() {
-                    continue;
-                }
-                let mut fbytes = Vec::new();
-                fdp.options.__buffa_unknown_fields.write_to(&mut fbytes);
-                let Some(field_opts) = read_field_options(
-                    &fbytes,
-                    &format!("{}/{}", msg.full_name(), f.name()),
-                )?
-                else {
-                    continue;
-                };
-                decl.fields.push(FieldDecl {
-                    name: f.name().to_string(),
-                    number: f.number(),
-                    options: field_opts,
-                });
-            }
-            events.push(decl);
-        }
+        let events = collect_event_decls(&pool)?;
 
-        let mut schemas_rs = String::new();
-        schemas_rs.push_str("// @generated by obs-build. DO NOT EDIT.\n");
-        for evt in &events {
-            schemas_rs.push_str(&codegen_event(evt));
-            schemas_rs.push('\n');
-        }
-        std::fs::write(out_dir.join("obs").join("schemas.rs"), schemas_rs)
+        let event_prefix = self
+            .event_prefix
+            .clone()
+            .or_else(|| std::env::var("OBS_EVENT_PREFIX").ok())
+            .unwrap_or_else(|| "Obs".to_string());
+
+        // Always emit schemas + builders + lints. Arrow stub gated by toggle.
+        std::fs::write(
+            out_dir.join("obs").join("schemas.rs"),
+            render_schemas(&events),
+        )
+        .map_err(CodegenError::OutputIo)?;
+        std::fs::write(
+            out_dir.join("obs").join("builders.rs"),
+            render_builders(&events),
+        )
+        .map_err(CodegenError::OutputIo)?;
+        std::fs::write(
+            out_dir.join("obs").join("lints.rs"),
+            render_lints(&events, &event_prefix),
+        )
+        .map_err(CodegenError::OutputIo)?;
+        if self.arrow_schema {
+            std::fs::write(
+                out_dir.join("obs").join("arrow_schema.rs"),
+                render_arrow_schema(&events),
+            )
             .map_err(CodegenError::OutputIo)?;
+        } else {
+            // Always create the file with an empty stub so
+            // `include_schemas!` references resolve regardless of
+            // toggle. Spec 12 § 3.1.
+            std::fs::write(
+                out_dir.join("obs").join("arrow_schema.rs"),
+                "// arrow_schema disabled by `with_arrow_schema(false)`\n",
+            )
+            .map_err(CodegenError::OutputIo)?;
+        }
         Ok(())
     }
 
@@ -178,7 +231,20 @@ impl Config {
         let mut cmd = Command::new(&protoc);
         cmd.arg("--include_imports");
         cmd.arg(format!("--descriptor_set_out={}", fds_path.display()));
-        for inc in &self.includes {
+
+        // Materialise embedded includes (e.g. obs/v1/options.proto)
+        // when the user asked for `include_obs_options()`.
+        let mut effective_includes = self.includes.clone();
+        if effective_includes
+            .iter()
+            .any(|p| p.as_os_str() == "__obs_build_embedded_options__")
+        {
+            let embed_dir = out_dir.join("obs").join("include");
+            materialise_embedded_options(&embed_dir).map_err(CodegenError::OutputIo)?;
+            effective_includes.retain(|p| p.as_os_str() != "__obs_build_embedded_options__");
+            effective_includes.push(embed_dir);
+        }
+        for inc in &effective_includes {
             cmd.arg(format!("--proto_path={}", inc.display()));
         }
         for f in &self.files {
@@ -194,172 +260,51 @@ impl Config {
     }
 }
 
-#[derive(Debug)]
-struct EventDecl {
-    full_name: String,
-    event: EventOptions,
-    fields: Vec<FieldDecl>,
-}
-
-#[derive(Debug)]
-struct FieldDecl {
-    name: String,
-    number: u32,
-    options: FieldOptions,
-}
-
-fn codegen_event(decl: &EventDecl) -> String {
-    let rust_name = decl
-        .full_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(&decl.full_name);
-    let static_ident = format!("__OBS_SCHEMA_{}", rust_name.to_shouty_snake_case());
-    let erased_struct = format!("{}Schema", rust_name);
-
-    let tier = decl.event.tier.unwrap_or(Tier::Log);
-    let sev = decl.event.default_sev.unwrap_or(Severity::Info);
-    let schema_hash = compute_schema_hash(decl);
-
-    let mut fields_lit = String::from("&[");
-    for f in &decl.fields {
-        let role_str = field_role_path(f.options.kind.unwrap_or(FieldKind::Attribute));
-        let card = cardinality_path(f.options.cardinality.unwrap_or(Cardinality::Unspecified));
-        let classn = classification_path(
-            f.options.classification.unwrap_or(Classification::Internal),
-        );
-        fields_lit.push_str(&format!(
-            "::obs_core::FieldMeta::new(\"{name}\", {num}, {role}, {card}, {classn}),",
-            name = f.name,
-            num = f.number,
-            role = role_str,
-            card = card,
-            classn = classn,
-        ));
+fn collect_event_decls(pool: &DescriptorPool) -> Result<Vec<EventDecl>, CodegenError> {
+    let mut events: Vec<EventDecl> = Vec::new();
+    for msg in pool.all_messages() {
+        let dp = msg.descriptor_proto();
+        if !dp.options.is_set() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        dp.options.__buffa_unknown_fields.write_to(&mut bytes);
+        let Some(event_opts) = read_event_options(&bytes, msg.full_name())? else {
+            continue;
+        };
+        let mut decl = EventDecl {
+            full_name: msg.full_name().to_string(),
+            event: event_opts,
+            fields: Vec::new(),
+        };
+        for f in msg.fields() {
+            let fdp = f.descriptor_proto();
+            let mut fbytes = Vec::new();
+            if fdp.options.is_set() {
+                fdp.options.__buffa_unknown_fields.write_to(&mut fbytes);
+            }
+            let opts = read_field_options(&fbytes, &format!("{}/{}", msg.full_name(), f.name()))?
+                .unwrap_or_default();
+            decl.fields.push(FieldDecl {
+                name: f.name().to_string(),
+                number: f.number(),
+                options: opts,
+            });
+        }
+        events.push(decl);
     }
-    fields_lit.push(']');
-
-    format!(
-        r#"#[doc(hidden)]
-#[allow(non_camel_case_types)]
-pub struct {erased_struct};
-
-impl ::obs_core::__private::Sealed for {erased_struct} {{}}
-
-impl ::obs_core::__private::EventSchemaErased for {erased_struct} {{
-    fn full_name(&self) -> &'static str {{ "{full_name}" }}
-    fn schema_hash(&self) -> u64 {{ {hash}u64 }}
-    fn tier(&self) -> ::obs_core::__private::Tier {{ {tier_path} }}
-    fn default_sev(&self) -> ::obs_core::__private::Severity {{ {sev_path} }}
-    fn fields(&self) -> &'static [::obs_core::FieldMeta] {{ {fields} }}
-}}
-
-#[used]
-#[::obs_core::__private::linkme::distributed_slice(::obs_core::__private::EVENT_SCHEMAS)]
-#[linkme(crate = ::obs_core::__private::linkme)]
-#[doc(hidden)]
-static {static_ident}: &'static dyn ::obs_core::__private::EventSchemaErased = &{erased_struct};
-"#,
-        erased_struct = erased_struct,
-        full_name = decl.full_name,
-        hash = schema_hash,
-        tier_path = tier_path(tier),
-        sev_path = sev_path(sev),
-        fields = fields_lit,
-        static_ident = static_ident,
-    )
+    // Stable order so generated bytes are deterministic across runs.
+    events.sort_by(|a, b| a.full_name.cmp(&b.full_name));
+    Ok(events)
 }
 
-fn tier_path(t: Tier) -> &'static str {
-    match t {
-        Tier::Log => "::obs_core::__private::Tier::Log",
-        Tier::Metric => "::obs_core::__private::Tier::Metric",
-        Tier::Trace => "::obs_core::__private::Tier::Trace",
-        Tier::Audit => "::obs_core::__private::Tier::Audit",
-        _ => "::obs_core::__private::Tier::Unspecified",
-    }
-}
-fn sev_path(s: Severity) -> &'static str {
-    match s {
-        Severity::Trace => "::obs_core::__private::Severity::Trace",
-        Severity::Debug => "::obs_core::__private::Severity::Debug",
-        Severity::Info => "::obs_core::__private::Severity::Info",
-        Severity::Warn => "::obs_core::__private::Severity::Warn",
-        Severity::Error => "::obs_core::__private::Severity::Error",
-        Severity::Fatal => "::obs_core::__private::Severity::Fatal",
-        _ => "::obs_core::__private::Severity::Unspecified",
-    }
-}
-fn field_role_path(k: FieldKind) -> &'static str {
-    match k {
-        FieldKind::Label => "::obs_core::FieldRole::Label",
-        FieldKind::Attribute => "::obs_core::FieldRole::Attribute",
-        FieldKind::Measurement => "::obs_core::FieldRole::Measurement",
-        FieldKind::TraceId => "::obs_core::FieldRole::TraceId",
-        FieldKind::SpanId => "::obs_core::FieldRole::SpanId",
-        FieldKind::ParentSpanId => "::obs_core::FieldRole::ParentSpanId",
-        FieldKind::TimestampNs => "::obs_core::FieldRole::TimestampNs",
-        FieldKind::DurationNs => "::obs_core::FieldRole::DurationNs",
-        FieldKind::Forensic => "::obs_core::FieldRole::Forensic",
-        _ => "::obs_core::FieldRole::Attribute",
-    }
-}
-fn cardinality_path(c: Cardinality) -> &'static str {
-    match c {
-        Cardinality::Low => "::obs_core::__private::Cardinality::Low",
-        Cardinality::Medium => "::obs_core::__private::Cardinality::Medium",
-        Cardinality::High => "::obs_core::__private::Cardinality::High",
-        Cardinality::Unbounded => "::obs_core::__private::Cardinality::Unbounded",
-        _ => "::obs_core::__private::Cardinality::Unspecified",
-    }
-}
-fn classification_path(c: Classification) -> &'static str {
-    match c {
-        Classification::Pii => "::obs_core::__private::Classification::Pii",
-        Classification::Secret => "::obs_core::__private::Classification::Secret",
-        Classification::Internal => "::obs_core::__private::Classification::Internal",
-        _ => "::obs_core::__private::Classification::Unspecified",
-    }
-}
+const EMBEDDED_OPTIONS_PROTO: &str = include_str!("../../obs-proto/proto/obs/v1/options.proto");
+const EMBEDDED_ENUMS_PROTO: &str = include_str!("../../obs-proto/proto/obs/v1/enums.proto");
 
-fn compute_schema_hash(decl: &EventDecl) -> u64 {
-    // Same algorithm as `obs-macros::derive(Event)` so the codegen
-    // produces identical hashes when the schemas are equivalent. Spec
-    // 12 § 1.2 byte-identical-output property.
-    let mut s = String::new();
-    s.push_str(&decl.full_name);
-    s.push('|');
-    s.push_str(decl.event.tier.unwrap_or(Tier::Log).as_str());
-    s.push('|');
-    s.push_str(decl.event.default_sev.unwrap_or(Severity::Info).as_str());
-    s.push('|');
-    for f in &decl.fields {
-        s.push_str(&f.name);
-        s.push(':');
-        s.push_str(
-            f.options
-                .kind
-                .unwrap_or(FieldKind::Attribute)
-                .as_str(),
-        );
-        s.push(':');
-        s.push_str(
-            f.options
-                .cardinality
-                .unwrap_or(Cardinality::Unspecified)
-                .as_str(),
-        );
-        s.push(':');
-        s.push_str(
-            f.options
-                .classification
-                .unwrap_or(Classification::Internal)
-                .as_str(),
-        );
-        s.push(',');
-    }
-    let h = blake3::hash(s.as_bytes());
-    let bytes = h.as_bytes();
-    let arr = <[u8; 8]>::try_from(&bytes[..8]).expect("blake3 always produces 32 bytes");
-    u64::from_le_bytes(arr)
+fn materialise_embedded_options(dir: &Path) -> std::io::Result<()> {
+    let target = dir.join("obs").join("v1");
+    std::fs::create_dir_all(&target)?;
+    std::fs::write(target.join("options.proto"), EMBEDDED_OPTIONS_PROTO)?;
+    std::fs::write(target.join("enums.proto"), EMBEDDED_ENUMS_PROTO)?;
+    Ok(())
 }

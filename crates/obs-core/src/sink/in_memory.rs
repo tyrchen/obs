@@ -4,15 +4,13 @@
 //! envelopes into this sink, and tests `drain()` to assert what was
 //! emitted. Bounded so a runaway test cannot OOM the test binary.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use obs_proto::obs::v1::ObsEnvelope;
 use parking_lot::Mutex;
 
-use crate::registry::ScrubbedEnvelope;
-
 use super::Sink;
+use crate::registry::ScrubbedEnvelope;
 
 const DEFAULT_CAPACITY: usize = 1024;
 

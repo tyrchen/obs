@@ -8,19 +8,22 @@
 //! Per-tier mpsc workers + AUDIT spool + flush/shutdown lifecycle land
 //! in Phase 3 task 3.1 / 3.12.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 use arc_swap::ArcSwap;
 use obs_proto::obs::v1::ObsEnvelope;
 use obs_types::Tier;
 
-use crate::callsite::ObsCallsite;
-use crate::config::EventsConfig;
-use crate::registry::{ScrubbedEnvelope, SchemaRegistry};
-use crate::sink::{NoopSink, Sink, StdoutSink};
-
 use super::Observer;
+use crate::{
+    callsite::ObsCallsite,
+    config::EventsConfig,
+    registry::{SchemaRegistry, ScrubbedEnvelope},
+    sink::{NoopSink, Sink, StdoutSink},
+};
 
 /// Tier-matching dispatcher. Phase-1 supports per-tier override and a
 /// fallback sink. The `SeverityMatcher` row from spec 11 § 4 lands with

@@ -2,11 +2,10 @@
 //!
 //! Spec 11 § 3:
 //!
-//! - Per-task `OBSERVER_TASK` (highest priority; via
-//!   `Future::with_observer` adapter, lands in spec 13 § 3 / Phase 3
-//!   task 3.3).
-//! - Per-thread `OBSERVER_THREAD` — `with_observer_thread_local`,
-//!   `with_test_observer`, `#[obs::test]`.
+//! - Per-task `OBSERVER_TASK` (highest priority; via `Future::with_observer` adapter, lands in spec
+//!   13 § 3 / Phase 3 task 3.3).
+//! - Per-thread `OBSERVER_THREAD` — `with_observer_thread_local`, `with_test_observer`,
+//!   `#[obs::test]`.
 //! - Global `OBSERVER_GLOBAL` — `install_observer`.
 //!
 //! The hot path checks `OVERRIDE_COUNT == 0` first so a process that
@@ -18,19 +17,24 @@ mod in_memory;
 mod noop;
 mod standard;
 
-use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::{
+    cell::{Cell, RefCell},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use arc_swap::ArcSwap;
+use obs_proto::obs::v1::ObsEnvelope;
 use once_cell::sync::Lazy;
 
-pub use self::in_memory::{InMemoryHandle, InMemoryObserver};
-pub use self::noop::NoopObserver;
-pub use self::standard::{StandardObserver, StandardObserverBuilder};
-
+pub use self::{
+    in_memory::{InMemoryHandle, InMemoryObserver},
+    noop::NoopObserver,
+    standard::{StandardObserver, StandardObserverBuilder},
+};
 use crate::callsite::ObsCallsite;
-use obs_proto::obs::v1::ObsEnvelope;
 
 /// The global observer trait. **Sealed** in spirit (downstream crates
 /// implement it freely, but the SDK ships `NoopObserver`,

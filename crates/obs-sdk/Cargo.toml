@@ -16,13 +16,23 @@ homepage.workspace = true
 default = ["dev", "panic-hook"]
 dev = []
 panic-hook = []
-test = []
+test = ["obs-core/test"]
 
 [dependencies]
 obs-core = { workspace = true }
 obs-macros = { workspace = true }
 obs-proto = { workspace = true }
 obs-types = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+obs-core = { workspace = true, features = ["test"] }
+tokio = { workspace = true }
+
+[[test]]
+name = "dev_ergonomics"
+path = "tests/dev_ergonomics/main.rs"
+required-features = ["test"]
 
 [lints]
 workspace = true

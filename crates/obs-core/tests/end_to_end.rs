@@ -15,11 +15,10 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use obs_core::__private::Sealed;
 use obs_core::{
-    Cardinality, Classification, EventSchema, EventSchemaErased, FieldMeta, FieldRole,
-    InMemoryObserver, InMemorySink, ObsCallsite, Observer, Severity, StandardObserver, Tier,
-    envelope, install_observer, observer, with_test_observer,
+    __private::Sealed, Cardinality, Classification, EventSchema, EventSchemaErased, FieldMeta,
+    FieldRole, InMemoryObserver, InMemorySink, ObsCallsite, Observer, Severity, StandardObserver,
+    Tier, envelope, install_observer, observer, with_test_observer,
 };
 
 // ─── Hand-rolled event type (mimics what `#[derive(Event)]` will emit) ──

@@ -53,7 +53,8 @@ impl Severity {
 
     /// Map to OTLP `SeverityNumber` (1..=24 with 4 buckets per band).
     /// Unspecified maps to 0; fatal maps to 21 (`Fatal`).
-    /// See [20-otel-and-sinks.md § 2.2](../../specs/20-otel-and-sinks.md#22-severity--otlp-severitynumber).
+    /// See [20-otel-and-sinks.md §
+    /// 2.2](../../specs/20-otel-and-sinks.md#22-severity--otlp-severitynumber).
     #[must_use]
     pub const fn otlp_number(self) -> i32 {
         match self {

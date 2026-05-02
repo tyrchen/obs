@@ -12,8 +12,8 @@ use obs_types::Severity;
 ///
 /// - `0` (`Unknown`) — not yet probed; observer must be queried.
 /// - `1` (`Never`) — disabled; skip the entire emit branch.
-/// - `2` (`Sometimes`) — enabled but still call `Observer::enabled()`
-///   per emit (e.g. severity-floor + per-callsite allowlist).
+/// - `2` (`Sometimes`) — enabled but still call `Observer::enabled()` per emit (e.g. severity-floor
+///   + per-callsite allowlist).
 /// - `3` (`Always`) — enabled unconditionally; skip the virtual call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

@@ -17,8 +17,7 @@
 //! load the built-in schemas at runtime regardless of how the
 //! binary was linked.
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);

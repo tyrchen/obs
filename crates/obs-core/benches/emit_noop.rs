@@ -15,10 +15,9 @@
 
 use bytes::BytesMut;
 use criterion::{Criterion, criterion_group, criterion_main};
-use obs_core::__private::Sealed;
 use obs_core::{
-    Cardinality, Classification, EventSchema, EventSchemaErased, FieldMeta, FieldRole, ObsCallsite,
-    Severity, Tier, envelope, observer,
+    __private::Sealed, Cardinality, Classification, EventSchema, EventSchemaErased, FieldMeta,
+    FieldRole, ObsCallsite, Severity, Tier, envelope, observer,
 };
 
 #[derive(Debug, Default)]

@@ -1,4 +1,6 @@
-error[E0080]: evaluation panicked: obs L011: event type name `CheckoutStarted` must start with `Obs` (workspace event_prefix)
+error[E0080]: evaluation panicked: obs L011: event type name `CheckoutStarted` must start with `Obs`
+              note: the `Obs` prefix gives every event type a unique visual identity at call sites.
+              help: rename to `ObsCheckoutStarted`.
  --> tests/trybuild/fail/L011_missing_obs_prefix.rs:6:26
   |
 6 | #[derive(Debug, Default, Event)]

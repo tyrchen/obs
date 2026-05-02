@@ -6,8 +6,8 @@
 //! - `obs::v1::*` enums — vocabulary mirrors of the [`obs_types`] enums.
 //! - `obs::v1::*` events — user-facing built-ins (spec 61 § 2.2).
 //! - `obs::runtime::v1::*` events — SDK self-events (spec 11 § 10).
-//! - [`BUILTIN_FDS`] — the `FileDescriptorSet` bytes for everything in this
-//!   crate, embedded at compile time.
+//! - [`BUILTIN_FDS`] — the `FileDescriptorSet` bytes for everything in this crate, embedded at
+//!   compile time.
 //!
 //! The generated buffa code lives under `src/pb/` (checked in, regenerated
 //! by `build.rs` on every build).
@@ -45,7 +45,7 @@ pub static BUILTIN_FDS: &[u8] = include_bytes!(env!("OBS_PROTO_FDS"));
 /// Re-export buffa traits user code rarely touches but generated code
 /// needs in scope.
 pub mod __private {
-    pub use buffa::{Enumeration, EnumValue, Message, MessageField, UnknownFields};
+    pub use buffa::{EnumValue, Enumeration, Message, MessageField, UnknownFields};
 }
 
 #[cfg(test)]

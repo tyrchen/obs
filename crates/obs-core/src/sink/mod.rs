@@ -9,12 +9,13 @@ mod in_memory;
 mod noop;
 mod stdout;
 
-use std::future::Future;
-use std::pin::Pin;
+use std::{future::Future, pin::Pin};
 
-pub use self::in_memory::{InMemoryHandle, InMemorySink};
-pub use self::noop::NoopSink;
-pub use self::stdout::{FormatterStyle, StdoutSink};
+pub use self::{
+    in_memory::{InMemoryHandle, InMemorySink},
+    noop::NoopSink,
+    stdout::{FormatterStyle, StdoutSink},
+};
 use crate::registry::ScrubbedEnvelope;
 
 /// Pinned future returned by `Sink::flush` / `Sink::shutdown`. Spec 11 § 4

@@ -3,9 +3,8 @@
 //! Used as the default fallback in `SinkRouter` and in tests where
 //! sink behaviour is not what's being asserted.
 
-use crate::registry::ScrubbedEnvelope;
-
 use super::Sink;
+use crate::registry::ScrubbedEnvelope;
 
 /// A sink that drops every envelope.
 #[derive(Debug, Default, Clone, Copy)]

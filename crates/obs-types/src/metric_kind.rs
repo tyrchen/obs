@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::UnknownVariant;
 
 /// Metric type for a `MEASUREMENT` field. See
-/// [12-schema-and-codegen.md § 2](../../specs/12-schema-and-codegen.md#2-the-obsv1options-proto-extensions).
+/// [12-schema-and-codegen.md §
+/// 2](../../specs/12-schema-and-codegen.md#2-the-obsv1options-proto-extensions).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(i32)]

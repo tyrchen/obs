@@ -475,15 +475,14 @@ fn lint_block(
     // L011: name starts with the workspace event prefix. The default
     // is `Obs` (spec 10 § 7); a workspace can override via the
     // `OBS_EVENT_PREFIX` env var which `obs-build`/`build.rs` sets
-    // from `[workspace.metadata.obs] event_prefix`. Phase 1 honours
-    // the env var; Phase 2 task 2.5 will read the workspace metadata
-    // directly.
+    // from `[workspace.metadata.obs] event_prefix`.
     let n_str = name.to_string();
     let prefix = std::env::var("OBS_EVENT_PREFIX").unwrap_or_else(|_| "Obs".to_string());
     if !n_str.starts_with(&prefix) {
         let msg = format!(
-            "obs L011: event type name `{n_str}` must start with `{prefix}` (workspace \
-             event_prefix)"
+            "obs L011: event type name `{n_str}` must start with `{prefix}`\nnote: the `{prefix}` \
+             prefix gives every event type a unique visual identity at call sites.\nhelp: rename \
+             to `{prefix}{n_str}`."
         );
         asserts.push(quote! {
             const _: () = ::std::panic!(#msg);
@@ -495,7 +494,11 @@ fn lint_block(
         if f.role == "label" {
             let card = f.cardinality_token();
             let msg = format!(
-                "obs L001: field `{name}` is LABEL but cardinality is High/Unbounded",
+                "obs L001: field `{name}` is LABEL but cardinality is not label-compatible\nnote: \
+                 LABEL fields must be Low or Medium cardinality. High and Unbounded are illegal \
+                 because they would explode the metric attribute set.\nhelp: change `#[obs(label, \
+                 ...)]` to `#[obs(attribute, ...)]` if the value is high-cardinality (an \
+                 ATTRIBUTE is logged but never becomes a metric dim).",
                 name = f.ident
             );
             asserts.push(quote! {
@@ -508,7 +511,11 @@ fn lint_block(
     for f in fields {
         if f.role == "label" && f.classification == "pii" {
             let msg = format!(
-                "obs L002: field `{name}` is LABEL but classification is PII",
+                "obs L002: field `{name}` is LABEL with classification PII\nnote: PII fields \
+                 cannot be LABEL because labels become metric attributes that are kept \
+                 indefinitely and leak into vendor backends.\nhelp: change kind to `attribute` so \
+                 the value is logged + analytics-only, and the redactor can scrub it on the \
+                 durable path.",
                 name = f.ident
             );
             asserts.push(quote! {
@@ -523,7 +530,10 @@ fn lint_block(
         for f in fields {
             if f.classification == "secret" {
                 let msg = format!(
-                    "obs L003: field `{name}` is SECRET but tier is `{tier}`",
+                    "obs L003: field `{name}` is SECRET on a `{tier}` tier event\nnote: SECRET \
+                     fields are forbidden on LOG/AUDIT tiers because those tiers persist payloads \
+                     to long-retained sinks.\nhelp: move the field to a non-secret column, or \
+                     move the event to TRACE/METRIC tier (which do not persist payload bytes).",
                     name = f.ident,
                     tier = container.tier
                 );

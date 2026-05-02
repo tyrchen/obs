@@ -7,17 +7,18 @@
 mod erased;
 mod scrubbed;
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use linkme::distributed_slice;
 use obs_proto::obs::v1::ObsEnvelope;
 
-pub use self::erased::{
-    ArrowStructBuilder, DecodeError, EventSchemaErased, OtelAttributeView, OtlpValue, ScrubError,
-    Sealed,
+pub use self::{
+    erased::{
+        ArrowStructBuilder, DecodeError, EventSchemaErased, OtelAttributeView, OtlpValue,
+        ScrubError, Sealed,
+    },
+    scrubbed::ScrubbedEnvelope,
 };
-pub use self::scrubbed::ScrubbedEnvelope;
 
 /// The link-time distributed slice every `EventSchema` codegen
 /// registers into. Walked once at observer init to build the runtime

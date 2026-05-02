@@ -7,9 +7,8 @@ use std::io::Write;
 use obs_types::{SamplingReason, Severity, Tier};
 use parking_lot::Mutex;
 
-use crate::registry::ScrubbedEnvelope;
-
 use super::Sink;
+use crate::registry::ScrubbedEnvelope;
 
 /// Output style for [`StdoutSink`]. See spec 20 § 3.6.
 ///

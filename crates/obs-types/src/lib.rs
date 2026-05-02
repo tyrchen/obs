@@ -15,8 +15,7 @@
 //! - implement [`buffa::Enumeration`] so they live on the wire,
 //! - serialize/deserialize via `serde` for `obs.yaml` config,
 //! - expose `const fn` helpers used by compile-time lints (e.g.
-//!   [`Cardinality::is_label_compatible`], [`Cardinality::cap`],
-//!   [`Severity::as_str`]).
+//!   [`Cardinality::is_label_compatible`], [`Cardinality::cap`], [`Severity::as_str`]).
 //!
 //! Vocabulary changes here cause an envelope `format_ver` bump (per
 //! [10-data-model.md § 6](../../specs/10-data-model.md#6-envelope) and

@@ -25,6 +25,8 @@ use proc_macro::TokenStream;
 
 mod derive_event;
 mod emit_macro;
+mod include_schemas;
+mod test_attr;
 
 /// Derive macro for the Rust-first authoring path.
 ///
@@ -65,6 +67,52 @@ pub fn derive_event(item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn emit(item: TokenStream) -> TokenStream {
     emit_macro::expand(item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// `obs::include_schemas!("myapp.v1")` — wire up every file
+/// `obs-build` emits into the user's crate. Expands to four
+/// `include!` calls under `OUT_DIR/obs/`. Spec 12 § 3.1.
+#[proc_macro]
+pub fn include_schemas(item: TokenStream) -> TokenStream {
+    include_schemas::expand(item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// `#[obs::test]` — drop-in replacement for `#[test]` /
+/// `#[tokio::test]` that installs an [`InMemoryObserver`] on the
+/// current thread (sync) or current task (async) for the duration of
+/// the test. The body's emits land in a thread-local /
+/// task-local handle that [`obs::test::assert_emitted!`] reads.
+///
+/// Sync example:
+///
+/// ```ignore
+/// #[obs::test]
+/// fn login_emits_event() -> anyhow::Result<()> {
+///     login("alice")?;
+///     obs::test::assert_emitted!(ObsLoggedIn { user: "alice", .. });
+///     Ok(())
+/// }
+/// ```
+///
+/// Async example:
+///
+/// ```ignore
+/// #[obs::test]
+/// async fn billing_emits_charge_event() -> anyhow::Result<()> {
+///     charge_card("4242…").await?;
+///     obs::test::assert_emitted!(ObsChargeAttempted { outcome: "approved", .. });
+///     Ok(())
+/// }
+/// ```
+///
+/// Spec 60 § 8 + spec 72 § 3.
+#[proc_macro_attribute]
+pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    test_attr::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

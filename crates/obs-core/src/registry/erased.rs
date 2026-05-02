@@ -3,8 +3,7 @@
 use bytes::BytesMut;
 use obs_types::{Severity, Tier};
 
-use crate::envelope::FieldMeta;
-use crate::metric::MetricEmitter;
+use crate::{envelope::FieldMeta, metric::MetricEmitter};
 
 /// Sealing supertrait — only `obs-build` codegen and
 /// `obs-macros::derive(Event)` may implement [`EventSchemaErased`].

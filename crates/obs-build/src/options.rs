@@ -105,10 +105,8 @@ pub enum CodegenError {
 ///
 /// Returns [`CodegenError::OptionDecode`] when the wire payload is
 /// truncated or contains an invalid sub-message.
-pub fn read_event_options(
-    bytes: &[u8],
-    path: &str,
-) -> Result<Option<EventOptions>, CodegenError> {
+#[doc(hidden)]
+pub fn read_event_options(bytes: &[u8], path: &str) -> Result<Option<EventOptions>, CodegenError> {
     let Some(payload) = find_tag_payload(bytes, &EVENT_TAG_BYTES) else {
         return Ok(None);
     };
@@ -144,16 +142,16 @@ pub fn read_event_options(
 ///
 /// Returns [`CodegenError::OptionDecode`] when the wire payload is
 /// truncated or contains an invalid sub-message.
-pub fn read_field_options(
-    bytes: &[u8],
-    path: &str,
-) -> Result<Option<FieldOptions>, CodegenError> {
+#[doc(hidden)]
+pub fn read_field_options(bytes: &[u8], path: &str) -> Result<Option<FieldOptions>, CodegenError> {
     let Some(payload) = find_tag_payload(bytes, &FIELD_TAG_BYTES) else {
         return Ok(None);
     };
     let mut out = FieldOptions::default();
     walk_message(payload, |field, kind, value| match (field, kind) {
-        (1, WireKind::Varint) => out.kind = value.varint().and_then(|v| decode_field_kind(v as i32)),
+        (1, WireKind::Varint) => {
+            out.kind = value.varint().and_then(|v| decode_field_kind(v as i32))
+        }
         (2, WireKind::Varint) => {
             out.cardinality = value.varint().and_then(|v| decode_cardinality(v as i32))
         }
@@ -367,8 +365,8 @@ where
                 visit(field, WireKind::Fixed64, WireValue::Fixed64(arr));
             }
             2 => {
-                let (len, c) = read_varint(&payload[i..])
-                    .map_err(|_| WireScanError("invalid LEN varint"))?;
+                let (len, c) =
+                    read_varint(&payload[i..]).map_err(|_| WireScanError("invalid LEN varint"))?;
                 i += c;
                 let end = i
                     .checked_add(len as usize)
@@ -426,9 +424,7 @@ mod tests {
         // 92 88 27 06 08 02 10 03 18 02 → (obs.v1.field) = {
         //     kind: ATTRIBUTE(2), cardinality: HIGH(3), classification: PII(2)
         // }
-        let bytes = [
-            0x92, 0x88, 0x27, 0x06, 0x08, 0x02, 0x10, 0x03, 0x18, 0x02,
-        ];
+        let bytes = [0x92, 0x88, 0x27, 0x06, 0x08, 0x02, 0x10, 0x03, 0x18, 0x02];
         let opts = read_field_options(&bytes, "test").unwrap().unwrap();
         assert_eq!(opts.kind, Some(FieldKind::Attribute));
         assert_eq!(opts.cardinality, Some(Cardinality::High));

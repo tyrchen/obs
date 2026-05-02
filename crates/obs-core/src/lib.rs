@@ -8,17 +8,14 @@
 //! Phase-1 surface (specs/91-impl-plan.md tasks 1.4–1.8):
 //!
 //! - [`callsite`] — `ObsCallsite`, atomic-`Interest` cache (spec 11 § 2).
-//! - [`observer`] — three-tier resolution (per-task → per-thread → global)
-//!   with `OVERRIDE_COUNT` fast flag and `CAN_ENTER` re-entry guard
-//!   (spec 11 § 3); `Observer` trait; `NoopObserver`, `InMemoryObserver`,
-//!   single-tier `StandardObserver`.
-//! - [`registry`] — `EventSchemaErased` object-safe trait, the
-//!   `linkme`-collected `EVENT_SCHEMAS` distributed slice, the runtime
-//!   `SchemaRegistry`, `ScrubbedEnvelope` worker handoff (spec 14).
+//! - [`observer`] — three-tier resolution (per-task → per-thread → global) with `OVERRIDE_COUNT`
+//!   fast flag and `CAN_ENTER` re-entry guard (spec 11 § 3); `Observer` trait; `NoopObserver`,
+//!   `InMemoryObserver`, single-tier `StandardObserver`.
+//! - [`registry`] — `EventSchemaErased` object-safe trait, the `linkme`-collected `EVENT_SCHEMAS`
+//!   distributed slice, the runtime `SchemaRegistry`, `ScrubbedEnvelope` worker handoff (spec 14).
 //! - [`envelope`] — envelope builder + projection helpers (spec 11 § 5).
-//! - [`sink`] — `Sink` trait (`deliver(ScrubbedEnvelope<'_>)`),
-//!   `NoopSink`, `InMemorySink`, `StdoutSink` w/ `FormatterStyle::Full`
-//!   (specs/14 § 5, 20 § 3.6).
+//! - [`sink`] — `Sink` trait (`deliver(ScrubbedEnvelope<'_>)`), `NoopSink`, `InMemorySink`,
+//!   `StdoutSink` w/ `FormatterStyle::Full` (specs/14 § 5, 20 § 3.6).
 //! - [`config`] — `EventsConfig` shell with `ArcSwap` reload hook (spec 15).
 //!
 //! What's deliberately not wired yet (deferred to Phase 3 task 3.*):
@@ -26,6 +23,7 @@
 //! (the support types live here; the macros live in `obs-macros`),
 //! the AUDIT spool, file-watcher reload, panic hook.
 
+pub mod aux;
 pub mod callsite;
 pub mod config;
 pub mod emit;
@@ -34,24 +32,27 @@ pub mod metric;
 pub mod observer;
 pub mod registry;
 pub mod sink;
+#[cfg(feature = "test")]
+pub mod test;
 
+pub use aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame};
 pub use callsite::ObsCallsite;
 pub use config::{EventsConfig, SamplingConfig};
 pub use emit::Emit;
 pub use envelope::{Envelope, EventSchema, FieldMeta, FieldRole};
+pub use metric::{MetricEmitter, NoopMetricEmitter};
+pub use obs_proto::obs::v1::{ObsBatch, ObsEnvelope};
+pub use obs_types::{
+    Cardinality, Classification, FieldKind, MetricKind, SamplingReason, Severity, Tier,
+};
 pub use observer::{
     InMemoryHandle, InMemoryObserver, NoopObserver, Observer, StandardObserver,
     StandardObserverBuilder, ThreadObserverGuard, WeakObserver, install_observer, observer,
     observer_weak, with_observer_thread_local, with_test_observer,
 };
-pub use obs_proto::obs::v1::{ObsBatch, ObsEnvelope};
-pub use obs_types::{
-    Cardinality, Classification, FieldKind, MetricKind, SamplingReason, Severity, Tier,
-};
-pub use metric::{MetricEmitter, NoopMetricEmitter};
 pub use registry::{
-    ArrowStructBuilder, DecodeError, EVENT_SCHEMAS, EventSchemaErased, OtelAttributeView, OtlpValue,
-    ScrubError, ScrubbedEnvelope, SchemaRegistry,
+    ArrowStructBuilder, DecodeError, EVENT_SCHEMAS, EventSchemaErased, OtelAttributeView,
+    OtlpValue, SchemaRegistry, ScrubError, ScrubbedEnvelope,
 };
 pub use sink::{FormatterStyle, InMemorySink, NoopSink, Sink, StdoutSink};
 
@@ -65,6 +66,36 @@ pub mod __private {
     pub use obs_types::*;
     pub use serde_json;
 
-    pub use crate::callsite::ObsCallsite;
-    pub use crate::registry::{EVENT_SCHEMAS, EventSchemaErased, Sealed};
+    pub use crate::{
+        aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame},
+        callsite::ObsCallsite,
+        registry::{EVENT_SCHEMAS, EventSchemaErased, Sealed},
+    };
+
+    /// L011 helper: const-time test that a string starts with a known
+    /// prefix. The codegen emits `assert!(starts_with_obs(name, "Obs"))`
+    /// in `lints.rs`, replacing the proc-macro's `name.starts_with(...)`
+    /// runtime check.
+    ///
+    /// `clippy::indexing_slicing` is allowed here because const-eval has
+    /// no `.get()` for slices; the explicit `n.len() < p.len()` guard
+    /// proves the indices are in-bounds for the linker that runs this
+    /// at compile time.
+    #[must_use]
+    #[allow(clippy::indexing_slicing)]
+    pub const fn starts_with_obs(name: &str, prefix: &str) -> bool {
+        let n = name.as_bytes();
+        let p = prefix.as_bytes();
+        if n.len() < p.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < p.len() {
+            if n[i] != p[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
 }
