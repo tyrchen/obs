@@ -25,7 +25,10 @@ use proc_macro::TokenStream;
 
 mod derive_event;
 mod emit_macro;
+mod forensic_macro;
 mod include_schemas;
+mod instrument_attr;
+mod scope_macro;
 mod test_attr;
 
 /// Derive macro for the Rust-first authoring path.
@@ -77,6 +80,50 @@ pub fn emit(item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn include_schemas(item: TokenStream) -> TokenStream {
     include_schemas::expand(item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// `obs::scope!(name = value, ...)` — push an `obs::scope!` frame
+/// onto the active task's scope stack. Returns a `ScopeGuard` that
+/// pops the frame on drop and flushes the tail-on-error buffer when
+/// `>= ERROR` was observed inside.
+///
+/// Spec 13 § 2.
+#[proc_macro]
+pub fn scope(item: TokenStream) -> TokenStream {
+    scope_macro::expand_scope(item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// `obs::context!(name = value, ...)` — like `obs::scope!` but without
+/// the per-scope tail buffer. Spec 13 § 2.2.
+#[proc_macro]
+pub fn context(item: TokenStream) -> TokenStream {
+    scope_macro::expand_context(item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// `obs::forensic!(site = "...", message = "...", { "k" => v, ... })`
+/// — emergency escape hatch. Always emits, regardless of sampling.
+/// Spec 13 § 8.
+#[proc_macro]
+pub fn forensic(item: TokenStream) -> TokenStream {
+    forensic_macro::expand(item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// `#[obs::instrument]` — wraps a function body in an `obs::scope!`
+/// and emits one `ObsFnExecuted` event on exit (default) or two
+/// (`ObsFnEntered` + `ObsFnExecuted`) when `enter = true`.
+///
+/// Spec 13 § 5.
+#[proc_macro_attribute]
+pub fn instrument(attr: TokenStream, item: TokenStream) -> TokenStream {
+    instrument_attr::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

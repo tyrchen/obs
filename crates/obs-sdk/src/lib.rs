@@ -4,30 +4,23 @@
 //! Façade crate — re-exports the everyday obs API.
 //!
 //! Most downstream apps depend only on `obs-sdk`. Spec 61 § 2.11.
-//!
-//! Phase-1 features:
-//!
-//! | Feature | Default | Pulls in |
-//! | --- | --- | --- |
-//! | `dev` | yes | `StdoutSink` (Phase 1 only `FormatterStyle::Full`); `StandardObserver::dev()` |
-//! | `panic-hook` | yes | reserved; full impl in Phase 3 task 3.11 |
-//! | `test` | no | `InMemoryObserver`, `with_test_observer` |
-//!
-//! Sinks (`otel`, `parquet`, `clickhouse`, `tower`,
-//! `tracing-bridge`) are Phase-3+ features and are *not* exposed
-//! here yet — adding them later does not break the Phase-1 surface.
 
 #[cfg(feature = "dev")]
 pub use obs_core::sink::FormatterStyle;
 pub use obs_core::{
     BuildableTo, Cardinality, Classification, Emit, EnumCount, EventSchema, EventsConfig,
-    FieldCapture, FieldKind, FieldMeta, FieldRole, InMemoryHandle, InMemoryObserver, InMemorySink,
-    MetricEmitter, MetricKind, NoopObserver, NoopSink, ObsBatch, ObsCallsite, ObsEnvelope,
-    Observer, SamplingConfig, SamplingReason, Severity, Sink, SpanCtx, SpanFrame, StandardObserver,
-    StandardObserverBuilder, StdoutSink, Tier, install_observer, observer, observer_weak,
-    with_observer_task, with_observer_thread_local, with_test_observer,
+    FieldCapture, FieldKind, FieldMeta, FieldRole, Filter, InMemoryHandle, InMemoryObserver,
+    InMemorySink, Instrument, Instrumented, LevelSplitWriter, MakeWriter, MetricEmitter,
+    MetricKind, NdjsonFileSink, NonBlockingWriter, NoopObserver, NoopSink, ObsBatch, ObsCallsite,
+    ObsEnvelope, Observer, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy,
+    SamplingConfig, SamplingReason, ScopeField, ScopeFrame, ScopeGuard, ScopeKind, Severity, Sink,
+    SpanCtx, SpanFrame, SpanTrace, StandardObserver, StandardObserverBuilder, StderrWriter,
+    StdoutSink, StdoutWriter, TeeWriter, Tier, WithObserver, WorkerGuard, install_observer,
+    install_panic_hook, observer, observer_weak, with_observer_task, with_observer_task_sync,
+    with_observer_thread_local, with_test_observer,
 };
-pub use obs_macros::{Event, emit, include_schemas};
+pub use obs_macros::{Event, context, emit, forensic, include_schemas, instrument, scope};
+pub use obs_proto::obs::v1::{ObsFnEntered, ObsFnExecuted, ObsForensicEvent};
 
 /// Test ergonomics — `assert_emitted!`, `#[obs::test]`. Spec 60 § 8.
 #[cfg(feature = "test")]

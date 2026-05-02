@@ -16,6 +16,7 @@
 mod in_memory;
 mod noop;
 mod standard;
+pub(crate) mod workers;
 
 use std::{
     cell::{Cell, RefCell},
@@ -281,19 +282,25 @@ where
 /// `OVERRIDE_COUNT` is bumped before entering the scope and
 /// decremented after, so the hot-path resolver actually probes the
 /// task-local. Spec 11 § 3.1, KD-D3.
-///
-/// **Phase 2 surface**: this is the minimal Future-aware install
-/// path. Phase 3 task 3.3 lands `WithObserver::with_observer` and
-/// `Instrumented<F>` which carry the observer alongside an
-/// `obs::scope!` frame. Until then, this helper is the recommended way
-/// for tests and per-tenant background tasks to forward the active
-/// observer.
 pub async fn with_observer_task<F, R>(observer: Arc<dyn Observer>, fut: F) -> R
 where
     F: std::future::Future<Output = R>,
 {
     OVERRIDE_COUNT.fetch_add(1, Ordering::Relaxed);
     let result = OBSERVER_TASK.scope(observer, fut).await;
+    OVERRIDE_COUNT.fetch_sub(1, Ordering::Relaxed);
+    result
+}
+
+/// Synchronous sibling of [`with_observer_task`] used by
+/// `Instrumented<F>::poll` so a single poll can bind / unbind the
+/// per-task observer without requiring an `await`. Spec 13 § 3.
+pub fn with_observer_task_sync<F, R>(observer: Arc<dyn Observer>, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    OVERRIDE_COUNT.fetch_add(1, Ordering::Relaxed);
+    let result = OBSERVER_TASK.sync_scope(observer, f);
     OVERRIDE_COUNT.fetch_sub(1, Ordering::Relaxed);
     result
 }

@@ -264,7 +264,11 @@ message ObsGood {
         ])
         .output()
         .expect("run obs lint --filter");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("1 event(s) scanned"), "stdout: {stdout}");
 }

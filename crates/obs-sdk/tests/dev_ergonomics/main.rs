@@ -19,12 +19,16 @@
     clippy::disallowed_types
 )]
 
+mod test_audit_spool_recovery;
 mod test_compile_errors;
+mod test_hot_reload;
 mod test_in_memory_observer;
 mod test_multi_tenant_observer;
 mod test_no_observer_noop;
 mod test_obs_test_attribute;
+mod test_panic_hook;
 mod test_parallel_tests;
 mod test_quickstart_60s;
 mod test_registry_init;
 mod test_scrubbed_envelope;
+mod test_tracing_bridge;

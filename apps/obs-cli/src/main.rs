@@ -49,6 +49,14 @@ enum Command {
         #[command(subcommand)]
         sub: cmd::schema::Sub,
     },
+    /// Decode a binary `ObsBatch` (or AUDIT spool) to NDJSON.
+    Decode(cmd::decode::DecodeArgs),
+    /// Live-tail an NDJSON / OTLP source.
+    Tail(cmd::tail::TailArgs),
+    /// Filter + project events from a local NDJSON source.
+    Query(cmd::query::QueryArgs),
+    /// Diagnose a crate's obs setup.
+    Doctor(cmd::doctor::DoctorArgs),
     /// Print version + supported envelope formats.
     Version(cmd::version::VersionArgs),
     /// Emit shell completion script.
@@ -62,6 +70,10 @@ fn main() -> Result<()> {
         Command::Validate(args) => cmd::validate::run(args),
         Command::Lint(args) => cmd::lint::run(args),
         Command::Schema { sub } => cmd::schema::run(sub),
+        Command::Decode(args) => cmd::decode::run(args),
+        Command::Tail(args) => cmd::tail::run(args),
+        Command::Query(args) => cmd::query::run(args),
+        Command::Doctor(args) => cmd::doctor::run(args),
         Command::Version(args) => cmd::version::run(args),
         Command::Completions(args) => cmd::completions::run(args),
     }

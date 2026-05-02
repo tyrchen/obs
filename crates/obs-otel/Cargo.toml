@@ -1,0 +1,33 @@
+[package]
+name = "obs-otel"
+description = "OpenTelemetry Protocol (OTLP) sinks for the obs SDK."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "opentelemetry", "otlp"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+arc-swap = { workspace = true }
+buffa = { workspace = true }
+bytes = { workspace = true }
+obs-core = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
+
+[lints]
+workspace = true

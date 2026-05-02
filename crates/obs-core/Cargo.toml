@@ -23,6 +23,7 @@ obs-proto = { workspace = true }
 obs-types = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -32,6 +33,8 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 
 [features]
 default = []
@@ -42,6 +45,10 @@ test = []
 
 [[bench]]
 name = "emit_noop"
+harness = false
+
+[[bench]]
+name = "scope_overhead"
 harness = false
 
 [lints]

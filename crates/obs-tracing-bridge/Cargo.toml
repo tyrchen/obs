@@ -1,0 +1,32 @@
+[package]
+name = "obs-tracing-bridge"
+description = "Bidirectional bridge between `tracing` and the obs SDK."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "tracing"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+buffa = { workspace = true }
+dashmap = { workspace = true }
+obs-core = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-core = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
