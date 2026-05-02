@@ -16,11 +16,12 @@ table, and a Rust-only toolchain in v1.
 | File | Type | Purpose |
 | --- | --- | --- |
 | [wide-events-prd.md](./wide-events-prd.md) | PRD | Vision, users, success metrics, non-goals |
-| [architecture-design.md](./architecture-design.md) | Design | Runtime data model, observer, sinks, OTel mapping, **Key Design Decisions** |
+| [architecture-design.md](./architecture-design.md) | Design | Runtime data model, observer, sinks, OTel mapping (incl. SeverityNumber + Resource), trace context propagation, production concerns, defaults table, **Key Design Decisions** |
 | [schema-codegen-design.md](./schema-codegen-design.md) | Design | `.proto` annotations and build-time codegen pipeline (buffa + buffa-reflect) |
-| [crates-design.md](./crates-design.md) | Design | Workspace layout, per-crate public API |
+| [crates-design.md](./crates-design.md) | Design | Workspace layout, per-crate public API (incl. `obs-tower`, `obs-tracing-bridge` bidirectional) |
 | [cli-design.md](./cli-design.md) | Design | `obs` CLI: lint, validate, codegen, query, diff (Rust-only in v1) |
-| [dev-ergonomics-design.md](./dev-ergonomics-design.md) | Design | North star, quickstart, mental model, errors, testing, migration, AI authoring |
+| [dev-ergonomics-design.md](./dev-ergonomics-design.md) | Design | North star, quickstart, mental model, errors, testing, migration, AI authoring; **emit-form rationale** |
+| [tracing-interop-design.md](./tracing-interop-design.md) | Design | Bidirectional `tracing` ↔ `obs` bridge (scheduled remote agent will produce; fold in when delivered) |
 | [impl-plan.md](./impl-plan.md) | Impl Plan | Phased delivery M0 → M3 with exit criteria |
 
 ## Reading order

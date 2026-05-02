@@ -84,6 +84,17 @@ enum Classification {
   CLASSIFICATION_PII      = 2;  // Redactable; never on LABEL
   CLASSIFICATION_SECRET   = 3;  // Stripped before durable write; never on LOG/AUDIT tier
 }
+
+enum SamplingReason {
+  SAMPLING_REASON_UNSPECIFIED = 0;
+  SAMPLING_REASON_HEAD_RATE   = 1;  // Selected by head-rate roll
+  SAMPLING_REASON_TAIL_ERROR  = 2;  // Flushed because a sibling event hit ERROR/FATAL
+  SAMPLING_REASON_SLOW        = 3;  // `always_log_slower_than_ms` triggered
+  SAMPLING_REASON_FORENSIC    = 4;  // Emitted by obs::forensic! (always retained)
+  SAMPLING_REASON_AUDIT       = 5;  // AUDIT-tier event (always retained)
+  SAMPLING_REASON_RUNTIME     = 6;  // SDK self-event (obs.runtime.v1.*)
+  SAMPLING_REASON_OVERRIDE    = 7;  // Per-event head_rate=1.0 forces always-on
+}
 ```
 
 ### 1.4 Envelope
@@ -205,15 +216,29 @@ only runtime indirection on the hot path.
 
 ```rust
 pub trait Observer: Send + Sync + 'static {
+    /// Hot path; never blocks; never panics.
     fn emit_envelope(&self, env: ObsEnvelope);
+
+    /// Cheap callsite filter check; called by both emit forms before
+    /// constructing the event payload.
+    fn enabled(&self, callsite: &ObsCallsite) -> bool;
+
+    /// Flush all sinks; awaits in-flight batches.
     fn flush(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Shutdown all sinks and join workers. Idempotent.
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Synchronous shutdown for use in panic hooks and `Drop` impls
+    /// where awaiting is not possible. Best-effort within `timeout`.
+    fn shutdown_blocking(&self, timeout: Duration);
 }
 
 static OBSERVER: ArcSwap<Box<dyn Observer>> = ...;  // default = NoopObserver
 
 pub fn observer() -> Guard<Arc<Box<dyn Observer>>> { OBSERVER.load() }
 pub fn install_observer<O: Observer>(o: O) { ... }
+pub fn install_panic_hook() { ... }              // opt-in; see § 9.1
 ```
 
 - Library crates depend on `obs-sdk` only — they never construct an
@@ -314,10 +339,15 @@ pub async fn handle_request(req: Request) -> Response {
 
     ObsRequestStarted::builder().route(route_of(&req)).emit();
     let r = process(req).await;          // may emit ObsUpstreamFailed (ERROR)
-    ObsRequestCompleted::builder()...emit();
+    ObsRequestCompleted::builder()
+        .route(route_of(&req))
+        .status(if r.is_ok() { Status::Ok } else { Status::ServerError })
+        .latency_ms(r.elapsed_ms())
+        .emit();
 
     r
-    // _scope dropped: if any ERROR seen, flush full buffer; else discard.
+    // _scope dropped (including on async cancel — see § 8.1): if any ERROR
+    // seen, flush full buffer; else discard.
 }
 ```
 
@@ -407,55 +437,145 @@ There is no analytics-tier sink — `ParquetSink` and `ClickHouseSink`
 ## 4. OpenTelemetry mapping
 
 The mapping is performed by the OTLP sinks, not the core; this keeps
-the core free of OTel as a hard dependency.
+the core free of OTel as a hard dependency. All mappings target OTLP
+1.x (`opentelemetry-proto >= 1.4`).
 
-### 4.1 To OTLP Logs
+### 4.1 OTel Resource (set once)
+
+`service`, `instance`, `version` are **Resource** attributes in OTel,
+not per-record attributes. The OTLP sinks build a single `Resource`
+at construction and reuse it across every export RPC. The envelope
+also carries them so non-OTLP sinks (Parquet, ClickHouse, NDJSON) get
+the same identity without a separate Resource concept; the OTLP sinks
+specifically **do not** also stamp them as per-LogRecord attributes
+to avoid double-attribution.
+
+| Envelope field | OTel Resource attribute (semconv) |
+| --- | --- |
+| `env.service`  | `service.name` |
+| `env.instance` | `service.instance.id` |
+| `env.version`  | `service.version` |
+| (config)       | `service.namespace` (optional, from `obs.yaml`) |
+| (config)       | `deployment.environment` (optional, from `obs.yaml`) |
+| (config)       | `host.name`, `host.arch` (optional, auto-detected if `detect_host = true`) |
+
+Resource `schema_url` is set to the OTel semconv URL the sink was
+built against, e.g. `https://opentelemetry.io/schemas/1.27.0`.
+
+### 4.2 Severity → OTLP `SeverityNumber`
+
+OTLP defines `SeverityNumber` on a 1–24 scale (`opentelemetry-proto`
+`logs.proto`). Our six-level enum maps to the canonical primary
+buckets:
+
+| `obs::Severity` | OTLP `SeverityNumber` | OTLP `SeverityText` |
+| --- | --- | --- |
+| `Trace` | `1`  (`SEVERITY_NUMBER_TRACE`) | `"TRACE"` |
+| `Debug` | `5`  (`SEVERITY_NUMBER_DEBUG`) | `"DEBUG"` |
+| `Info`  | `9`  (`SEVERITY_NUMBER_INFO`)  | `"INFO"`  |
+| `Warn`  | `13` (`SEVERITY_NUMBER_WARN`)  | `"WARN"`  |
+| `Error` | `17` (`SEVERITY_NUMBER_ERROR`) | `"ERROR"` |
+| `Fatal` | `21` (`SEVERITY_NUMBER_FATAL`) | `"FATAL"` |
+
+We deliberately use the bucket-floor numbers so other sources that
+emit `WARN2`/`WARN3` etc. can interleave cleanly.
+
+### 4.3 To OTLP Logs
 
 A wide event maps 1:1 to an OTel `LogRecord`:
 
-| Wide event | OTLP LogRecord |
+| Wide event | OTLP `LogRecord` |
 | --- | --- |
 | `env.ts_ns` | `time_unix_nano` |
-| `env.sev` | `severity_number` (mapped to OTel scale) + `severity_text` |
-| `env.full_name` | `attributes["event.name"]` |
-| `env.trace_id` / `span_id` | `trace_id` / `span_id` |
-| `env.labels` | `attributes[*]` (as strings) |
-| typed payload (decoded) | `body` as `KeyValueList` |
+| `Instant::now()` at `emit_envelope` | `observed_time_unix_nano` |
+| `env.sev` | `severity_number` + `severity_text` per § 4.2 |
+| `env.full_name` | `attributes["event.name"]` (semconv `event.name`) |
+| `env.schema_hash` (hex) | `attributes["obs.schema_hash"]` |
+| `env.trace_id` (16-byte hex → 16 raw bytes) | `trace_id` |
+| `env.span_id`  (8-byte hex → 8 raw bytes)   | `span_id` |
+| `env.parent_span_id` | `attributes["obs.parent_span_id"]` (OTLP LogRecord has no parent_span_id) |
+| `env.labels[k]` | `attributes[k]` (as `string_value`) |
+| `env.sampling_reason` | `attributes["obs.sampling_reason"]` |
+| typed payload (decoded) | `body` as `KeyValueList` (opt-in; default off) |
 
-Payload decode is opt-in per sink; for high-volume LOG-tier events the
-sink can ship `body = bytes(payload)` and rely on the consumer to
-decode using the schema registry.
+If `body` decode is off, the LogRecord is emitted with
+`body = bytes(env.payload)`; consumers that know the schema (via
+`schema_hash`) can decode the buffa bytes themselves.
 
-### 4.2 To OTLP Metrics
+### 4.4 To OTLP Metrics
 
 For each `FIELD_KIND_MEASUREMENT` field on a schema, a metric data
-point is generated whose attribute set is the union of `env.labels`:
+point is generated whose attribute set is the union of `env.labels`
+(plus `event.name`).
 
-| Schema field | Metric instrument |
-| --- | --- |
-| `uint64 / int64` w/ `metric: counter` | `Sum` (monotonic, delta) |
-| `uint64 / int64` w/ `metric: gauge`   | `Gauge` |
-| `uint64 / int64 / double` w/ `metric: histogram` | `Histogram` (bounds in annotation) |
-| no `metric:` annotation | not emitted; lives in payload only |
+| Schema annotation | Instrument | Aggregation | Notes |
+| --- | --- | --- | --- |
+| `metric: counter`   | `Sum`       | monotonic, **delta** temporality | Counter increments by the field's value on each emit; emit `0` to not increment. Negative values are rejected by `debug_assert!`, dropped in release. |
+| `metric: gauge`     | `Gauge`     | last-value (per attribute set) | Value replaces previous reading. |
+| `metric: histogram` | `Histogram` | explicit `bounds` from annotation | Bounds are sorted at codegen time. |
+
+Instrument name is derived from the field's containing event +
+field name: `<full_name>.<field>` lowercased and dot-separated, e.g.
+`myapp.v1.obs_request_completed.latency_ms`. Unit is the `unit`
+string from the annotation (UCUM: `ms`, `By`, `1`, `s`).
 
 Because all LABEL fields are by construction `Low | Medium`
 cardinality, the generated metric's attribute set is bounded at
-compile time.
+compile time. Aggregation and export periodicity follow the OTel
+`MeterProvider` configuration (default 60 s push interval; configurable
+via `OtlpMetricSink::builder().push_interval(Duration::from_secs(15))`).
 
-### 4.3 To OTLP Traces
+### 4.5 To OTLP Traces
 
 If `env.trace_id` is non-empty:
 
-- a `Span` is emitted with `name = full_name`,
-- `start_time = end_time = env.ts_ns` (event-as-span), unless the
-  schema declares a `FIELD_KIND_DURATION_NS` field, in which case
-  `start_time = ts_ns - duration`,
-- attributes := `env.labels`.
+- a `Span` is emitted with `name = env.full_name`,
+- `start_time_unix_nano = end_time_unix_nano = env.ts_ns` (point-in-time
+  span), unless the schema declares a `FIELD_KIND_DURATION_NS` field,
+  in which case `start_time = ts_ns - duration`,
+- `parent_span_id = env.parent_span_id`,
+- `kind = SPAN_KIND_INTERNAL` by default; set on the schema via
+  `option (obs.v1.event).span_kind = SPAN_KIND_SERVER` for inbound
+  edge events,
+- `status_code` derived from severity: `SEVERITY_ERROR | FATAL → STATUS_CODE_ERROR`,
+  otherwise `STATUS_CODE_UNSET`,
+- `attributes := env.labels` plus `event.name = env.full_name`.
 
 Spans for the same `trace_id` are tied together by the OTel exporter;
 the SDK does not attempt span-tree reconstruction in-process.
 
-### 4.4 Why we are not just an OTel SDK
+### 4.6 Trace context propagation
+
+Cross-process correlation uses W3C Trace Context (and optionally
+Baggage). The SDK does not implement HTTP middleware itself; it
+exposes the propagator hook so HTTP/gRPC layers can use it.
+
+```rust
+// At server boundary (e.g. tower::Layer or axum middleware):
+let trace_ctx: ObsTraceCtx = obs::propagator()
+    .extract_w3c(&http_headers)            // returns ObsTraceCtx::empty() if absent
+    .or_else(ObsTraceCtx::generate);
+
+let _scope = obs::scope!(
+    trace_id  = trace_ctx.trace_id,
+    span_id   = trace_ctx.span_id,           // becomes parent_span_id on emitted spans
+    sampled   = trace_ctx.sampled,
+);
+
+// At outbound HTTP/gRPC client:
+obs::propagator().inject_w3c(
+    &obs::current_trace_ctx(),               // reads from active scope frame
+    &mut outbound_request.headers_mut(),
+);
+```
+
+`ObsTraceCtx` mirrors W3C `traceparent`: `trace_id: [u8; 16]`,
+`span_id: [u8; 8]`, `flags: u8`. `obs-tower` (companion crate, see
+crates-design § 2.11) ships a ready-made `tower::Layer` that calls
+`extract_w3c` on inbound and `inject_w3c` on outbound, plus emits
+`ObsHttpRequestStarted` / `ObsHttpRequestCompleted`.
+
+### 4.7 Why we are not just an OTel SDK
 
 OpenTelemetry's data model is *signal-shaped*: logs, metrics, traces
 are peer concepts. A wide event is *operation-shaped*: one record
@@ -500,35 +620,37 @@ diverge where wide events demand a stronger contract.
 | Field inheritance is implicit through context | `obs::scope!` declares which fields propagate (allowlist) | Avoids accidental leakage of high-card fields from outer scopes |
 | `#[instrument]` auto-captures all args | `#[obs::instrument]` opts in per arg | Args may be PII; making it opt-in is safer |
 
-### 5.3 The `obs::emit!` macro
+### 5.3 Emit forms: builder is canonical, macro is shorthand
+
+`obs` ships two equivalent emit forms. **The chained builder is the
+canonical form**; the `obs::emit!` macro is sugar for terse cases.
+This split is deliberate — see [dev-ergonomics-design.md § 1.1](./dev-ergonomics-design.md#11-the-two-emit-forms-canonical-builder)
+for the rationale (rust-analyzer chain-completion, pinpointed required-
+field errors, refactor friendliness).
 
 ```rust
-// Default severity (from schema's default_sev):
-obs::emit!(ObsRequestCompleted {
-    route: Route::ListUsers,
-    status: Status::Ok,
-    tenant_id: "acme".into(),
-    latency_ms: 48,
-    bytes_out: 2048,
-});
-
-// Escalated severity:
-obs::emit!(WARN, ObsUpstreamFailed {
-    route: Route::ListUsers,
-    error_kind: ErrorKind::Timeout,
-});
-
-// Builder form (preferred for many fields; works the same):
+// PRIMARY (what dogfooding examples and codegen scaffolds use):
 ObsRequestCompleted::builder()
     .route(Route::ListUsers)
     .status(Status::Ok)
     .latency_ms(48)
-    .emit();
+    .bytes_out(2048)
+    .emit();                       // .emit_at(Severity::Warn) to escalate
+
+// SHORTHAND (for one- or two-field events):
+obs::emit!(ObsHelloEmitted { who: Audience::World });
+obs::emit!(Severity::Warn, ObsUpstreamFailed { route, error_kind });
 ```
 
-Expansion sketch:
+The `Severity` keyword form (`obs::emit!(WARN, …)`) is supported via
+re-exported severity idents `obs::TRACE`, `obs::DEBUG`, `obs::INFO`,
+`obs::WARN`, `obs::ERROR`, `obs::FATAL` — `obs::emit!(WARN, …)` and
+`obs::emit!(Severity::Warn, …)` are the same call.
+
+Both forms expand to the same callsite-gated dispatch:
 
 ```rust
+// Generated by both .emit() and obs::emit!:
 {
     static __CALLSITE: ObsCallsite = ObsCallsite::new(
         ObsRequestCompleted::FULL_NAME,
@@ -537,13 +659,18 @@ Expansion sketch:
         file!(), line!(),
     );
     if obs::observer().enabled(&__CALLSITE) {
-        let evt = ObsRequestCompleted { /* fields */ };
+        let evt: ObsRequestCompleted = /* struct constructed by builder or literal */;
         let mut env = obs::__private::build_envelope(&__CALLSITE, &evt);
         evt.project(&mut env);
         obs::observer().emit_envelope(env);
     }
 }
 ```
+
+The builder's `.emit()` is implemented as a thin `inline(always)` over
+the same callsite-gated dispatch (see schema-codegen § 3.3). The
+callsite is keyed on the macro/builder source location, so each emit
+site has a stable static `ObsCallsite` for filter caching.
 
 ### 5.4 The `obs::scope!` macro and automatic correlation
 
@@ -571,9 +698,26 @@ Effects:
    `on_request_end()` call to forget.** This is a direct fix for the
    leak class found in scope-by-string designs.
 
-`obs::scope!` accepts only fields that are LABEL-class on at least one
-event schema in the program (the macro checks at compile time). This
-is what makes inheritance an allowlist, not implicit context.
+`obs::scope!` is an **explicit allowlist**: only the fields named in
+the macro propagate; nothing else from the surrounding context leaks
+into events. A proc-macro cannot scan the entire binary at expansion
+time, so we cannot prove at compile time that every named field is
+actually consumed by some `EventSchema`. We do two things instead:
+
+- **At observer init**, the SDK builds a global `BTreeSet<&'static str>`
+  of field names declared as LABEL or TRACE_ID across every
+  `EventSchema` registered in the binary (the codegen emits a
+  `register_schema` call per type, collected by `inventory`).
+- **In dev mode** (`OBS_DEV=1` or debug builds), the first emit inside
+  a scope frame whose declared fields contain a name absent from that
+  set issues a one-time `tracing::warn!` (or stderr line) naming the
+  field. In release builds the check is skipped.
+
+Auto-fill rule: a scope-declared field overrides an event field only
+when the event field's value is the type's default sentinel
+(`String::new()` for strings, `0` for numerics with `#[obs(trace_id)]`
+or `#[obs(label)]` annotation marked `default-fillable`). Explicit
+non-default values on the call site always win.
 
 ### 5.5 The `#[obs::instrument]` attribute
 
@@ -667,6 +811,40 @@ sinks:
 Reloading semantics: each emit captures a `Guard<Arc<EventsConfig>>`;
 the config never tears mid-decision.
 
+### 6.1 Defaults table
+
+Every key has a documented default; an empty config file is valid and
+gives a working observer.
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `service.name` | crate name from `CARGO_PKG_NAME` if unset | Required for OTLP Resource |
+| `service.version` | `CARGO_PKG_VERSION` | |
+| `service.instance` | `hostname` | Override for stateful sets |
+| `sampling.default.head_rate` | `1.0` | Sample everything by default |
+| `sampling.default.tail_on_error` | `true` | Flush on first ERROR in scope |
+| `sampling.default.always_log_slower_than_ms` | unset | No slow-path override |
+| `cardinality.enforce` | `strict` | `strict` panics in debug, drops in release; `permissive` only logs |
+| `cardinality.max_label_value_bytes` | `256` | Per spec policy: bytes not chars |
+| `classification.pii_redaction` | `enabled` | Sink-side PII scrubber |
+| `classification.secret_strip` | `enabled` | LOG/AUDIT cannot carry SECRET |
+| `limits.max_payload_bytes` | `262144` (256 KiB) | Per-event encoded cap |
+| `limits.channel_capacity` | `8192` | Per-tier mpsc channel size |
+| `limits.tail_buffer_capacity` | `64` | Per-scope tail-on-error ring buffer |
+| `limits.forensic_rate_per_s` | `100` | `obs::forensic!` rate limit |
+| `limits.forensic_daily_cap` | `100000` | Per-site daily cap |
+| `filter` | `info` | Like `RUST_LOG=info` |
+| `sinks` | `[stdout when dev]` | Dev: stdout pretty; prod: explicit list required |
+| `sinks[type=otlp].protocol` | `grpc` | `grpc` or `http_protobuf` |
+| `sinks[type=otlp].compression` | `gzip` | OTel-recommended |
+| `sinks[type=otlp].timeout_secs` | `10` | |
+| `sinks[type=otlp].retry.max_attempts` | `5` | exponential backoff |
+| `sinks[type=parquet].layout` | `single` | `single` or `table_per_event` |
+| `sinks[type=parquet].roll.max_bytes` | `268435456` (256 MiB) | |
+| `sinks[type=parquet].roll.max_age_secs` | `300` (5 min) | |
+| `sinks[type=parquet].compression` | `zstd` | level 3 |
+| `sinks[type=clickhouse].batch_size` | `10000` | Inserts batched by row count |
+
 ## 7. Error handling
 
 The SDK never panics on emit. Failure modes:
@@ -690,6 +868,158 @@ The SDK never panics on emit. Failure modes:
   sinks batch by 100 events or 1 s, Parquet by 256 MiB or 5 min.
 - **Shutdown**: `obs::observer().shutdown().await` flushes all sinks
   and joins all worker tasks; safe to call from `tokio::main` exit hook.
+
+### 8.1 Async cancellation
+
+`obs::scope!` returns an RAII guard whose `Drop` runs the
+flush-or-discard logic. Tokio guarantees `Drop` runs when a future is
+cancelled (including during `select!`, `JoinSet::abort`, or task
+cancellation), so the tail buffer is **not** leaked on cancellation.
+A scope frame containing `seen_error = true` flushes its buffer in
+`Drop` even when the future is being cancelled.
+
+The frame's `Drop` must not `await`. It pushes the buffered envelopes
+onto the per-tier mpsc channel (which is non-blocking). Channel-full
+in `Drop` is treated like any other backpressure event and increments
+`obs_dropped_total{tier, reason=channel_full_on_drop}`.
+
+### 8.2 Runtime constraints
+
+- **Async runtime: tokio only** (current_thread or multi_thread).
+  Other runtimes (smol, async-std) are not supported in v1 because the
+  scope task-local relies on `tokio::task_local!` semantics and the
+  worker tasks are `tokio::spawn`'d. A future SDK split could abstract
+  this behind a `Runtime` trait if demand appears.
+- **`std::thread`-based code is supported** by falling back to a
+  thread-local scope frame when no tokio task-local is present.
+- **MSRV**: pinned in `rust-toolchain.toml` to current stable
+  (`1.85+`). Minor releases bump MSRV freely; major releases only
+  with a `migration.md` entry.
+- **Targets**: `x86_64-{linux,darwin}`, `aarch64-{linux,darwin}` in
+  CI. WASM and `no_std` are non-goals for v1; `obs-types` is
+  `no_std`-clean for future use.
+
+## 9. Production concerns
+
+This section addresses operational details that surface only when
+the SDK runs in a real service for real users.
+
+### 9.1 Panic hook
+
+A panic in user code should produce one final `ObsPanicked` event
+before the process tears down. The SDK ships an opt-in panic hook:
+
+```rust
+// In main(), after install_observer():
+obs::install_panic_hook();           // chains the existing std::panic::take_hook()
+```
+
+The hook captures `panic.message()`, `panic.location()`, the active
+scope's `trace_id`/`span_id` (if any), and emits `ObsPanicked` (LOG
+tier, FATAL severity, sampling_reason = `OVERRIDE`). Then it calls
+`obs::observer().shutdown_blocking(Duration::from_secs(2))` to flush
+in-flight sinks before letting the previous hook continue (which may
+abort the process). Process-aborting hooks (e.g. for `panic = "abort"`
+profiles) still get the event because the flush completes before the
+chained hook fires.
+
+### 9.2 Payload size cap
+
+Wide events should not be megabytes. The runtime enforces a per-event
+encoded-payload cap (default 256 KiB; configurable via
+`EventsConfig.limits.max_payload_bytes`). Oversized payloads are
+**dropped at emit time** with a metric increment
+(`obs_oversized_total{full_name}`) and a one-shot stderr warning in
+dev mode. This applies to forensic blobs as well — they are not a
+free-pass to emit a 50 MiB heap dump.
+
+### 9.3 Forensic rate limit
+
+`obs::forensic!` is rate-limited per `(crate, site)` via a token
+bucket:
+
+- Default: 100 events/s/site, with a 1000-event burst.
+- Daily cap: 100K events/site/day (rolling window).
+- Configurable per-crate via `[package.metadata.obs] forensic_rate_per_s = 100`.
+
+When the bucket empties, additional `forensic!` calls become noops
+and increment `ObsForensicBudgetExceeded` (the SDK self-event). The
+intent is "forensic data is precious; blackbox dumps are not".
+
+### 9.4 OTLP transport
+
+The OTLP sinks default to **gRPC over TLS** (`tonic` + `rustls` with
+the `aws-lc-rs` crypto backend, per project policy). HTTP/protobuf
+is available as an alternative for restricted networks:
+
+```rust
+OtlpLogSink::builder()
+    .endpoint("https://otlp.example.com:4317")
+    .protocol(OtlpProtocol::Grpc)            // default
+    // .protocol(OtlpProtocol::HttpProtobuf) // POSTs to /v1/logs etc.
+    .compression(OtlpCompression::Gzip)      // gzip per OTel spec
+    .timeout(Duration::from_secs(10))
+    .retry_policy(OtlpRetry::exponential(
+        max_attempts: 5,
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_secs(30),
+    ))
+    .header("authorization", "Bearer …")     // per-RPC metadata
+    .build()?;
+```
+
+Standard OTel env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`,
+`OTEL_EXPORTER_OTLP_COMPRESSION`) are honoured by `from_env()`.
+
+Non-retryable response codes (`4xx` other than `429`/`503`) drop the
+batch and increment `ObsSinkFailed{sink=otlp_logs, reason=4xx}`.
+Retryable failures back off exponentially; the queue between the
+worker and the OTLP exporter is bounded — overflow drops with a
+metric increment, never blocks.
+
+### 9.5 Coexistence with `tokio-console`
+
+`obs` does not replace `tokio-console`; the two are complementary.
+`tokio-console` is for tracing async runtime behaviour (task
+states, lock contention, runtime stats); `obs` is for application
+events. Both can be installed in the same binary; they listen on
+different channels (`tokio-console` uses its own `tracing` layer
+on the `tokio=trace` target).
+
+### 9.6 ClickHouse runtime cardinality
+
+The single-table model uses `Map(LowCardinality(String), String)` for
+labels (crates-design § 2.8). ClickHouse's `LowCardinality` type
+shares a column-wide dictionary; if labels admit very many distinct
+values at runtime (despite cardinality annotations being LOW/MEDIUM),
+the dictionary degrades. The SDK does **not** enforce label-value
+cardinality at runtime — that responsibility sits with the operator,
+who can:
+
+- watch the `obs.runtime.v1.ObsLabelCardinalityHigh` self-event
+  (emitted when an HLL counter for a `(full_name, label_key)` pair
+  estimates > the schema's declared cap), or
+- run `obs query --since 1h --select 'distinct labels.tenant_id'` to
+  audit a specific label.
+
+### 9.7 Iceberg / Delta Lake position
+
+`obs-parquet` emits plain Parquet files into a directory layout
+designed to be a valid Iceberg/Delta-compatible warehouse table when
+combined with downstream catalog metadata. We do not write Iceberg
+manifests directly in v1; users wire `nessie`, `polaris`, or AWS Glue
+on top. The Arrow schema is stable (additive only; see
+schema-codegen § 5), so an external catalog is safe.
+
+### 9.8 Multi-process / fork
+
+The SDK assumes a single-process model. After `fork()` (rare in
+tokio services), the child process should call `install_observer`
+fresh; the per-tier worker tasks are not inherited cleanly. We do
+not document a sanctioned fork path; if a user needs one, the
+`unix-fork` feature flag (post-v1) would gate a `pre_fork()`/`post_fork()`
+pair.
 
 ## 9. Service identity
 
@@ -765,13 +1095,17 @@ control-flow path that exits the scope. This is the same pattern
 
 `tracing` allows any subscriber-attached field to flow into nested
 events implicitly. We require fields to be named in `obs::scope!(...)`
-and the macro checks at compile time that each named field is LABEL-
-or TRACE_ID-class on at least one event in the binary. This avoids
-two failure modes:
+explicitly. This avoids two failure modes:
 
 - A high-cardinality field accidentally inherited into a metric
   attribute set.
 - A PII field flowing into a label without explicit declaration.
+
+The validation happens at observer init (linker-level scan of all
+`EventSchema` impls registered via `inventory`) and in dev mode at
+runtime. We deliberately do **not** claim compile-time enforcement: a
+proc-macro can't see the whole binary. See § 5.4 for the runtime
+mechanic.
 
 ### D6 — Trace correlation is automatic via task-local, schema field is the contract
 
@@ -842,6 +1176,30 @@ See § 1.5. Convention enforced by lint, not the type system. Visual
 distinction is the main payoff; greppability and codegen pattern
 matching are bonuses.
 
+### D14 — Builder is canonical, macro is shorthand
+
+See § 5.3 and [dev-ergonomics-design.md § 1.1](./dev-ergonomics-design.md#11-the-two-emit-forms-canonical-builder).
+The chained typed builder is the form scaffolding emits, docs lead
+with, and AI prompts default to. `obs::emit!` exists as sugar for
+terse one- or two-field events and severity escalation. Both expand
+to the same callsite-gated dispatch.
+
+### D15 — OTel identity on Resource, not LogRecord attributes
+
+`service`/`instance`/`version` go on the OTel `Resource` once, not on
+every `LogRecord`/`DataPoint`/`Span` attribute set. Per-record
+duplication wastes wire bytes and confuses downstream queries (which
+attribute key is canonical?). The envelope still carries them so
+non-OTLP sinks (Parquet, ClickHouse) get the same identity.
+
+### D16 — Panic hook is opt-in but officially documented
+
+`obs::install_panic_hook()` is opt-in (calling `install_observer` does
+not implicitly install it) because some users have a richer panic
+hook already (e.g. Sentry). When opted in, it captures one
+`ObsPanicked` and `shutdown_blocking()` before chaining the previous
+hook — so even `panic = "abort"` profiles get the event flushed.
+
 ## 11. Test strategy
 
 - **Unit tests** in each crate for codegen, mapping, sampling logic.
@@ -867,6 +1225,15 @@ The SDK emits its own internal events under `obs.runtime.v1`:
 | `obs.runtime.v1.ObsSchemaUnknown` | LOG | observer received a schema it does not know (dev mode) |
 | `obs.runtime.v1.ObsSinkFailed` | LOG (WARN) | sink IO failure with backoff state |
 | `obs.runtime.v1.ObsForensicBudgetExceeded` | LOG (WARN) | crate exceeded its forensic budget |
+| `obs.runtime.v1.ObsLabelCardinalityHigh` | LOG (WARN) | HLL counter for `(full_name, label_key)` exceeded declared cap |
+| `obs.runtime.v1.ObsOversizedDropped` | LOG (WARN) | event dropped because encoded payload > `limits.max_payload_bytes` |
+| `obs.runtime.v1.ObsPanicked` | LOG (FATAL) | emitted by panic hook before shutdown_blocking |
+| `obs.runtime.v1.ObsBridgePiiSuspected` | LOG (WARN) | tracing-bridge name-pattern PII redactor fired (one-shot per field name) |
+| `obs.runtime.v1.ObsBridgeMatcherConflict` | LOG (WARN) | two `register_typed` matchers matched the same callsite |
+| `obs.runtime.v1.ObsBridgeLateSpanRecord` | LOG (WARN) | `Span::record` arrived after `ObsSpanCompleted` already emitted |
+| `obs.runtime.v1.ObsBridgeNoDispatcher` | LOG (DEBUG) | `ObsToTracingSink` ran without a tracing default; rate-limited 1/min |
+| `obs.v1.ObsSpanCompleted` | LOG (DEBUG) | bridged `tracing::Span::close` carries name + latency + fields (see tracing-interop § 2.3) |
+| `obs.v1.ObsSpanEntered` | LOG (TRACE) | bridged `tracing::Span::new_span` (only when `SpanEventMode::Both`) |
 
 These events flow through the same observer, so they appear in the
 same sinks as user events — there is exactly one signal channel.

@@ -133,7 +133,19 @@ docker-compose). `obs::scope!` provides automatic trace correlation.
         attribute sets)
   - `OtlpTraceSink` (per § 4.3)
   - `otlp_trio_from_env()` convenience
-- [ ] `obs-tracing-bridge` minimal viable `tracing::Subscriber`
+- [ ] `obs-tracing-bridge` Direction A — minimal viable
+      (per [tracing-interop-design.md § 2](./tracing-interop-design.md#2-direction-a--tracing--obs)):
+  - `TracingToObsLayer` with default forensic mapping
+  - `Level → Severity` table; `metadata.target/name/module` → payload
+  - `FieldPromotions` allowlist with HLL cardinality enforcement
+  - `DefaultPiiPatternRedactor` on by default (`password`, `secret`,
+        `token`, `api_key`, `authorization`, `cookie`, `ssn`,
+        `credit_card`, `bearer`)
+  - `SpanEventMode::Off` default; `ObsSpanCompleted` on close,
+        aggregating `Span::record` updates
+  - Cross-system span correlation via the shared
+        `tokio::task_local!` scope frame (architecture § 5.4)
+  - `tracing-log` interaction documented + smoke-tested
 - [ ] `#[obs::instrument]` attribute macro
 - [ ] CLI:
   - `obs decode` (binary `ObsBatch` → NDJSON)
@@ -187,10 +199,42 @@ a CI job rejects breaking proto changes; forensic budget enforced;
   - lint L010 (forensic budget enforcement)
   - lint L013 (LABEL definition conflict across crates)
 - [ ] `obs.v1.ObsForensicEvent` formalised; `obs::forensic!` macro
+- [ ] `obs-tracing-bridge` Direction B + advanced features
+      (per [tracing-interop-design.md § 3](./tracing-interop-design.md#3-direction-b--obs--tracing)):
+  - `ObsToTracingSink` with `OnceLock<RwLock<HashMap>>` cached
+        `&'static Metadata` (Box::leak per distinct `full_name`)
+  - Two thread-local loop guards (`IN_TRACING_BRIDGE`,
+        `IN_OBS_BRIDGE`) + `obs.bridge` reserved target
+        (defence-in-depth)
+  - `SpanEmissionMode::Off` (default) + `OnScope` opt-in
+  - `PayloadDecodeMode::{Off, DecodeKnown, DecodeKnownAttributesOnly}`
+- [ ] `obs-tracing-bridge` auto-typing path:
+  - `TypedMatcher` predicate API (target/regex/name/level/field)
+  - `register_typed::<E>(matcher, promote)` with cached
+        per-callsite-id dispatch
+  - `FieldCapture` thread-local visitor (zero per-event allocation
+        on steady state)
+  - `Redactor` trait + `DefaultPiiPatternRedactor` bundle
+- [ ] `obs-tracing-bridge` test suite (per
+      [tracing-interop-design.md § 6](./tracing-interop-design.md#6-test-strategy)):
+  `tracing_to_obs_basic`, `obs_to_tracing_basic`,
+  `roundtrip_property` (proptest), `no_infinite_loop` (1000-iter
+  release stress), `span_correlation`, `pii_redaction`,
+  `auto_typed_promotion`
+- [ ] `obs-tracing-bridge` benches with CI gates: ≤ 2 µs forward
+      overhead (tracing → obs), ≤ 1.5 µs reverse overhead
+      (obs → tracing)
+- [ ] Bridge built-in events shipped in `obs-proto/builtin.proto`:
+      `ObsTracingForensicEvent`, `ObsSpanCompleted`, `ObsSpanEntered`,
+      `ObsBridgePiiSuspected`, `ObsBridgeMatcherConflict`,
+      `ObsBridgeLateSpanRecord`, `ObsBridgeNoDispatcher`
 - [ ] End-to-end integration: `apps/server` with realistic handler
       emitting `ObsRequestStarted` / `ObsRequestCompleted` /
       `ObsUpstreamFailed`, sinks routed to OTLP + Parquet +
-      ClickHouse, all three dashboards verified
+      ClickHouse + `ObsToTracingSink`, third-party `tracing` events
+      from `tower-http` and `sqlx` lifted via `register_typed` to
+      `ObsHttpRequestCompleted` / `ObsDbQueryExecuted`, all
+      dashboards verified
 - [ ] Final dev-erg pass: re-run all dev-erg tests including
       `assert_emitted!` patterns and quickstart timing
 
@@ -224,6 +268,8 @@ tests under `crates/obs-cli/tests/diff/`.
 | `obs-parquet` | unified-schema gen | round-trip via `arrow` reader | — | batch write |
 | `obs-clickhouse` | DDL gen | docker-compose CH | — | insert throughput |
 | `obs-cli` | per-subcommand | trycmd against fixtures | — | — |
+| `obs-tracing-bridge` | Layer/Sink/matcher/redactor | full bridge suite (loop, span correlation, PII, auto-typed) | event/envelope round-trip | forward + reverse overhead |
+| `obs-tower` | layer factory | axum/hyper end-to-end | — | per-request overhead |
 | `obs-sdk` | feature gating | dev-ergonomics suite | — | — |
 
 ### 2.2 Performance gates
@@ -239,6 +285,10 @@ Targets:
 - `emit` (with NdjsonFileSink batched): ≤ 1.5 µs P50
 - Scope `enter` + `exit`: ≤ 100 ns
 - OTLP encode of one envelope (10 fields): ≤ 5 µs
+- Bridge forward (`tracing::info!` → obs envelope, forensic mode): ≤ 3 µs P50 (≤ 2 µs delta over native obs emit)
+- Bridge forward (auto-typed mode): ≤ 3 µs P50
+- Bridge reverse (`obs::emit!` → tracing event, cached metadata): ≤ 2.5 µs P50 (≤ 1.5 µs delta over native obs emit)
+- Bridge span lifecycle (`tracing::span!` → `ObsSpanCompleted`): ≤ 4 µs total amortised across child events
 
 ### 2.3 Documentation
 
@@ -275,6 +325,8 @@ Every milestone closes its docs as part of "done":
 | Naming of `obs.v1.options` field-number range | locked | 80000–89999 reserved |
 | Single-table column count under wide-event explosion | open | Bench at M3 with 100+ event types; per-event-table fallback exists |
 | `Obs*` prefix lint default level | open | Defaults to **error** under `--strict`, warning otherwise; may revisit if friction surfaces in beta |
+| `SpanEmissionMode::OnScope` + `OtlpTraceSink` double-OTel-span | deferred to v1.1 | Document recommends OnScope only in dev; resolution path is either (a) auto-disable `OtlpTraceSink` when OnScope is on, or (b) span-id dedup at the OTel layer. See [tracing-interop-design.md § 10](./tracing-interop-design.md#10-open-questions--risks) |
+| Bridge `Visit::record_debug` allocator cost | accepted | ~150 ns/field via `format!`; within budget. Fast-path opt-in if profiling demands it |
 
 ## 4. Definition of done (v1.0)
 

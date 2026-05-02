@@ -21,7 +21,8 @@ obs/
 │   ├── obs-otel/                 # OTLP/gRPC sinks for logs, metrics, traces
 │   ├── obs-parquet/              # Single-table Arrow/Parquet sink
 │   ├── obs-clickhouse/           # Single-table ClickHouse sink
-│   ├── obs-tracing-bridge/       # tracing::Subscriber → ObsTracingForensicEvent
+│   ├── obs-tracing-bridge/       # bidirectional tracing ↔ obs (see tracing-interop-design.md)
+│   ├── obs-tower/                # tower::Layer for HTTP propagation + ObsHttpRequest events
 │   └── obs-sdk/                  # façade: re-exports the everyday API
 └── apps/
     ├── obs-cli/                  # `obs` binary: lint, validate, codegen, query, diff
@@ -130,6 +131,20 @@ Procedural macros only. Every macro is documented with a doc test.
 /// ```
 #[proc_macro_derive(Event, attributes(event, obs))]
 pub fn derive_event(item: TokenStream) -> TokenStream { ... }
+
+/// Companion derive for enums used as LABEL fields. Emits `Display`,
+/// `FromStr`, and the `obs::__private::EnumCount` impl that lint L005
+/// reads. Variants render in `snake_case` by default; override per
+/// variant with `#[obs(rename = "...")]`.
+///
+/// ```ignore
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, obs::EnumLabel)]
+/// pub enum AuthMethod { Password, OAuthGoogle, OAuthGithub }
+/// // Display: "password" | "oauth_google" | "oauth_github"
+/// // EnumCount::COUNT == 3
+/// ```
+#[proc_macro_derive(EnumLabel, attributes(obs))]
+pub fn derive_enum_label(item: TokenStream) -> TokenStream { ... }
 
 /// Function-like macro for one-shot event emission.
 ///
@@ -247,7 +262,10 @@ obs::observer().shutdown().await;
 let (observer, handle) = InMemoryObserver::new();
 obs::install_observer(observer);
 
-ObsLoggedIn { method: AuthMethod::Password, user_id: "u-1".into() }.emit();
+ObsLoggedIn::builder()
+    .method(AuthMethod::Password)
+    .user_id("u-1")
+    .emit();
 
 let events = handle.drain();
 assert_eq!(events.len(), 1);
@@ -305,38 +323,67 @@ The `include_schemas!` macro lives in `obs-macros`; it expands to
 ### 2.6 `obs-otel`
 
 OpenTelemetry sinks. Depends on `opentelemetry`, `opentelemetry-otlp`,
-`tonic`.
+`tonic`, `rustls` (with `aws-lc-rs` crypto backend per project
+policy). The OTLP `Resource` is built once at sink construction
+(`service`, `instance`, `version` from the observer plus optional
+`service.namespace`, `deployment.environment`, host detection) and
+reused across exports — see architecture-design § 4.1.
 
 ```rust
 pub struct OtlpLogSink { ... }
 pub struct OtlpMetricSink { ... }
 pub struct OtlpTraceSink { ... }
 
+pub enum OtlpProtocol { Grpc, HttpProtobuf }
+pub enum OtlpCompression { None, Gzip, Zstd }
+
 impl OtlpLogSink {
-    pub fn from_env() -> Result<Self>;       // OTEL_EXPORTER_OTLP_ENDPOINT, ...
+    pub fn from_env() -> Result<Self>;       // OTEL_EXPORTER_OTLP_*
     pub fn builder() -> OtlpLogSinkBuilder;
 }
-// Same shape for OtlpMetricSink, OtlpTraceSink.
+
+pub struct OtlpLogSinkBuilder { /* ... */ }
+impl OtlpLogSinkBuilder {
+    pub fn endpoint(self, url: impl Into<String>) -> Self;
+    pub fn protocol(self, p: OtlpProtocol) -> Self;        // default Grpc
+    pub fn compression(self, c: OtlpCompression) -> Self;  // default Gzip
+    pub fn timeout(self, d: Duration) -> Self;             // default 10s
+    pub fn header(self, k: &str, v: &str) -> Self;         // repeatable
+    pub fn retry_policy(self, p: OtlpRetry) -> Self;
+    pub fn resource_attr(self, k: &str, v: &str) -> Self;  // extras like deployment.environment
+    pub fn detect_host(self, on: bool) -> Self;            // host.name etc.
+    pub fn schema_url(self, url: &str) -> Self;            // default current semconv
+    pub fn build(self) -> Result<OtlpLogSink>;
+}
+// Same shape for OtlpMetricSink (adds .push_interval()) and OtlpTraceSink.
 
 impl Sink for OtlpLogSink {
     fn deliver(&self, env: &ObsEnvelope) {
-        // Map per architecture-design §4.1
+        // Map per architecture-design §4.3.
+        // Reuses the prebuilt Resource; never re-stamps service/instance/version
+        // as per-LogRecord attributes.
     }
     fn flush(&self) -> ... { ... }
     fn shutdown(&self) -> ... { ... }
 }
 ```
 
-A convenience constructor wires all three:
+Convenience constructor wires all three with a shared Resource:
 
 ```rust
 let (logs, metrics, traces) = obs_otel::otlp_trio_from_env()?;
 StandardObserver::builder()
-    .sink_for(Tier::Log, logs)
+    .sink_for(Tier::Log,    logs)
     .sink_for(Tier::Metric, metrics)
-    .sink_for(Tier::Trace, traces)
+    .sink_for(Tier::Trace,  traces)
     ...
 ```
+
+Standard env var support: `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`,
+`OTEL_EXPORTER_OTLP_COMPRESSION`, `OTEL_EXPORTER_OTLP_TIMEOUT`,
+`OTEL_RESOURCE_ATTRIBUTES`, `OTEL_SERVICE_NAME`. The `from_env()`
+constructor reads these so a 12-factor deployment needs no code.
 
 ### 2.7 `obs-parquet`
 
@@ -435,27 +482,158 @@ ORDER BY (ts_ns, full_name, trace_id);
 
 ### 2.9 `obs-tracing-bridge`
 
-```rust
-pub struct ObsBridgeSubscriber { ... }
+Bidirectional bridge between `tracing` and `obs`. The full design,
+loop-avoidance proof, performance budget, migration playbook, and
+key decisions live in [tracing-interop-design.md](./tracing-interop-design.md).
+This entry summarises the public API surface.
 
-impl ObsBridgeSubscriber {
+```rust
+// =================================================================
+// Direction A: tracing → obs
+// =================================================================
+
+/// Default form. Composes with tracing-subscriber::registry().
+pub struct TracingToObsLayer { /* ... */ }
+
+impl TracingToObsLayer {
     pub fn new() -> Self;
+    pub fn with_field_promotions(self, p: FieldPromotions) -> Self;
+    pub fn with_redactor(self, r: Arc<dyn Redactor>) -> Self;
+    pub fn with_span_events(self, mode: SpanEventMode) -> Self;
     pub fn with_filter(self, f: tracing_subscriber::EnvFilter) -> Self;
+
+    /// Promote a matching tracing callsite into a typed obs event
+    /// instead of `ObsTracingForensicEvent`. Cached per callsite id.
+    pub fn register_typed<E: EventSchema>(
+        self,
+        matcher: TypedMatcher,
+        promote: impl Fn(&tracing::Event<'_>, &SpanCtx<'_>) -> E + Send + Sync + 'static,
+    ) -> Self;
 }
 
-// Usage:
-tracing_subscriber::registry()
-    .with(ObsBridgeSubscriber::new().with_filter(EnvFilter::from_default_env()))
-    .init();
+impl<S> tracing_subscriber::Layer<S> for TracingToObsLayer
+where S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> { ... }
 
-// From this point, every `tracing::info!(...)` becomes an
-// `obs.v1.ObsTracingForensicEvent`.
+/// Standalone subscriber for binaries that have no other tracing layers.
+pub struct TracingToObsSubscriber { /* ... */ }
+impl tracing::Subscriber for TracingToObsSubscriber { ... }
+
+/// Predicate over `tracing::Metadata` + recorded fields.
+pub struct TypedMatcher { /* ... */ }
+impl TypedMatcher {
+    pub fn new() -> Self;
+    pub fn target(self, t: &'static str) -> Self;
+    pub fn target_regex(self, r: &str) -> Result<Self, regex::Error>;
+    pub fn name(self, n: &'static str) -> Self;
+    pub fn level_at_least(self, l: tracing::Level) -> Self;
+    pub fn field(self, f: &'static str) -> Self;
+}
+
+/// Allowlist of tracing-field names that get promoted to envelope labels.
+/// Per-name runtime cardinality budget enforced via HLL counter.
+pub struct FieldPromotions { /* ... */ }
+impl FieldPromotions {
+    pub fn new() -> Self;
+    pub fn promote(self, name: &'static str, cap: Cardinality) -> Self;
+}
+
+/// Span emission mode for Direction A. Default: Off.
+pub enum SpanEventMode {
+    Off,                 // bridge spans for context only; emit `ObsSpanCompleted` on close
+    Both,                // also emit `ObsSpanEntered` on new_span
+    Suppressed,          // never emit any span events; only thread context
+}
+
+/// Built-in name-pattern PII redactor + user-pluggable redaction.
+pub trait Redactor: Send + Sync {
+    fn redact(&self, target: &str, field: &str, value: &mut String) -> RedactAction;
+}
+pub enum RedactAction { Keep, Replaced, Drop }
+
+/// Default Redactor; matches /(?i)password|secret|token|api[_-]?key|
+/// authorization|cookie|ssn|credit[_-]?card|bearer/ on field names.
+pub struct DefaultPiiPatternRedactor;
+
+// =================================================================
+// Direction B: obs → tracing
+// =================================================================
+
+/// Sink that synthesises tracing::Event from each ObsEnvelope.
+pub struct ObsToTracingSink { /* ... */ }
+
+impl ObsToTracingSink {
+    pub fn new() -> Self;
+    pub fn with_payload_decode(self, m: PayloadDecodeMode) -> Self;
+    pub fn with_span_emission(self, m: SpanEmissionMode) -> Self;
+}
+
+impl Sink for ObsToTracingSink { /* loop-guarded; cached metadata */ }
+
+pub enum PayloadDecodeMode {
+    Off,                              // default — labels only
+    DecodeKnown,                      // dev — every payload field as tracing field
+    DecodeKnownAttributesOnly,        // dev — ATTRIBUTE-class fields only
+}
+
+pub enum SpanEmissionMode {
+    Off,                              // default — no tracing span per obs::scope!
+    OnScope,                          // open ephemeral tracing span on obs::scope! enter
+}
+
+// =================================================================
+// Typical wiring (both directions; loop-break and span correlation
+// per tracing-interop-design.md § 4)
+// =================================================================
+
+fn init() -> anyhow::Result<()> {
+    // 1. obs first; ObsToTracingSink fans events back out into tracing.
+    let observer = StandardObserver::builder()
+        .service("my-api", env!("CARGO_PKG_VERSION"))
+        .sink(obs_tracing_bridge::ObsToTracingSink::new())
+        .sink_for(Tier::Log, otel::OtlpLogSink::from_env()?)
+        .build()?;
+    obs::install_observer(observer);
+    obs::install_panic_hook();
+
+    // 2. tracing next; bridge layer lifts every tracing event into obs.
+    tracing_log::LogTracer::init()?;     // optional: lift `log` crate too
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())          // dev pretty
+        .with(obs_tracing_bridge::TracingToObsLayer::new()
+                .with_field_promotions(
+                    obs_tracing_bridge::FieldPromotions::new()
+                        .promote("tenant_id", Cardinality::Medium)
+                        .promote("route",     Cardinality::Medium)))
+        .init();
+    Ok(())
+}
 ```
 
-The bridge is a one-way migration helper. It does not wire `obs`
-events into `tracing` (that direction has no value).
+### 2.10 `obs-tower`
 
-### 2.10 `obs-sdk`
+A `tower::Layer` companion for HTTP services. Ships:
+
+- `ObsHttpLayer` — extracts W3C `traceparent`/`tracestate` from
+  inbound headers, opens an `obs::scope!`, emits
+  `ObsHttpRequestStarted` and `ObsHttpRequestCompleted` (both built-in
+  in `obs-proto`), and propagates the context to outbound requests
+  via the matching `ObsHttpClientLayer`.
+- Works with `axum`, `hyper`, `tonic`, anything tower-compatible.
+
+```rust
+let app = axum::Router::new()
+    .route("/api/users", get(list_users))
+    .layer(obs_tower::ObsHttpLayer::server()
+        .with_route_extractor(|req| route_for(req)));
+```
+
+`ObsHttpRequestStarted`/`Completed` schemas are LOG-tier with LABEL
+fields `route`, `method`, `status_class`, MEASUREMENT `latency_ms`
+and `bytes_out`. Override the route extractor for framework-specific
+routing.
+
+### 2.11 `obs-sdk`
 
 The single dependency a typical app pulls in.
 
@@ -484,15 +662,21 @@ pub use obs_types::{
 
 #### Features
 
-| Feature | Pulls in | Default? |
-| --- | --- | --- |
-| `otel` | `obs-otel` | yes |
-| `parquet` | `obs-parquet` | no |
-| `clickhouse` | `obs-clickhouse` | no |
-| `tracing-bridge` | `obs-tracing-bridge` | no |
-| `dev` | enables `StdoutSink` pretty renderer | yes |
+| Feature | Pulls in | Default? | Purpose |
+| --- | --- | --- | --- |
+| `dev` | `StdoutSink` pretty renderer | **yes** | Local development output |
+| `otel` | `obs-otel` (OTLP gRPC + HTTP) | **yes** | Production export to any OTLP backend |
+| `panic-hook` | `obs::install_panic_hook` | **yes** | Capture `ObsPanicked` before tear-down |
+| `parquet` | `obs-parquet` | no | Single-table analytics on local/object store |
+| `clickhouse` | `obs-clickhouse` | no | Single-table analytics on ClickHouse |
+| `tracing-bridge` | `obs-tracing-bridge` | no | Bidirectional `tracing` interop |
+| `tower` | `obs-tower` | no | HTTP middleware layer |
+| `test` | `InMemoryObserver`, `assert_emitted!`, `#[obs::test]` | no | Test ergonomics; cfg-only crate, free at release |
 
-Each downstream feature gates its sink and re-exports.
+Each downstream feature gates its sink and re-exports. `dev`, `otel`,
+and `panic-hook` are default because they map to "what most services
+want". A library crate that wants minimum deps overrides
+`default-features = false`.
 
 ## 3. End-to-end usage example
 

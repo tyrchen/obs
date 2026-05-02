@@ -40,6 +40,7 @@ A single, schema-first SDK in which **one event** is the unit of
 observation:
 
 ```rust
+// Canonical emit form: typed builder, RA-friendly, refactor-trivial.
 ObsRequestCompleted::builder()
     .route(Route::ListUsers)        // LABEL — bounded enum, becomes metric dim
     .status(Status::Ok)             // LABEL — bounded enum
@@ -48,6 +49,10 @@ ObsRequestCompleted::builder()
     .latency_ms(elapsed.as_millis() as u64)  // MEASUREMENT
     // .trace_id auto-filled from obs::scope!
     .emit();
+
+// Shorthand for terse events:
+obs::emit!(ObsHelloEmitted { who: Audience::World });
+obs::emit!(Severity::Warn, ObsUpstreamFailed { route, error_kind });
 ```
 
 That single call:
@@ -158,21 +163,29 @@ is designed for, not retrofitted to.
 
 ## 7. Constraints
 
-- **Rust 2024, MSRV pinned to current stable.** No nightly features.
+- **Rust 2024, MSRV pinned to current stable (1.85+).** No nightly
+  features.
 - **`#![forbid(unsafe_code)]`** in every workspace crate (per project
   CLAUDE.md).
-- **Tokio** as the async runtime; sinks must be non-blocking on the
-  emit path.
+- **Tokio only** as the async runtime in v1; sinks must be
+  non-blocking on the emit path. (smol/async-std support is gated on
+  demand.)
 - **`buffa`** for proto wire types and `buffa-reflect` for descriptor
   walking (custom-option support is first-class).
-- **OpenTelemetry compatibility at the data-model level**, not just
-  transport. An OTel-only consumer must see semantically valid OTLP
-  without bespoke collectors.
+- **OpenTelemetry data-model compatibility**, not just transport.
+  Service identity goes on the OTel `Resource` (set once); per-event
+  attributes never duplicate it. Severity maps onto OTLP
+  `SeverityNumber` 1–24 buckets. Histogram bounds are honoured as
+  explicit boundaries.
+- **W3C Trace Context** is the cross-process correlation contract
+  (`traceparent`, `tracestate`); HTTP middleware lives in `obs-tower`.
 - **Backward-compatible schema evolution.** Adding a field is
   non-breaking; removing or retyping is a build-time error against
   committed schemas.
 - **Single sparse table** is the default analytical layout; per-event
   tables are opt-in.
+- **Builder-first ergonomics.** `Type::builder().xxx().emit()` is the
+  canonical call form; `obs::emit!(...)` is shorthand for terse cases.
 
 ## 8. Out-of-scope (for v1)
 

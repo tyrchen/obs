@@ -23,10 +23,46 @@ A user should be able to:
    in the same binary.
 6. **Test events with `assert_eq!` ergonomics** — no mock framework.
 
-The non-negotiable: a `obs::emit!` call site should be no longer than
+The non-negotiable: a typed emit call site should be no longer than
 the equivalent `tracing::info!` call site for the same set of fields.
 The `Obs*` type prefix and field annotations are extra characters at
 the *schema* file, not at every call site.
+
+### 1.1 The two emit forms (canonical: builder)
+
+`obs` ships two equivalent emit forms. **The builder form is canonical
+and is what the docs, scaffolding, and AI prompts default to.** The
+macro is a *shorthand* for terse cases.
+
+```rust
+// PRIMARY — chained typed builder, preferred for clarity and editor support:
+ObsRequestCompleted::builder()
+    .route(Route::ListUsers)
+    .status(Status::Ok)
+    .latency_ms(48)
+    .emit();                         // .emit_at(Severity::Warn) to escalate
+
+// SHORTHAND — struct-literal macro, useful for tiny events:
+obs::emit!(ObsHelloEmitted { who: Audience::World });
+obs::emit!(Severity::Warn, ObsUpstreamFailed { route, error_kind });
+```
+
+Why the builder is canonical:
+
+- **`rust-analyzer` chain-completion** lights up immediately after
+  `::builder().` — no need to look up field names.
+- **Required-field errors are pinpointed** at `.emit()` (typed-builder
+  marker types refuse to compile when a required setter is missing).
+- **Reads top-down** — the eye scans setters in order; the literal
+  form forces a struct shape that mixes ordering with semantics.
+- **Trivially refactorable** — adding or removing one field is a
+  one-line change; struct literals require finding the exact braces.
+- **Composable** — a helper can `fn into_builder(self) -> Builder<...>`
+  so common defaults are reusable.
+
+The macro form remains for cases where a struct literal genuinely
+reads better — typically events with one or two fields, or terse
+escalation: `obs::emit!(Severity::Warn, ObsThing { x });`.
 
 ## 2. Quickstart (60 seconds)
 
@@ -69,7 +105,9 @@ async fn main() -> anyhow::Result<()> {
         obs_sdk::StandardObserver::dev()  // stdout sink, dev-friendly
     );
 
-    obs::emit!(events::ObsHelloEmitted { who: events::Audience::World });
+    events::ObsHelloEmitted::builder()
+        .who(events::Audience::World)
+        .emit();
 
     obs_sdk::observer().shutdown().await;
     Ok(())
@@ -133,18 +171,20 @@ async fn handle(req: Request) -> Response {
     let _scope = obs::scope!(trace_id = req.id.clone(),
                               tenant_id = req.tenant.clone());
 
-    obs::emit!(ObsRequestStarted { route: req.route() });
+    ObsRequestStarted::builder()
+        .route(req.route())
+        .emit();
 
     let started = std::time::Instant::now();
-    let resp   = serve(req).await;
-    let ms     = started.elapsed().as_millis() as u64;
+    let resp    = serve(req).await;
+    let ms      = started.elapsed().as_millis() as u64;
 
-    obs::emit!(ObsRequestCompleted {
-        route:      resp.route(),
-        status:     resp.status_class(),
-        latency_ms: ms,
-        bytes_out:  resp.bytes(),
-    });
+    ObsRequestCompleted::builder()
+        .route(resp.route())
+        .status(resp.status_class())
+        .latency_ms(ms)
+        .bytes_out(resp.bytes())
+        .emit();
 
     resp
     // _scope drops; if any ERROR was emitted in `serve`, the tail
@@ -157,15 +197,18 @@ async fn handle(req: Request) -> Response {
 ```rust
 async fn nightly_recompute() {
     let _scope = obs::scope!(job = "nightly_recompute".to_string());
-    obs::emit!(ObsJobStarted { job_kind: JobKind::NightlyRecompute });
+
+    ObsJobStarted::builder()
+        .job_kind(JobKind::NightlyRecompute)
+        .emit();
 
     let stats = run_recompute().await;
 
-    obs::emit!(ObsJobCompleted {
-        job_kind: JobKind::NightlyRecompute,
-        rows_processed: stats.rows,
-        elapsed_ms: stats.elapsed.as_millis() as u64,
-    });
+    ObsJobCompleted::builder()
+        .job_kind(JobKind::NightlyRecompute)
+        .rows_processed(stats.rows)
+        .elapsed_ms(stats.elapsed.as_millis() as u64)
+        .emit();
 }
 ```
 
@@ -175,11 +218,13 @@ async fn nightly_recompute() {
 pub fn parse_widget(input: &[u8]) -> Result<Widget, Error> {
     let started = std::time::Instant::now();
     let result  = parse_inner(input);
-    obs::emit!(ObsWidgetParsed {
-        ok:          result.is_ok(),
-        bytes_in:    input.len() as u64,
-        elapsed_ns:  started.elapsed().as_nanos() as u64,
-    });
+
+    ObsWidgetParsed::builder()
+        .ok(result.is_ok())
+        .bytes_in(input.len() as u64)
+        .elapsed_ns(started.elapsed().as_nanos() as u64)
+        .emit();
+
     result
 }
 ```
@@ -200,7 +245,11 @@ async fn handle_list_users(req: Request, raw_body: Bytes) -> Response {
 
 ```rust
 let sev = if elapsed_ms > 5000 { Severity::Warn } else { Severity::Info };
-obs::emit!(sev, ObsRequestCompleted { /* ... */ });
+ObsRequestCompleted::builder()
+    .route(route)
+    .status(status)
+    .latency_ms(elapsed_ms)
+    .emit_at(sev);
 ```
 
 #### F. Forensic escape (rare; audited)
@@ -260,13 +309,52 @@ $ obs schema show myapp.v1.ObsRequestCompleted
 fn main() {
     // Both tracing and obs work; tracing events become forensic obs events.
     obs::install_observer(StandardObserver::dev());
+    obs::install_panic_hook();                         // FATAL-on-panic
     tracing_subscriber::registry()
-        .with(obs::tracing_bridge::ObsBridgeSubscriber::new())
+        .with(obs::tracing_bridge::TracingToObsLayer::new())
         .init();
 
     tracing::info!(user_id = 42, "still works");      // → ObsTracingForensicEvent
-    obs::emit!(ObsUserSignedIn { user_id: 42 });       // → ObsUserSignedIn
+    ObsUserSignedIn::builder().user_id(42).emit();     // → ObsUserSignedIn
 }
+```
+
+#### K. HTTP middleware (axum / tower)
+
+```rust
+use axum::Router;
+use obs_tower::ObsHttpLayer;
+
+let app = Router::new()
+    .route("/api/users",   get(list_users))
+    .route("/api/users/:id", get(get_user))
+    .layer(
+        ObsHttpLayer::server()
+            .with_route_extractor(|req| req.uri().path().to_string())
+    );
+// Inside list_users / get_user, obs::scope! is already open with
+// trace_id (from inbound traceparent or freshly generated) and route.
+// ObsHttpRequestStarted/Completed are emitted automatically.
+```
+
+Outbound calls inject `traceparent` automatically when wrapped:
+
+```rust
+let client = reqwest::Client::builder()
+    .build()?
+    .with_layer(obs_tower::ObsHttpClientLayer::new());
+let resp = client.get("https://upstream/...").send().await?;
+// traceparent + tracestate added; ObsHttpClientCompleted emitted.
+```
+
+#### L. Coexisting with `tokio-console`
+
+```rust
+// Both work in the same binary; they target different things.
+console_subscriber::init();              // tokio runtime introspection
+obs::install_observer(StandardObserver::dev());
+
+// Application events go through obs; runtime/task events via tokio-console.
 ```
 
 ## 5. IDE & autocomplete
@@ -432,7 +520,7 @@ it takes; the only cost is the one extra event type
 | Logging a JSON-serialised request body into `tracing::info!` | No `String`-message API on `obs::emit!`; the only inputs are typed event structs |
 | Using `user_id` as a metric label | L001 + L002 lint catch it at compile time |
 | Adding a SECRET token to a long-retained tier | L003 lint catches it; the scrub dispatcher strips it at the boundary even if L003 is silenced |
-| Drift between `service`/`route` naming across crates | L013 lint catches conflicting LABEL definitions across the workspace |
+| Drift between `service`/`route` naming across crates | `obs lint` (workspace-wide) flags LABEL fields with the same name but different cardinality/type/classification across schemas (L013); enforced in CI |
 | Forgetting to flush before exit | `observer().shutdown().await` is documented in scaffold; failing to call it leaves events in-flight (warned in dev mode) |
 | Reaching for `forensic!` to avoid writing a schema | `forensic_max` budget + audit report turn this into a visible team-level signal |
 | Multiple subscribers disagreeing on event shape | Single global observer; sinks are children, cannot mutate the envelope |
