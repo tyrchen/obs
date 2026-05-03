@@ -16,7 +16,14 @@
 
 // The CLI is a synchronous process (clap-driven, short-lived); the
 // workspace-wide tokio::fs / tokio::process bans don't apply here.
-#![allow(missing_docs, clippy::disallowed_methods, clippy::disallowed_types)]
+#![allow(
+    missing_docs,
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    clippy::collapsible_if,
+    clippy::if_same_then_else,
+    clippy::indexing_slicing
+)]
 
 mod cmd;
 
@@ -57,6 +64,12 @@ enum Command {
     Query(cmd::query::QueryArgs),
     /// Diagnose a crate's obs setup.
     Doctor(cmd::doctor::DoctorArgs),
+    /// Compare two schema versions and emit a breaking-change report.
+    Diff(cmd::diff::DiffArgs),
+    /// Roll up forensic-event budget across crates.
+    Audit(cmd::audit::AuditArgs),
+    /// Emit migration artefacts (DDL or unified Arrow schema).
+    Migrate(cmd::migrate::MigrateArgs),
     /// Print version + supported envelope formats.
     Version(cmd::version::VersionArgs),
     /// Emit shell completion script.
@@ -74,6 +87,9 @@ fn main() -> Result<()> {
         Command::Tail(args) => cmd::tail::run(args),
         Command::Query(args) => cmd::query::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),
+        Command::Diff(args) => cmd::diff::run(args),
+        Command::Audit(args) => cmd::audit::run(args),
+        Command::Migrate(args) => cmd::migrate::run(args),
         Command::Version(args) => cmd::version::run(args),
         Command::Completions(args) => cmd::completions::run(args),
     }

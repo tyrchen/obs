@@ -22,7 +22,7 @@ use crate::{
     callsite::ObsCallsite,
     config::{AuditFailureMode, EventsConfig},
     filter::Filter,
-    registry::{SchemaRegistry, ScrubbedEnvelope},
+    registry::{ObsCallsiteRegistry, SchemaRegistry, ScrubbedEnvelope},
     sampling::{SamplingDecision, decide as sample_decide},
     scope::{auto_fill_envelope, inbound_traceparent_sampled, push_tail_buffer},
     sink::{NoopSink, Sink, SinkFut, StdoutSink},
@@ -79,6 +79,7 @@ pub struct StandardObserver {
     workers: WorkerPool,
     spool: Option<Arc<SpoolWriter>>,
     registry: Arc<SchemaRegistry>,
+    callsites: Arc<ObsCallsiteRegistry>,
     config: ArcSwap<EventsConfig>,
     filter: ArcSwap<Filter>,
     counters: Arc<WorkerCounters>,
@@ -127,6 +128,14 @@ impl StandardObserver {
     #[must_use]
     pub fn registry(&self) -> Arc<SchemaRegistry> {
         Arc::clone(&self.registry)
+    }
+
+    /// Read-only access to the per-process callsite registry. Used by
+    /// the bridge (Direction A inserts; Direction B reads to
+    /// reconstitute `tracing::Metadata`). Spec 31 § 3.2.
+    #[must_use]
+    pub fn callsites(&self) -> Arc<ObsCallsiteRegistry> {
+        Arc::clone(&self.callsites)
     }
 
     /// Read-only access to the live config.
@@ -434,6 +443,14 @@ impl Observer for StandardObserver {
             let _ = handle.block_on(tokio::time::timeout(timeout, self.shutdown()));
         }
     }
+
+    fn callsites(&self) -> Option<Arc<ObsCallsiteRegistry>> {
+        Some(Arc::clone(&self.callsites))
+    }
+
+    fn schema_registry(&self) -> Option<Arc<SchemaRegistry>> {
+        Some(Arc::clone(&self.registry))
+    }
 }
 
 #[allow(non_snake_case, non_upper_case_globals)]
@@ -628,6 +645,7 @@ impl StandardObserverBuilder {
             workers,
             spool,
             registry,
+            callsites: Arc::new(ObsCallsiteRegistry::new()),
             config: ArcSwap::from_pointee(cfg),
             filter: ArcSwap::from_pointee(filter),
             counters,

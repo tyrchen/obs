@@ -81,6 +81,22 @@ pub trait Observer: Send + Sync + 'static {
     fn shutdown_blocking(&self, timeout: std::time::Duration) {
         let _ = timeout;
     }
+
+    /// Access this observer's per-process callsite registry, when it
+    /// has one. The bridge (Direction A) writes the registry on first
+    /// sight; `ObsToTracingSink` reads it to reconstitute
+    /// `tracing::Metadata` for interned envelopes. Spec 31 § 3.2.
+    fn callsites(&self) -> Option<std::sync::Arc<crate::registry::ObsCallsiteRegistry>> {
+        None
+    }
+
+    /// Access this observer's schema registry, when it has one. Sinks
+    /// hold their own `Arc<SchemaRegistry>` from construction; this
+    /// hook lets the bridge fall back to the global observer's
+    /// registry without depending on `StandardObserver`.
+    fn schema_registry(&self) -> Option<std::sync::Arc<crate::registry::SchemaRegistry>> {
+        None
+    }
 }
 
 // ─── Resolution slots (spec 11 § 3) ───────────────────────────────────

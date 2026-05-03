@@ -1,0 +1,33 @@
+[package]
+name = "obs-tower"
+description = "tower::Layer for HTTP propagation + ObsHttpRequest/Client events for the obs SDK."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "tower", "http"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+buffa = { workspace = true }
+http = { workspace = true }
+obs-core = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-service = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

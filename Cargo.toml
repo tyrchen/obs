@@ -31,8 +31,8 @@ event_prefix = "Obs"
 [workspace.dependencies]
 # core deps
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
-clap_complete = "4.5"
+clap = { version = "4.6", features = ["derive", "env"] }
+clap_complete = "4.6"
 arc-swap = "1.9"
 blake3 = { version = "1.8", default-features = false }
 bytes = "1.11"
@@ -55,7 +55,11 @@ tokio = { version = "1.52", features = [
 ] }
 tracing = "0.1"
 tracing-core = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "fmt",
+  "registry",
+] }
 tracing-log = "0.2"
 typed-builder = "0.23"
 
@@ -71,17 +75,46 @@ buffa-build = "0.4"
 buffa-descriptor = "0.4"
 buffa-reflect = "0.1"
 
+# Phase-4 analytics + middleware deps.
+arrow-array = "58"
+arrow-schema = "58"
+arrow-ipc = "58"
+parquet = { version = "58", default-features = false, features = [
+  "arrow",
+  "snap",
+  "lz4",
+] }
+governor = { version = "0.10", default-features = false, features = ["std"] }
+http = "1.4"
+hyper = { version = "1.9", features = ["server", "client", "http1"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = [
+  "tokio",
+  "client-legacy",
+  "server-auto",
+] }
+proptest = "1.11"
+regex = "1.12"
+tower = { version = "0.5", default-features = false, features = [
+  "util",
+  "make",
+] }
+tower-service = "0.3"
+
 # dev / test
 criterion = { version = "0.8", features = ["html_reports"] }
-tempfile = "3.13"
+tempfile = "3.27"
 trybuild = "1.0"
 
 # workspace crates
 obs-build = { path = "crates/obs-build", version = "0.1.0" }
+obs-clickhouse = { path = "crates/obs-clickhouse", version = "0.1.0" }
 obs-core = { path = "crates/obs-core", version = "0.1.0" }
 obs-macros = { path = "crates/obs-macros", version = "0.1.0" }
 obs-otel = { path = "crates/obs-otel", version = "0.1.0" }
+obs-parquet = { path = "crates/obs-parquet", version = "0.1.0" }
 obs-proto = { path = "crates/obs-proto", version = "0.1.0" }
 obs-sdk = { path = "crates/obs-sdk", version = "0.1.0" }
+obs-tower = { path = "crates/obs-tower", version = "0.1.0" }
 obs-tracing-bridge = { path = "crates/obs-tracing-bridge", version = "0.1.0" }
 obs-types = { path = "crates/obs-types", version = "0.1.0" }

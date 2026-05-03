@@ -29,6 +29,7 @@ pub mod config;
 pub mod emit;
 pub mod envelope;
 pub mod filter;
+pub mod forensic;
 pub mod instrumented;
 pub mod metric;
 pub mod observer;
@@ -61,8 +62,10 @@ pub use observer::{
 };
 pub use panic_hook::install_panic_hook;
 pub use registry::{
-    ArrowStructBuilder, DecodeError, EVENT_SCHEMAS, EventSchemaErased, OtelAttributeView,
-    OtlpValue, SchemaRegistry, ScrubError, ScrubbedEnvelope,
+    ArrowEventSchema, ArrowField, ArrowLeafType, ArrowSchemaModel, ArrowStructBuilder,
+    CallsiteRecord, CallsiteSource, DecodeError, ENVELOPE_COLUMNS, EVENT_SCHEMAS,
+    EventSchemaErased, ObsCallsiteRegistry, OtelAttributeView, OtlpValue, SchemaRegistry,
+    ScrubError, ScrubbedEnvelope, callsite_id,
 };
 pub use sampling::{SamplingDecision, decide as sample_decide};
 pub use scope::{ScopeField, ScopeFrame, ScopeGuard, ScopeKind};
@@ -77,6 +80,8 @@ pub use span_trace::SpanTrace;
 /// `obs-build`. End users should not depend on these directly.
 #[doc(hidden)]
 pub mod __private {
+    pub use std::sync::OnceLock;
+
     pub use buffa;
     pub use bytes::BytesMut;
     pub use linkme;
@@ -94,6 +99,7 @@ pub mod __private {
     pub use crate::{
         aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame},
         callsite::ObsCallsite,
+        forensic::{ForensicLimiter, ensure_limiter, try_acquire_forensic},
         registry::{EVENT_SCHEMAS, EventSchemaErased, Sealed},
         scope::{ScopeField, ScopeGuard, ScopeKind},
     };

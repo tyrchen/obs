@@ -1,8 +1,8 @@
 [package]
-name = "obs-core"
-description = "Runtime engine for the obs SDK: Observer, Sink, schema registry, sampling, config."
+name = "obs-parquet"
+description = "Single-table Parquet/Arrow analytics sink for the obs SDK."
 categories = ["development-tools"]
-keywords = ["observability", "obs", "wide-events"]
+keywords = ["observability", "obs", "parquet", "arrow"]
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -14,43 +14,26 @@ homepage.workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 blake3 = { workspace = true }
 buffa = { workspace = true }
 bytes = { workspace = true }
-dashmap = { workspace = true }
-governor = { workspace = true }
-linkme = { workspace = true }
+obs-core = { workspace = true }
 obs-proto = { workspace = true }
 obs-types = { workspace = true }
-once_cell = { workspace = true }
 parking_lot = { workspace = true }
-pin-project-lite = { workspace = true }
+parquet = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-smallvec = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
+obs-core = { workspace = true, features = ["test"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
-
-[features]
-default = []
-# Test ergonomics: in-memory observer helpers, `assert_emitted!` macro
-# support. Cfg-only flag — no runtime cost in release builds because the
-# items it gates are only used by tests.
-test = []
-
-[[bench]]
-name = "emit_noop"
-harness = false
-
-[[bench]]
-name = "scope_overhead"
-harness = false
 
 [lints]
 workspace = true

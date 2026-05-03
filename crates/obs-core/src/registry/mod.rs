@@ -4,6 +4,8 @@
 //!
 //! Spec 14.
 
+mod arrow;
+mod callsite_registry;
 mod erased;
 mod scrubbed;
 
@@ -13,6 +15,10 @@ use linkme::distributed_slice;
 use obs_proto::obs::v1::ObsEnvelope;
 
 pub use self::{
+    arrow::{ArrowEventSchema, ArrowField, ArrowLeafType, ArrowSchemaModel, ENVELOPE_COLUMNS},
+    callsite_registry::{
+        CallsiteRecord, CallsiteSource, ObsCallsiteRegistry, callsite_id, perturb_to_nonzero,
+    },
     erased::{
         ArrowStructBuilder, DecodeError, EventSchemaErased, OtelAttributeView, OtlpValue,
         ScrubError, Sealed,
@@ -39,6 +45,7 @@ pub static EVENT_SCHEMAS: [&'static dyn EventSchemaErased] = [..];
 pub struct SchemaRegistry {
     by_name: HashMap<&'static str, &'static dyn EventSchemaErased>,
     by_hash: HashMap<u64, &'static dyn EventSchemaErased>,
+    arrow: Arc<ArrowSchemaModel>,
 }
 
 impl std::fmt::Debug for SchemaRegistry {
@@ -63,7 +70,17 @@ impl SchemaRegistry {
             by_name.insert(schema.full_name(), schema);
             by_hash.insert(schema.schema_hash(), schema);
         }
-        Self { by_name, by_hash }
+        let arrow = Arc::new(ArrowSchemaModel::from_schemas(
+            EVENT_SCHEMAS
+                .iter()
+                .copied()
+                .map(|s| s as &dyn EventSchemaErased),
+        ));
+        Self {
+            by_name,
+            by_hash,
+            arrow,
+        }
     }
 
     /// Empty registry. Useful for tests that don't care about decoding.
@@ -72,7 +89,17 @@ impl SchemaRegistry {
         Self {
             by_name: HashMap::new(),
             by_hash: HashMap::new(),
+            arrow: Arc::new(ArrowSchemaModel::default()),
         }
+    }
+
+    /// The unified Arrow schema model assembled at registry init.
+    /// Used by `ParquetSink::from_registry`, `ClickHouseSink` DDL emit,
+    /// and the CLI's `obs migrate {parquet,clickhouse}` paths.
+    /// Spec 14 § 4 KD5.
+    #[must_use]
+    pub fn arrow_schema(&self) -> Arc<ArrowSchemaModel> {
+        Arc::clone(&self.arrow)
     }
 
     /// Hot-path lookup: try `schema_hash` first (8-byte u64), then

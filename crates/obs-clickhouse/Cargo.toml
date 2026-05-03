@@ -1,6 +1,8 @@
 [package]
-name = "obs-cli"
-description = "The `obs` CLI: lint, validate, schema, codegen, query."
+name = "obs-clickhouse"
+description = "Single-table ClickHouse sink for the obs SDK."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "clickhouse", "wide-events"]
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -10,27 +12,22 @@ documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
-[[bin]]
-name = "obs"
-path = "src/main.rs"
-
 [dependencies]
-anyhow = { workspace = true }
+arc-swap = { workspace = true }
 buffa = { workspace = true }
-buffa-descriptor = { workspace = true }
-buffa-reflect = { workspace = true }
-clap = { workspace = true }
-clap_complete = { workspace = true }
-obs-build = { workspace = true }
-obs-clickhouse = { workspace = true }
+bytes = { workspace = true }
 obs-core = { workspace = true }
-obs-parquet = { workspace = true }
 obs-proto = { workspace = true }
 obs-types = { workspace = true }
+parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true

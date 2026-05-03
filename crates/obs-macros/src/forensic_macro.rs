@@ -17,33 +17,69 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let attr_keys: Vec<_> = parsed.attrs.iter().map(|(k, _)| k.clone()).collect();
     let attr_vals: Vec<_> = parsed.attrs.iter().map(|(_, v)| v.clone()).collect();
     Ok(quote! {{
-        let __site: ::std::string::String = ::std::string::ToString::to_string(&(#site));
-        let __message: ::std::string::String = ::std::string::ToString::to_string(&(#message));
-        let mut __attrs: ::std::collections::BTreeMap<::std::string::String, ::std::string::String> =
-            ::std::collections::BTreeMap::new();
-        #(
-            __attrs.insert(
-                ::std::string::ToString::to_string(&(#attr_keys)),
-                ::std::string::ToString::to_string(&(#attr_vals)),
+        // Per-callsite rate-limiter slot. The OnceLock holds an
+        // `Arc<ForensicLimiter>` (governor::DirectRateLimiter); see
+        // spec 11 § 6.3 / spec 13 § 8 — forensic emits bypass head
+        // sampling but must be capped per-callsite.
+        static __LIMITER: ::obs_core::__private::OnceLock<
+            ::std::sync::Arc<::obs_core::__private::ForensicLimiter>,
+        > = ::obs_core::__private::OnceLock::new();
+        if !::obs_core::__private::try_acquire_forensic(&__LIMITER) {
+            // Rate-limit fired — also emit one
+            // ObsForensicBudgetExceeded self-event the first time the
+            // limit fires for this callsite, lazily.
+            static __FIRST: ::std::sync::atomic::AtomicBool =
+                ::std::sync::atomic::AtomicBool::new(true);
+            if __FIRST.swap(false, ::std::sync::atomic::Ordering::Relaxed) {
+                let mut __budget = ::obs_core::ObsEnvelope::default();
+                __budget.full_name = ::std::string::String::from(
+                    "obs.runtime.v1.ObsForensicBudgetExceeded",
+                );
+                __budget.tier = ::obs_core::__private::EnumValue::Known(
+                    ::obs_core::__private::ProtoTier::TIER_LOG,
+                );
+                __budget.sev = ::obs_core::__private::EnumValue::Known(
+                    ::obs_core::__private::ProtoSeverity::SEVERITY_WARN,
+                );
+                __budget.labels.insert(
+                    ::std::string::String::from("site"),
+                    ::std::string::ToString::to_string(&(#site)),
+                );
+                __budget.labels.insert(
+                    ::std::string::String::from("crate_name"),
+                    ::std::string::String::from(env!("CARGO_PKG_NAME")),
+                );
+                ::obs_core::observer().emit_envelope(__budget);
+            }
+        } else {
+            let __site: ::std::string::String = ::std::string::ToString::to_string(&(#site));
+            let __message: ::std::string::String = ::std::string::ToString::to_string(&(#message));
+            let mut __attrs: ::std::collections::BTreeMap<::std::string::String, ::std::string::String> =
+                ::std::collections::BTreeMap::new();
+            #(
+                __attrs.insert(
+                    ::std::string::ToString::to_string(&(#attr_keys)),
+                    ::std::string::ToString::to_string(&(#attr_vals)),
+                );
+            )*
+            let mut __env = ::obs_core::ObsEnvelope::default();
+            __env.full_name = ::std::string::String::from("obs.v1.ObsForensicEvent");
+            __env.tier = ::obs_core::__private::EnumValue::Known(
+                ::obs_core::__private::ProtoTier::TIER_LOG,
             );
-        )*
-        let mut __env = ::obs_core::ObsEnvelope::default();
-        __env.full_name = ::std::string::String::from("obs.v1.ObsForensicEvent");
-        __env.tier = ::obs_core::__private::EnumValue::Known(
-            ::obs_core::__private::ProtoTier::TIER_LOG,
-        );
-        __env.sev = ::obs_core::__private::EnumValue::Known(
-            ::obs_core::__private::ProtoSeverity::SEVERITY_INFO,
-        );
-        __env.sampling_reason = ::obs_core::__private::EnumValue::Known(
-            ::obs_core::__private::ProtoSamplingReason::SAMPLING_REASON_FORENSIC,
-        );
-        __env.labels.insert(::std::string::String::from("site"), __site);
-        for (k, v) in __attrs.into_iter() {
-            __env.labels.insert(k, v);
+            __env.sev = ::obs_core::__private::EnumValue::Known(
+                ::obs_core::__private::ProtoSeverity::SEVERITY_INFO,
+            );
+            __env.sampling_reason = ::obs_core::__private::EnumValue::Known(
+                ::obs_core::__private::ProtoSamplingReason::SAMPLING_REASON_FORENSIC,
+            );
+            __env.labels.insert(::std::string::String::from("site"), __site);
+            for (k, v) in __attrs.into_iter() {
+                __env.labels.insert(k, v);
+            }
+            __env.payload = __message.into_bytes();
+            ::obs_core::observer().emit_envelope(__env);
         }
-        __env.payload = __message.into_bytes();
-        ::obs_core::observer().emit_envelope(__env);
     }})
 }
 
