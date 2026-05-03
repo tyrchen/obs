@@ -1,4 +1,12 @@
 //! End-to-end multi-tenant integration test. Spec 40 § 3.1.
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 //!
 //! Three tenants, each with their own [`InMemoryObserver`] (stand-in
 //! for "OTLP endpoint + Parquet bucket" in production); the HTTP-layer

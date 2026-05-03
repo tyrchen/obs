@@ -19,7 +19,10 @@
     missing_docs
 )]
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use obs_build::{Config, DescriptorSource};
 
@@ -186,16 +189,12 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+static TEMPDIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn tempdir() -> TempDir {
     let mut path = std::env::temp_dir();
-    path.push(format!(
-        "obs_build_test_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let seq = TEMPDIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.push(format!("obs_build_test_{}_{}", std::process::id(), seq));
     std::fs::create_dir_all(&path).unwrap();
     TempDir(path)
 }

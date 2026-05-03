@@ -2,6 +2,12 @@
 
 Internal engineering notes that aren't user-facing specs.
 
+## Migration
+
+| File | Purpose |
+| --- | --- |
+| [migration-from-tracing.md](./migration-from-tracing.md) | Moving an existing `tracing` codebase onto obs (Phase 5 / impl-plan 5.7). |
+
 ## Research
 
 Spike memos and design research. Each spike addresses a single

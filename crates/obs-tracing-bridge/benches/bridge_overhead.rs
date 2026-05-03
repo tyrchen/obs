@@ -18,13 +18,14 @@ use tracing_subscriber::layer::SubscriberExt;
 fn bench_tracing_to_obs_overhead(c: &mut Criterion) {
     let observer = InMemoryObserver::new();
     let observer: Arc<dyn Observer> = Arc::new(observer);
+    // `Layered<TracingToObsLayer, Registry>` is not Clone (Registry isn't),
+    // so install the subscriber once for the duration of the bench.
     let subscriber = tracing_subscriber::registry().with(TracingToObsLayer::new());
+    let _guard = tracing::subscriber::set_default(subscriber);
     c.bench_function("tracing_to_obs_overhead", |b| {
         with_test_observer(observer.clone(), || {
-            tracing::subscriber::with_default(subscriber.clone(), || {
-                b.iter(|| {
-                    tracing::info!(target: "myapp", route = "list_users", "request done");
-                });
+            b.iter(|| {
+                tracing::info!(target: "myapp", route = "list_users", "request done");
             });
         });
     });

@@ -31,6 +31,7 @@ pub use ddl::render_create_table_ddl;
 pub use sink::{ClickHouseSink, ClickHouseSinkBuilder, ClickHouseSinkError};
 pub use transport::{
     ClickHouseBatch, ClickHouseTransport, HttpClickHouseTransport, RecordingTransport,
+    TransportError,
 };
 
 /// Internal tier→string used by the JSONEachRow row writer; kept here

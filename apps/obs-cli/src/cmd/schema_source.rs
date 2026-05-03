@@ -8,7 +8,10 @@
 //!
 //! Spec 14 § 10.1 (CLI-only descriptor walk) + spec 50 § 3.4.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use anyhow::{Context, Result, anyhow};
 use buffa::Message;
@@ -160,16 +163,12 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+static TEMPDIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn tempdir() -> Result<TempDir> {
     let mut path = std::env::temp_dir();
-    path.push(format!(
-        "obs_cli_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    let seq = TEMPDIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.push(format!("obs_cli_{}_{}", std::process::id(), seq));
     std::fs::create_dir_all(&path)?;
     Ok(TempDir(path))
 }

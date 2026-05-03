@@ -129,10 +129,10 @@ pub fn instrument(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// `#[obs::test]` — drop-in replacement for `#[test]` /
-/// `#[tokio::test]` that installs an [`InMemoryObserver`] on the
+/// `#[tokio::test]` that installs an `InMemoryObserver` on the
 /// current thread (sync) or current task (async) for the duration of
 /// the test. The body's emits land in a thread-local /
-/// task-local handle that [`obs::test::assert_emitted!`] reads.
+/// task-local handle that `obs::test::assert_emitted!` reads.
 ///
 /// Sync example:
 ///

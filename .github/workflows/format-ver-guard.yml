@@ -1,0 +1,21 @@
+name: format-ver-guard
+
+on:
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  envelope-format-ver:
+    name: envelope format_ver lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fail on unbumped envelope.proto
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags --depth=200 origin "${{ github.base_ref }}"
+          bash scripts/check-format-ver.sh "$BASE_REF" "$HEAD_REF"

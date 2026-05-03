@@ -34,6 +34,7 @@ pub use self::{
     in_memory::{InMemoryHandle, InMemoryObserver},
     noop::NoopObserver,
     standard::{StandardObserver, StandardObserverBuilder},
+    workers::WorkerCounters,
 };
 use crate::callsite::ObsCallsite;
 

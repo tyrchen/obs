@@ -1,15 +1,23 @@
 #![forbid(unsafe_code)]
 #![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
 // Tests routinely use `.unwrap()` for clarity; production code uses `?`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 //! Runtime engine for the obs SDK — the spine that user code emits into.
 //!
 //! Phase-3 surface (specs/91-impl-plan.md tasks 3.1–3.15):
 //!
 //! - [`callsite`] — `ObsCallsite`, atomic-`Interest` cache (spec 11 § 2).
-//! - [`observer`] — three-tier resolution + per-tier worker pool + `StandardObserver` (spec 11 §§
-//!   3, 4 + 6.4).
+//! - [`observer`][mod@observer] — three-tier resolution + per-tier worker pool + `StandardObserver`
+//!   (spec 11 §§ 3, 4 + 6.4).
 //! - [`registry`] — schema registry + `ScrubbedEnvelope` (spec 14).
 //! - [`envelope`] — envelope builder + projection helpers (spec 11 § 5).
 //! - [`scope`] — `obs::scope!` / `obs::context!` runtime support (spec 13 §§ 2, 3, 6).
@@ -50,15 +58,18 @@ pub use envelope::{Envelope, EventSchema, FieldMeta, FieldRole};
 pub use filter::Filter;
 pub use instrumented::{Instrument, Instrumented, WithObserver};
 pub use metric::{MetricEmitter, NoopMetricEmitter};
-pub use obs_proto::obs::v1::{ObsBatch, ObsEnvelope};
+pub use obs_proto::{
+    ENVELOPE_FORMAT_VER,
+    obs::v1::{ObsBatch, ObsEnvelope},
+};
 pub use obs_types::{
     Cardinality, Classification, FieldKind, MetricKind, SamplingReason, Severity, Tier,
 };
 pub use observer::{
     InMemoryHandle, InMemoryObserver, NoopObserver, Observer, StandardObserver,
-    StandardObserverBuilder, ThreadObserverGuard, WeakObserver, install_observer, observer,
-    observer_weak, with_observer_task, with_observer_task_sync, with_observer_thread_local,
-    with_test_observer,
+    StandardObserverBuilder, ThreadObserverGuard, WeakObserver, WorkerCounters, install_observer,
+    observer, observer_weak, with_observer_task, with_observer_task_sync,
+    with_observer_thread_local, with_test_observer,
 };
 pub use panic_hook::install_panic_hook;
 pub use registry::{

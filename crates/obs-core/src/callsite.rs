@@ -172,30 +172,48 @@ pub enum EnabledOutcome {
 mod tests {
     use super::*;
 
-    static TEST_CALLSITE: ObsCallsite = ObsCallsite::new(
-        "test.v1.Probe",
-        Severity::Info,
-        module_path!(),
-        file!(),
-        line!(),
-    );
+    // Each test owns its own callsite so cargo's parallel runner cannot
+    // race on the cache. Sharing one static across tests is what the
+    // production hot path does, but tests need independence to be
+    // deterministic.
 
     #[test]
     fn test_should_start_in_unknown() {
-        TEST_CALLSITE.reset_cache();
-        assert_eq!(TEST_CALLSITE.enabled(1), EnabledOutcome::ReProbe);
+        static CS: ObsCallsite = ObsCallsite::new(
+            "test.v1.ProbeUnknown",
+            Severity::Info,
+            module_path!(),
+            file!(),
+            line!(),
+        );
+        CS.reset_cache();
+        assert_eq!(CS.enabled(1), EnabledOutcome::ReProbe);
     }
 
     #[test]
     fn test_should_short_circuit_on_never() {
-        TEST_CALLSITE.cache(Interest::Never, 7);
-        assert_eq!(TEST_CALLSITE.enabled(7), EnabledOutcome::Off);
+        static CS: ObsCallsite = ObsCallsite::new(
+            "test.v1.ProbeNever",
+            Severity::Info,
+            module_path!(),
+            file!(),
+            line!(),
+        );
+        CS.cache(Interest::Never, 7);
+        assert_eq!(CS.enabled(7), EnabledOutcome::Off);
     }
 
     #[test]
     fn test_should_reprobe_on_generation_mismatch() {
-        TEST_CALLSITE.cache(Interest::Always, 7);
-        assert_eq!(TEST_CALLSITE.enabled(7), EnabledOutcome::AlwaysOn);
-        assert_eq!(TEST_CALLSITE.enabled(8), EnabledOutcome::ReProbe);
+        static CS: ObsCallsite = ObsCallsite::new(
+            "test.v1.ProbeReprobe",
+            Severity::Info,
+            module_path!(),
+            file!(),
+            line!(),
+        );
+        CS.cache(Interest::Always, 7);
+        assert_eq!(CS.enabled(7), EnabledOutcome::AlwaysOn);
+        assert_eq!(CS.enabled(8), EnabledOutcome::ReProbe);
     }
 }

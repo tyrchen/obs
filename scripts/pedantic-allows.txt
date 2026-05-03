@@ -1,0 +1,167 @@
+# Curated list of pedantic-clippy lints we deliberately allow.
+#
+# Each entry is a single bare lint name; comments and blank lines are
+# ignored. The list is consumed by `scripts/lint-strict.sh` which
+# turns it into a `-A clippy::<name>` flag list.
+#
+# Add a new entry only with a brief justification in this file; the
+# review bar is "would fixing this make the code measurably better,
+# or is the lint just stylistic?" — if the latter, allow.
+
+# ─── Documentation noise ──────────────────────────────────────────────
+doc_markdown                 # backtick nitpicks: `OTel`, `latency_ms`...
+missing_errors_doc           # spec-of-record covers Errors elsewhere
+missing_panics_doc           # ditto
+empty_line_after_doc_comments
+doc_link_with_quotes
+
+# ─── Naming nitpicks ──────────────────────────────────────────────────
+module_name_repetitions
+similar_names
+struct_field_names
+must_use_candidate
+return_self_not_must_use
+
+# ─── Numeric conversions: explicit at boundaries by design ────────────
+cast_possible_truncation
+cast_sign_loss
+cast_precision_loss
+cast_lossless
+cast_possible_wrap
+
+# ─── Function shape / pass-by-value style ─────────────────────────────
+too_many_lines
+unnecessary_wraps
+inline_always
+needless_pass_by_value
+trivially_copy_pass_by_ref
+unused_self
+items_after_statements
+elidable_lifetime_names
+needless_lifetimes
+needless_borrow
+needless_borrows_for_generic_args
+needless_continue
+needless_return
+needless_for_each
+single_match_else
+match_same_arms
+match_wildcard_for_single_variants
+wildcard_in_or_patterns
+wildcard_imports
+implicit_hasher
+ignored_unit_patterns
+default_trait_access
+default_constructed_unit_structs
+derivable_impls
+manual_assert
+manual_let_else
+or_fun_call
+ref_option
+ref_as_ptr
+ref_binding_to_reference
+implicit_clone
+explicit_iter_loop
+iter_without_into_iter
+redundant_closure_for_method_calls
+redundant_else
+redundant_field_names
+redundant_pub_crate
+redundant_clone
+redundant_pattern_matching
+unreadable_literal
+unnested_or_patterns
+unused_async
+option_if_let_else
+verbose_bit_mask
+struct_excessive_bools
+no_effect_underscore_binding
+used_underscore_binding
+collapsible_else_if
+collapsible_if
+collapsible_match
+nonminimal_bool
+if_not_else
+range_plus_one
+range_minus_one
+single_char_pattern
+ptr_as_ptr
+result_large_err
+case_sensitive_file_extension_comparisons
+should_panic_without_expect
+unicode_not_nfc
+or_then_unwrap
+needless_collect
+let_underscore_must_use
+let_underscore_untyped
+needless_raw_string_hashes
+let_unit_value
+trivial_regex
+extra_unused_lifetimes
+field_reassign_with_default
+question_mark_used
+needless_pass_by_ref_mut
+useless_attribute
+comparison_chain
+unwrap_in_result
+manual_string_new
+default_numeric_fallback
+shadow_reuse
+shadow_same
+shadow_unrelated
+if_then_some_else_none
+single_call_fn
+
+# ─── Specific to codegen / format builders ────────────────────────────
+format_push_string
+format_in_format_args
+uninlined_format_args
+format_collect
+
+# ─── Crate-feature decisions: once_cell::Lazy is intentional ─────────
+non_std_lazy_statics
+std_instead_of_core
+std_instead_of_alloc
+
+# ─── Macro / debug nitpicks that don't help readability ──────────────
+missing_fields_in_debug
+print_stderr
+print_stdout
+dbg_macro
+map_unwrap_or
+map_err_ignore
+from_iter_instead_of_collect
+semicolon_if_nothing_returned
+unused_trait_names
+naive_bytecount
+partialeq_to_none
+partial_pub_fields
+pub_underscore_fields
+unsafe_derive_deserialize
+useless_let_if_seq
+redundant_locals
+missing_const_for_fn
+missing_inline_in_public_items
+missing_assert_message
+large_types_passed_by_value
+large_stack_arrays
+large_enum_variant
+box_collection
+unnecessary_box_returns
+cognitive_complexity
+needless_arbitrary_self_type
+derive_partial_eq_without_eq
+same_name_method
+option_as_ref_deref
+no_effect_replace
+transmute_ptr_to_ptr
+stable_sort_primitive
+wildcard_dependencies
+pub_use
+if_let_mutex
+wrong_self_convention
+redundant_static_lifetimes
+duration_suboptimal_units
+unchecked_time_subtraction
+unnecessary_debug_formatting
+enum_glob_use

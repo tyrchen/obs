@@ -81,7 +81,10 @@ impl<'a> ScrubbedEnvelope<'a> {
         }
     }
 
-    /// Test-only constructor that mirrors [`Self::pass_through`].
+    /// Test-only constructor that mirrors `Self::pass_through` (the
+    /// internal worker-thread fast-path that wraps an already-scrubbed
+    /// envelope without re-running the scrubber).
+    ///
     /// Gated behind the `test` feature so production sinks cannot
     /// fabricate envelopes — only test code that opts into the `test`
     /// feature gets this constructor. Spec 14 § 5 / KD3.

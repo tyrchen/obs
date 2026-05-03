@@ -25,6 +25,11 @@ expect_used = "warn"
 panic = "warn"
 indexing_slicing = "warn"
 
+# Pedantic-clippy is gated by `make lint-strict`, which feeds a
+# curated allow list from `scripts/pedantic-allows.txt`. The default
+# `cargo clippy` run keeps the four denials above; the strict run
+# adds pedantic minus the listed allows. Spec 90 § M4 / impl-plan 5.3.
+
 [workspace.metadata.obs]
 event_prefix = "Obs"
 

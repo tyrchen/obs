@@ -8,16 +8,16 @@
 #[cfg(feature = "dev")]
 pub use obs_core::sink::FormatterStyle;
 pub use obs_core::{
-    BuildableTo, Cardinality, Classification, Emit, EnumCount, EventSchema, EventsConfig,
-    FieldCapture, FieldKind, FieldMeta, FieldRole, Filter, InMemoryHandle, InMemoryObserver,
-    InMemorySink, Instrument, Instrumented, LevelSplitWriter, MakeWriter, MetricEmitter,
-    MetricKind, NdjsonFileSink, NonBlockingWriter, NoopObserver, NoopSink, ObsBatch, ObsCallsite,
-    ObsEnvelope, Observer, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy,
+    BuildableTo, Cardinality, Classification, ENVELOPE_FORMAT_VER, Emit, EnumCount, EventSchema,
+    EventsConfig, FieldCapture, FieldKind, FieldMeta, FieldRole, Filter, InMemoryHandle,
+    InMemoryObserver, InMemorySink, Instrument, Instrumented, LevelSplitWriter, MakeWriter,
+    MetricEmitter, MetricKind, NdjsonFileSink, NonBlockingWriter, NoopObserver, NoopSink, ObsBatch,
+    ObsCallsite, ObsEnvelope, Observer, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy,
     SamplingConfig, SamplingReason, ScopeField, ScopeFrame, ScopeGuard, ScopeKind, Severity, Sink,
     SpanCtx, SpanFrame, SpanTrace, StandardObserver, StandardObserverBuilder, StderrWriter,
-    StdoutSink, StdoutWriter, TeeWriter, Tier, WithObserver, WorkerGuard, install_observer,
-    install_panic_hook, observer, observer_weak, with_observer_task, with_observer_task_sync,
-    with_observer_thread_local, with_test_observer,
+    StdoutSink, StdoutWriter, TeeWriter, Tier, WithObserver, WorkerCounters, WorkerGuard,
+    install_observer, install_panic_hook, observer, observer_weak, with_observer_task,
+    with_observer_task_sync, with_observer_thread_local, with_test_observer,
 };
 pub use obs_macros::{Event, context, emit, forensic, include_schemas, instrument, scope};
 pub use obs_proto::obs::v1::{ObsFnEntered, ObsFnExecuted, ObsForensicEvent};

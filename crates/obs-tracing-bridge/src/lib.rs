@@ -6,7 +6,7 @@
     clippy::too_many_arguments,
     clippy::expect_used
 )]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 //! Bidirectional bridge between `tracing` and the obs SDK.
 //!

@@ -6,6 +6,17 @@
 //! All bytes are written deterministically — same input → byte-identical
 //! output across machines and runs (spec 12 § 1.2).
 
+// `format!` builds the codegen output fragments on a `String` via
+// `push_str(&format!(...))`. Switching to `write!` saves one
+// allocation per line but loses the ergonomic format-args ordering
+// the codegen relies on; the readability win in this file
+// substantially outweighs the alloc cost (codegen runs at build time).
+#![allow(
+    clippy::format_push_string,
+    clippy::uninlined_format_args,
+    clippy::format_in_format_args
+)]
+
 use heck::ToShoutySnakeCase;
 use obs_types::{Cardinality, Classification, FieldKind, Severity, Tier};
 

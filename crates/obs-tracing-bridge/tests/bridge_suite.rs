@@ -1,5 +1,12 @@
 //! Bridge test suite — spec 30 § 6.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 use std::sync::Arc;
 
 use obs_core::{

@@ -1,0 +1,28 @@
+[package]
+name = "obs-soak"
+description = "Soak harness for the obs SDK — sustains a configurable event rate across many event types and asserts ObsSinkDropped == 0. Phase 5 / impl-plan tasks 5.1 + 5.2."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+obs-core = { workspace = true }
+obs-sdk = { workspace = true }
+tokio = { workspace = true, features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "signal",
+] }
+
+[lints]
+workspace = true

@@ -11,7 +11,7 @@
 //!
 //! Plus the `--schemas`/`--schemas-fds` runtime descriptor-pool path
 //! per spec 14 § 10.1 — used by future `decode`/`tail`/`query`
-//! subcommands; the foundation lives in [`schema_source`] and is
+//! subcommands; the foundation lives in `cmd::schema_source` and is
 //! consumed by `lint` / `validate` / `schema show` today.
 
 // The CLI is a synchronous process (clap-driven, short-lived); the

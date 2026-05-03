@@ -10,7 +10,11 @@
     clippy::disallowed_types
 )]
 
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::PathBuf,
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 fn obs_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_obs"))
@@ -286,16 +290,12 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+static TEMPDIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn tempdir() -> TempDir {
     let mut path = std::env::temp_dir();
-    path.push(format!(
-        "obs_cli_smoke_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let seq = TEMPDIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.push(format!("obs_cli_smoke_{}_{}", std::process::id(), seq));
     std::fs::create_dir_all(&path).unwrap();
     TempDir(path)
 }

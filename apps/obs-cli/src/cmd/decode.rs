@@ -12,7 +12,10 @@ use anyhow::{Context, Result};
 use buffa::Message;
 use clap::Args;
 use obs_core::audit_spool::recover;
-use obs_proto::obs::v1::{ObsBatch, ObsEnvelope};
+use obs_proto::{
+    ENVELOPE_FORMAT_VER,
+    obs::v1::{ObsBatch, ObsEnvelope},
+};
 
 #[derive(Debug, Args)]
 pub struct DecodeArgs {
@@ -33,6 +36,13 @@ pub fn run(args: DecodeArgs) -> Result<()> {
     }
     let bytes = read_source(args.file.as_ref())?;
     let batch = ObsBatch::decode_from_slice(&bytes).context("failed to decode ObsBatch")?;
+    if batch.format_ver != 0 && batch.format_ver != ENVELOPE_FORMAT_VER {
+        return Err(anyhow::anyhow!(
+            "incompatible envelope format_ver: batch reports {} but this CLI supports {}",
+            batch.format_ver,
+            ENVELOPE_FORMAT_VER,
+        ));
+    }
     let mut stdout = std::io::stdout().lock();
     for env in batch.events.iter() {
         let line = render_envelope_json(env);
