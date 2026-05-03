@@ -254,7 +254,13 @@ fn build_logs_request(payload: &OtlpLogPayload) -> ExportLogsServiceRequest {
             observed_time_unix_nano: r.observed_time_unix_nano,
             severity_number: severity_to_proto(r.severity_number),
             severity_text: r.severity_text.clone(),
-            body: None,
+            body: if r.body_bytes.is_empty() {
+                None
+            } else {
+                Some(AnyValue {
+                    value: Some(AnyValueKind::BytesValue(r.body_bytes.clone())),
+                })
+            },
             attributes: r.attributes.iter().map(|(k, v)| kv_str(k, v)).collect(),
             dropped_attributes_count: 0,
             flags: 0,

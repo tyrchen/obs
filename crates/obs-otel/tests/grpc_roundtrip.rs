@@ -61,7 +61,8 @@ fn test_grpc_exporter_should_round_trip_logs_through_mock_collector() {
                 ("event.name".to_string(), "obs.test.ObsHello".to_string()),
                 ("route".to_string(), "/probe".to_string()),
             ]),
-            body_bytes_len: 0,
+            body_bytes_len: 5,
+            body_bytes: b"hello".to_vec(),
         }],
     };
 
@@ -80,6 +81,20 @@ fn test_grpc_exporter_should_round_trip_logs_through_mock_collector() {
     assert_eq!(rec.trace_id.len(), 16);
     assert_eq!(rec.trace_id[0], 0x01);
     assert_eq!(rec.span_id.len(), 8);
+    // Spec 93 review fix: body bytes must round-trip via OTLP
+    // `LogRecord.body` (AnyValue::BytesValue), not be silently dropped.
+    let Some(body) = rec.body.as_ref() else {
+        panic!("expected LogRecord.body to be Some")
+    };
+    let Some(value) = body.value.as_ref() else {
+        panic!("expected AnyValue.value to be Some")
+    };
+    let any_kind = value;
+    let bytes = match any_kind {
+        opentelemetry_proto::tonic::common::v1::any_value::Value::BytesValue(b) => b.clone(),
+        _ => panic!("expected BytesValue, got {any_kind:?}"),
+    };
+    assert_eq!(bytes, b"hello");
 }
 
 #[test]

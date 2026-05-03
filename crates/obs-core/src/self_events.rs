@@ -92,7 +92,6 @@ pub(crate) fn emit_audit_spool_failed(reason: &str) {
 
 /// Emitted when the same envelope is dropped at the worker because
 /// it would re-enter an active emit (cycle protection).
-#[allow(dead_code)]
 pub(crate) fn emit_sink_dropped(tier: &str, reason: &str) {
     let mut env = base_envelope("obs.runtime.v1.ObsSinkDropped", PSeverity::SEVERITY_WARN);
     env.labels.insert("tier".to_string(), tier.to_string());

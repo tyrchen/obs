@@ -65,9 +65,14 @@ pub struct LogRecord {
     pub span_id: String,
     /// Per-record attributes (spec 20 § 2.3 maps `env.labels` 1:1).
     pub attributes: BTreeMap<String, String>,
-    /// Optional decoded body (left as `bytes(env.payload)` when no
-    /// schema decode requested).
+    /// Length of the payload bytes — informational; the actual bytes
+    /// live in [`Self::body_bytes`] for the gRPC exporter to ship.
     pub body_bytes_len: usize,
+    /// Buffa-encoded payload bytes (post-scrub) projected straight
+    /// through to OTLP `LogRecord.body` as `AnyValue::BytesValue`.
+    /// Empty when the upstream envelope had no payload. Spec 93
+    /// P0-6 review fix.
+    pub body_bytes: Vec<u8>,
 }
 
 /// One OTLP metric data point (spec 20 § 2.4).
@@ -157,6 +162,7 @@ pub fn project_log(env: &ObsEnvelope) -> LogRecord {
         span_id: env.span_id.clone(),
         attributes,
         body_bytes_len: env.payload.len(),
+        body_bytes: env.payload.clone(),
     }
 }
 

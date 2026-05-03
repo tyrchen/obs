@@ -202,8 +202,24 @@ pub fn enter_emit_envelope(observer: &Arc<dyn Observer>, env: ObsEnvelope) {
     let was_in = CAN_ENTER.with(|c| c.replace(false));
     if was_in {
         observer.emit_envelope(env);
+    } else {
+        // Spec 11 § 10 / spec 93 P2-13: surface the re-entry drop as
+        // an `ObsSinkDropped{tier=*, reason="reentry"}` self-event so
+        // operators can spot a sink that recursively emits. The
+        // emit-on-emit path itself is still suppressed by the
+        // `was_in == false` branch above; we only fire the metric.
+        let tier = match env.tier {
+            ::buffa::EnumValue::Known(t) => match t {
+                obs_proto::obs::v1::Tier::TIER_LOG => "log",
+                obs_proto::obs::v1::Tier::TIER_METRIC => "metric",
+                obs_proto::obs::v1::Tier::TIER_TRACE => "trace",
+                obs_proto::obs::v1::Tier::TIER_AUDIT => "audit",
+                _ => "unspecified",
+            },
+            _ => "unknown",
+        };
+        crate::self_events::emit_sink_dropped(tier, "reentry");
     }
-    // else: re-entry — the inner emit silently drops, matching spec.
     CAN_ENTER.with(|c| c.set(was_in));
 }
 
