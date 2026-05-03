@@ -238,6 +238,19 @@ pub(crate) fn write_parquet_atomic(
     bytes.sync_all().map_err(ParquetSinkError::Io)?;
     let size = bytes.metadata().map(|m| m.len()).unwrap_or(0);
     fs::rename(tmp_path, final_path).map_err(ParquetSinkError::Io)?;
+    // Spec 22 § 2.0a — durability bound. The data file is fsync'd
+    // above; without a parent-directory fsync, a crash immediately
+    // post-rename can lose the directory entry on ext4/APFS, leaving
+    // the .parquet bytes orphaned. Open the parent and `sync_all`.
+    if let Some(parent) = final_path.parent() {
+        if let Ok(dir) = fs::File::open(parent) {
+            // Errors on directory fsync are non-fatal — some
+            // platforms (notably tmpfs and FAT) reject the operation;
+            // the rename's own ordering still gives readers a
+            // bounded view.
+            let _ = dir.sync_all();
+        }
+    }
     Ok(size)
 }
 

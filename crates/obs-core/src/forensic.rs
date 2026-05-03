@@ -26,25 +26,16 @@ pub type ForensicLimiter =
 /// matches what observability vendors typically allow before paging.
 #[must_use]
 pub fn default_forensic_quota() -> Quota {
-    // SAFETY: 1 and 5 are both compile-time non-zero literals; the
-    // `match` here is purely to avoid `.expect()` per project lint
-    // policy (clippy::expect_used).
-    let per_sec = match NonZeroU32::new(1) {
-        Some(n) => n,
-        None => unreachable_zero(),
-    };
-    let burst = match NonZeroU32::new(5) {
-        Some(n) => n,
-        None => unreachable_zero(),
-    };
+    // The unwraps below are compile-time provable: `NonZeroU32::new`
+    // on a non-zero literal cannot return `None`. We can't currently
+    // express that to the type system without `unsafe`, which the
+    // crate forbids. Allow the lint locally with a justifying
+    // comment per CLAUDE.md "Code Quality" guidance.
+    #[allow(clippy::unwrap_used)]
+    let per_sec = NonZeroU32::new(1).unwrap();
+    #[allow(clippy::unwrap_used)]
+    let burst = NonZeroU32::new(5).unwrap();
     Quota::per_second(per_sec).allow_burst(burst)
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)]
-fn unreachable_zero() -> NonZeroU32 {
-    panic!("non-zero literal yielded zero (compiler bug)")
 }
 
 /// Per-callsite limiter accessor. The macro expansion stores a

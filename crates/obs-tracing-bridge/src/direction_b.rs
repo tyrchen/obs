@@ -127,10 +127,29 @@ impl ObsToTracingSink {
     }
 
     /// Override span emission mode.
+    ///
+    /// Spec 30 § 3.5: when `OnScope` is selected and `OtlpTraceSink`
+    /// is also installed in the same observer, the user gets two OTel
+    /// spans per logical operation. The runtime emits one
+    /// `ObsConfigInconsistent` self-event at observer init naming
+    /// both components. The detection lives in the user's
+    /// `StandardObserverBuilder::build` path; this setter records the
+    /// chosen mode so a future builder integration can read it back.
     #[must_use]
     pub fn with_span_emission(mut self, m: SpanEmissionMode) -> Self {
+        if matches!(m, SpanEmissionMode::OnScope) {
+            emit_config_inconsistent_warning();
+        }
         self.span_emission = m;
         self
+    }
+
+    /// Returns the configured span-emission mode (used by builder
+    /// integrations that detect the OTLP-trace-sink coexistence
+    /// foot-gun per spec 30 § 3.5).
+    #[must_use]
+    pub fn span_emission(&self) -> SpanEmissionMode {
+        self.span_emission
     }
 
     /// Cache size (unique envelopes seen). Used by tests.
@@ -480,6 +499,30 @@ fn emit_callsite_unresolved(callsite_id: u64) {
     env.labels
         .insert("callsite_id".to_string(), format!("{callsite_id:#018x}"));
     obs_core::observer().emit_envelope(env);
+}
+
+/// One-shot warning when a user opts into `SpanEmissionMode::OnScope`.
+/// Per spec 30 § 3.5, this is the half-of-the-coexistence problem the
+/// bridge can detect; the OTLP-trace-sink half lives in the observer
+/// builder. Rate-limited to one event per process by the OnceLock.
+fn emit_config_inconsistent_warning() {
+    use std::sync::OnceLock;
+    static FIRED: OnceLock<()> = OnceLock::new();
+    let _ = FIRED.get_or_init(|| {
+        let mut env = ObsEnvelope {
+            full_name: "obs.runtime.v1.ObsConfigInconsistent".to_string(),
+            tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
+            sev: ::buffa::EnumValue::Known(obs_proto::obs::v1::Severity::SEVERITY_WARN),
+            ..Default::default()
+        };
+        env.labels.insert(
+            "reason".to_string(),
+            "ObsToTracingSink::OnScope may produce duplicate spans when OtlpTraceSink is also \
+             installed (spec 30 § 3.5)"
+                .to_string(),
+        );
+        obs_core::observer().emit_envelope(env);
+    });
 }
 
 struct RateLimited {
