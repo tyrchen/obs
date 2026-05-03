@@ -485,8 +485,43 @@ impl Observer for StandardObserver {
     }
 
     fn shutdown_blocking(&self, timeout: std::time::Duration) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let _ = handle.block_on(tokio::time::timeout(timeout, self.shutdown()));
+        // Caller contexts the panic-hook + drain helpers must work in:
+        // (1) outside any tokio runtime → spin up a single-thread one
+        //     inline and run the async shutdown to completion;
+        // (2) on a tokio worker thread → use `block_in_place` so we
+        //     can `Handle::block_on` without dead-locking;
+        // (3) on a current-thread runtime → cannot block the active
+        //     executor reentrantly. We log a one-shot warning and
+        //     fall through; callers in this context should `await`
+        //     `Observer::shutdown()` directly. Spec 93 P2 follow-up.
+        match tokio::runtime::Handle::try_current() {
+            Err(_) => {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    let _ = rt.block_on(tokio::time::timeout(timeout, self.shutdown()));
+                }
+            }
+            Ok(handle) => {
+                if matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::MultiThread
+                ) {
+                    tokio::task::block_in_place(|| {
+                        let _ = handle.block_on(tokio::time::timeout(timeout, self.shutdown()));
+                    });
+                } else {
+                    // Case 3: current-thread runtime — the only safe
+                    // option is to refuse silently rather than panic.
+                    // Operators in this context are expected to call
+                    // the async `Observer::shutdown()` themselves.
+                    eprintln!(
+                        "obs: shutdown_blocking called from a current-thread tokio runtime; use \
+                         `Observer::shutdown().await` instead"
+                    );
+                }
+            }
         }
     }
 

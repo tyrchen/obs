@@ -1,0 +1,19 @@
+[package]
+name = "obs-example-worker-pool"
+description = "Worker-pool simulator emitting MEASUREMENT-class events feeding the obs metric tier."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+obs-core = { workspace = true }
+obs-otel = { workspace = true }
+obs-sdk = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

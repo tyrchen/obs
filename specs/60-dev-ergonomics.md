@@ -650,3 +650,22 @@ backs every claim in this document:
 
 CI runs this suite on every PR; failure here is treated as severely
 as a clippy regression.
+
+## 14. Examples
+
+A copy-pasteable example is the second-best documentation (the
+quickstart in § 2 is the first). Three runnable apps under
+[`examples/`](../examples/) cover the three observability surfaces:
+
+| Example | Surface | Demonstrates |
+| --- | --- | --- |
+| [`http-service`](../examples/http-service/) | tracing | axum service, `obs-tower::ObsHttpLayer::server()`, W3C `traceparent` parse + synthesise, severity escalation on 4xx, OTLP/gRPC log export |
+| [`batch-pipeline`](../examples/batch-pipeline/) | analytics | LOG + METRIC tier events to `ParquetSink`, partitioned `obs_events-*.parquet` output, async drain pattern |
+| [`worker-pool`](../examples/worker-pool/) | metrics | MEASUREMENT-flagged fields, `OtlpMetricSink` via `GrpcOtlpExporter` (real collector) or `StdoutDebugExporter` (zero-dep dev) |
+
+Every example is a workspace member (`cargo run -p
+obs-example-<name>`); each ships a `README.md` that explains inputs,
+expected output, and any known gaps tracked in spec 93. The intent
+is to be the "copy this into your project and adapt" reference for
+new SDK users — they should not have to read the source of `apps/`
+or `crates/obs-sdk/tests/dev_ergonomics/` to find a worked pattern.
