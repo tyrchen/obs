@@ -705,6 +705,33 @@ fn lint_block(
         });
     }
 
+    // L014: TRACE_ID / SPAN_ID / PARENT_SPAN_ID role fields must be
+    // named with the matching envelope slot. Spec 94 § 3.1 / E-6.
+    for f in fields {
+        let expected = match f.role.as_str() {
+            "trace_id" => Some("trace_id"),
+            "span_id" => Some("span_id"),
+            "parent_span_id" => Some("parent_span_id"),
+            _ => None,
+        };
+        if let Some(expected_name) = expected {
+            let actual = f.ident.to_string();
+            if actual != expected_name {
+                let msg = format!(
+                    "obs L014: field `{actual}` declares `#[obs({role})]` but is not named \
+                     `{expected_name}`\nnote: codegen projects fields whose role is TRACE_ID / \
+                     SPAN_ID / PARENT_SPAN_ID into the envelope slot of the same name; renaming \
+                     keeps the analytics column predictable.\nhelp: rename the field to \
+                     `{expected_name}` or change the role to `attribute`.",
+                    role = f.role
+                );
+                asserts.push(quote! {
+                    const _: () = ::std::panic!(#msg);
+                });
+            }
+        }
+    }
+
     // L012: field name must not shadow an envelope-reserved name. Spec
     // 12 § 3.4 / spec 11 § 5.
     const RESERVED: &[&str] = &[
