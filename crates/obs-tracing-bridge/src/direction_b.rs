@@ -113,6 +113,13 @@ impl Default for ObsToTracingSink {
 
 impl ObsToTracingSink {
     /// New sink with default modes.
+    ///
+    /// Spec 95 § 3.13 / P1-AG: `dynamic_target` defaults to `true` so
+    /// every `(full_name, severity)` pair lands at a distinct
+    /// `tracing::Metadata`. Downstream `EnvFilter` directives like
+    /// `myapp.v1.ObsRequestCompleted=trace` work correctly out of the
+    /// box. Opt out via `with_dynamic_target(false)` to recover the
+    /// legacy single-static-callsite behaviour.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -121,17 +128,15 @@ impl ObsToTracingSink {
             span_emission: SpanEmissionMode::default(),
             rate_limited_no_dispatcher: Arc::new(RateLimited::new(60)),
             interned_misses: Arc::new(AtomicU64::new(0)),
-            dynamic_target: false,
+            dynamic_target: true,
         }
     }
 
-    /// Enable per-(`full_name`, severity) synthetic `Metadata`. With
-    /// this on, `tracing_subscriber::fmt` prints the envelope's
-    /// `full_name` as the target (`myapp.v1.ObsRequestCompleted INFO …`)
-    /// instead of the generic `obs.bridge`. The first dispatch for a
-    /// given pair leaks a small `Metadata`/`Callsite` pair via
-    /// `Box::leak` and caches the pointer in a `DashMap` so subsequent
-    /// dispatches stay allocation-free. Spec 93 P1-4.
+    /// Toggle per-(`full_name`, severity) synthetic `Metadata`. On by
+    /// default; flip off to revert to the single-callsite legacy mode
+    /// (spec 30 § 3.3). The first dispatch for a given pair leaks a
+    /// small `Metadata`/`Callsite` via `Box::leak` and caches the
+    /// pointer in a `DashMap`. Spec 95 § 3.13 / spec 93 P1-4.
     #[must_use]
     pub fn with_dynamic_target(mut self, on: bool) -> Self {
         self.dynamic_target = on;
@@ -718,6 +723,49 @@ mod tests {
         assert_eq!(
             sev_to_level(::buffa::EnumValue::Known(PSeverity::SEVERITY_FATAL)),
             Level::ERROR
+        );
+    }
+
+    #[test]
+    fn test_synthetic_metadata_should_differ_per_full_name() {
+        // Spec 95 § 3.13 / P1-AG: every (full_name, sev) gets its own
+        // tracing::Metadata. Subscribers can therefore filter the
+        // event stream by event type.
+        let m1 = synthetic_metadata("myapp.v1.ObsA", Level::INFO);
+        let m2 = synthetic_metadata("myapp.v1.ObsB", Level::INFO);
+        let p1 = std::ptr::from_ref(m1);
+        let p2 = std::ptr::from_ref(m2);
+        assert_ne!(p1, p2, "distinct full_names must yield distinct Metadata");
+        assert_ne!(m1.target(), m2.target());
+    }
+
+    #[test]
+    fn test_synthetic_metadata_should_differ_per_severity() {
+        let info = synthetic_metadata("myapp.v1.ObsA", Level::INFO);
+        let warn = synthetic_metadata("myapp.v1.ObsA", Level::WARN);
+        let p_info = std::ptr::from_ref(info);
+        let p_warn = std::ptr::from_ref(warn);
+        assert_ne!(
+            p_info, p_warn,
+            "distinct severities must yield distinct Metadata"
+        );
+    }
+
+    #[test]
+    fn test_synthetic_metadata_should_be_cached() {
+        // Same (full_name, sev) returns the same pointer.
+        let a = synthetic_metadata("myapp.v1.ObsCached", Level::INFO);
+        let b = synthetic_metadata("myapp.v1.ObsCached", Level::INFO);
+        assert!(std::ptr::eq(a, b));
+    }
+
+    #[test]
+    fn test_default_constructor_should_enable_dynamic_target() {
+        let sink = ObsToTracingSink::new();
+        assert!(
+            sink.dynamic_target,
+            "spec 95 § 3.13: dynamic_target is on by default so subscribers can filter by event \
+             type"
         );
     }
 }

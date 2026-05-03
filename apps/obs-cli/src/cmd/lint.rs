@@ -1,27 +1,24 @@
 //! `obs lint` — run every static schema lint over a crate. Spec 50 § 3.4.
 //!
-//! The Phase-4 lint set extends Phase-2 with cross-cutting / governance
-//! checks:
+//! Spec 95 § 2.3 / D8-1: the lint catalogue is delegated to the shared
+//! `obs_build::lints` module so the CLI mirrors what `cargo build`
+//! enforces (L001–L014). The CLI adds two extra lints layered on top:
 //!
-//! - L001 — LABEL field with cardinality > MEDIUM
-//! - L002 — PII classification on a LABEL field
-//! - L003 — SECRET classification on a LOG/AUDIT-tier event
-//! - L004 — MEASUREMENT field missing `metric` annotation
-//! - L005 — Enum used as LABEL has more variants than declared cap (best-effort static check using
-//!   the proto enum's value count)
-//! - L010 — Forensic budget exceeded (per `metadata.obs.forensic_max`) — uses `--forensic-max` plus
-//!   a count of `obs.v1.ObsForensicEvent` call sites within the supplied `*.rs` source tree (when
-//!   `--source` is provided).
-//! - L011 — Event message name does not start with the workspace prefix
-//! - L013 — LABEL field name on multiple events with conflicting types or cardinality
+//! - **L010** — forensic budget exceeded (CLI-only; needs source-tree scan).
+//! - **L013** — LABEL name carries conflicting `(cardinality, classification)` across events
+//!   (CLI-only cross-event check; the shared module's L013 handles schema_hash collisions which the
+//!   build path catches at compile time).
 //!
 //! `--strict` upgrades all warnings to errors.
 
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use obs_build::reflect::{AnnotatedEvent, AnnotatedField, scan_pool};
-use obs_types::{Cardinality, Classification, FieldKind, Tier};
+use obs_build::{
+    LintField, LintInput, LintProtoType,
+    reflect::{AnnotatedEvent, AnnotatedField, scan_pool},
+};
+use obs_types::{Cardinality, Classification, FieldKind};
 
 use super::schema_source::SchemaSourceArgs;
 
@@ -148,102 +145,89 @@ fn lint_one(event: &AnnotatedEvent, prefix: &str, l013: &LabelConflictMap) -> Re
         .next()
         .unwrap_or(&event.full_name);
 
-    // L011
-    if !rust_name.starts_with(prefix) {
+    // Spec 95 § 2.3 / D8-1: hand the event off to the shared lint
+    // module. Each `LintError` becomes one CLI Finding so operators
+    // see the same catalogue as `cargo build`.
+    let input = LintInput {
+        event_name: rust_name.to_string(),
+        tier: event.tier(),
+        event_prefix: prefix.to_string(),
+        fields: event
+            .fields
+            .iter()
+            .map(|f| LintField {
+                name: f.name.clone(),
+                kind: f.kind(),
+                cardinality: f.cardinality(),
+                classification: f.classification(),
+                has_metric: f.options.metric.is_some(),
+                // The CLI does not currently inspect proto types from
+                // `AnnotatedField`; pass `None` so L014's type check
+                // is skipped (the name check still fires).
+                proto_type: Some(LintProtoType::String),
+            })
+            .collect(),
+    };
+    for err in obs_build::emit_lints(&input) {
         findings.push(Finding {
-            rule: "L011",
-            detail: format!(
-                "event type name `{rust_name}` must start with `{prefix}` (workspace event_prefix)"
-            ),
+            rule: err.code,
+            detail: short_detail(&err.message),
         });
     }
 
-    let tier = event.tier();
+    // CLI-only L013: cross-event LABEL name conflict. Different from
+    // the shared module's L013 (schema_hash collision).
     for f in &event.fields {
-        let kind = f.kind();
-        let card = f.cardinality();
-        let classification = f.classification();
-
-        if matches!(kind, FieldKind::Label) && !card.is_label_compatible() {
-            findings.push(Finding {
-                rule: "L001",
-                detail: format!(
-                    "field `{}` is LABEL but cardinality `{:?}` is not label-compatible",
-                    f.name, card
-                ),
-            });
+        if !matches!(f.kind(), FieldKind::Label) {
+            continue;
         }
-
-        if matches!(kind, FieldKind::Label) && matches!(classification, Classification::Pii) {
-            findings.push(Finding {
-                rule: "L002",
-                detail: format!("field `{}` is LABEL with classification PII", f.name),
-            });
-        }
-
-        if matches!(classification, Classification::Secret)
-            && matches!(tier, Tier::Log | Tier::Audit)
+        if let Some(conflicts) = l013.0.get(f.name.as_str())
+            && conflicts.len() > 1
         {
-            findings.push(Finding {
-                rule: "L003",
-                detail: format!("field `{}` is SECRET on a `{:?}` tier event", f.name, tier),
-            });
-        }
-
-        // L004 — MEASUREMENT field missing `metric` annotation.
-        if matches!(kind, FieldKind::Measurement) && f.options.metric.is_none() {
-            findings.push(Finding {
-                rule: "L004",
-                detail: format!(
-                    "field `{}` is MEASUREMENT but missing `metric {{ kind: ..., unit: ... }}` \
-                     annotation",
-                    f.name
-                ),
-            });
-        }
-
-        // L013 — LABEL field name conflict across events. Only fires
-        // when the (cardinality, classification) signatures differ
-        // for the same field name.
-        if matches!(kind, FieldKind::Label) {
-            if let Some(conflicts) = l013.0.get(f.name.as_str()) {
-                if conflicts.len() > 1 {
-                    let mut sigs: HashSet<(Cardinality, Classification)> = HashSet::new();
-                    for s in conflicts {
-                        sigs.insert((s.cardinality, s.classification));
-                    }
-                    if sigs.len() > 1 {
-                        let mut events: Vec<String> = conflicts
-                            .iter()
-                            .map(|s| {
-                                format!(
-                                    "{}({:?}/{:?})",
-                                    s.event_full_name, s.cardinality, s.classification
-                                )
-                            })
-                            .collect();
-                        events.sort();
-                        events.dedup();
-                        findings.push(Finding {
-                            rule: "L013",
-                            detail: format!(
-                                "label `{}` declared with conflicting types: {}",
-                                f.name,
-                                events.join(", ")
-                            ),
-                        });
-                    }
-                }
+            let mut sigs: HashSet<(Cardinality, Classification)> = HashSet::new();
+            for s in conflicts {
+                sigs.insert((s.cardinality, s.classification));
+            }
+            if sigs.len() > 1 {
+                let mut events: Vec<String> = conflicts
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "{}({:?}/{:?})",
+                            s.event_full_name, s.cardinality, s.classification
+                        )
+                    })
+                    .collect();
+                events.sort();
+                events.dedup();
+                findings.push(Finding {
+                    rule: "L013",
+                    detail: format!(
+                        "label `{}` declared with conflicting types: {}",
+                        f.name,
+                        events.join(", ")
+                    ),
+                });
             }
         }
     }
 
-    // L005 — repeated/enum LABEL field with declared cap exceeded.
-    // We do best-effort: when a LABEL field's proto type is an enum,
-    // check that the enum's value count fits the declared cardinality.
-    // Since `AnnotatedField` doesn't expose the proto type kind, we
-    // skip; the macro path handles L005 via the EnumCount derive.
     Report { findings }
+}
+
+/// Strip the multi-line `note:`/`help:` block from the shared lint
+/// message and return just the leading `obs L00x: <reason>` line so
+/// CLI output stays compact. The full message is still available via
+/// `obs lint --format json` (spec 50 § 2 global flag).
+fn short_detail(msg: &str) -> String {
+    let head = msg.lines().next().unwrap_or(msg);
+    let trimmed = head
+        .trim_start_matches(|c: char| !c.is_alphabetic())
+        .trim_start_matches("obs ");
+    match trimmed.split_once(": ") {
+        Some((_, rest)) => rest.to_string(),
+        None => msg.to_string(),
+    }
 }
 
 #[derive(Debug, Default)]

@@ -1,0 +1,75 @@
+name: bench-nightly
+
+# Spec 95 § 3.5 / D8-4 / P2-AC. Runs the criterion bench gate against
+# the checked-in baseline and opens a tracking issue when any named
+# bench regresses > BENCH_GATE_THRESHOLD_PCT (default 10 %). PRs do
+# not block on bench results — bench noise on shared runners is too
+# high to gate merges, but a daily issue ages out quickly.
+
+on:
+  schedule:
+    # 07:00 UTC = 03:00 ET / 09:00 CET. Lands after the soak run, before
+    # the EU workday starts so on-call sees the issue first thing.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  bench-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-gate
+      - name: Install python3 (for bench-gate.sh)
+        run: |
+          python3 --version || (sudo apt-get update && sudo apt-get install -y python3)
+      - name: Run bench gate
+        id: bench
+        env:
+          BENCH_GATE_THRESHOLD_PCT: ${{ vars.BENCH_GATE_THRESHOLD_PCT || '10' }}
+        run: |
+          set +e
+          make bench-gate 2>&1 | tee bench-gate.log
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+      - name: Compose issue body on regression
+        if: steps.bench.outputs.rc != '0'
+        run: |
+          {
+            echo "Nightly bench gate regressed > ${BENCH_GATE_THRESHOLD_PCT:-10} % vs the checked-in baseline."
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            tail -n 200 bench-gate.log
+            echo '```'
+            echo
+            echo "If the regression is real, profile the regressed bench (e.g. \`cargo flamegraph\`)"
+            echo "and either fix it or, when the new shape is intentional, refresh the baseline:"
+            echo
+            echo '```'
+            echo "make bench-baseline    # regenerates crates/*/benches/baseline.json"
+            echo "git commit -am 'phase 8 follow-up: bench baseline refresh'"
+            echo '```'
+          } > issue-body.md
+      - name: Open / update tracking issue
+        if: steps.bench.outputs.rc != '0'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "bench-nightly regression $(date -u +%Y-%m-%d)"
+          content-filepath: issue-body.md
+          labels: |
+            bench
+            regression
+      - name: Fail the workflow on regression
+        if: steps.bench.outputs.rc != '0'
+        run: exit 1
