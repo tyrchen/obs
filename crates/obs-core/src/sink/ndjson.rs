@@ -66,15 +66,22 @@ impl Sink for NdjsonFileSink {
         let mut maker = self.writer.lock();
         let mut w = (maker.make)();
         // Reuse the JSON formatter from StdoutSink for consistency.
+        // Spec 14 § 5 / spec 93 P0-8: render the *scrubbed* payload —
+        // the worker has already redacted classified fields, and
+        // `env.schema()`'s `render_json` walks the bytes here.
         let envelope = env.envelope();
-        let value = render_json_value(envelope);
+        let value = render_json_value(envelope, env.payload(), env.schema());
         let _ = writeln!(&mut w, "{value}");
         let _ = w.flush();
         self.written.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-fn render_json_value(env: &obs_proto::obs::v1::ObsEnvelope) -> serde_json::Value {
+fn render_json_value(
+    env: &obs_proto::obs::v1::ObsEnvelope,
+    payload: &[u8],
+    schema: Option<&'static dyn crate::EventSchemaErased>,
+) -> serde_json::Value {
     use serde_json::{Map, Value};
     let mut root = Map::new();
     root.insert("ts_ns".into(), Value::from(env.ts_ns));
@@ -112,6 +119,17 @@ fn render_json_value(env: &obs_proto::obs::v1::ObsEnvelope) -> serde_json::Value
     }
     if !labels.is_empty() {
         root.insert("labels".into(), Value::Object(labels));
+    }
+    // Project the typed payload (spec 14 § 4.2) so consumers see the
+    // typed fields, not just the wire-bytes blob. Skipped when schema
+    // is unknown or the projection errors (truncation).
+    if !payload.is_empty()
+        && let Some(s) = schema
+    {
+        let mut payload_map = Map::new();
+        if s.render_json(payload, &mut payload_map).is_ok() && !payload_map.is_empty() {
+            root.insert("payload".into(), Value::Object(payload_map));
+        }
     }
     Value::Object(root)
 }

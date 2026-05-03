@@ -205,7 +205,9 @@ impl OtlpLogSinkBuilder {
 
 impl Sink for OtlpLogSink {
     fn deliver(&self, env: ScrubbedEnvelope<'_>) {
-        let owned = env.envelope().clone();
+        // Spec 14 § 5 / spec 93 P0-8: ship the *scrubbed* payload.
+        let mut owned = env.envelope().clone();
+        owned.payload = env.payload().to_vec();
         if let Some(batch) = self.batch.push(owned) {
             self.dispatch(batch);
         }
@@ -367,7 +369,10 @@ impl OtlpMetricSinkBuilder {
 
 impl Sink for OtlpMetricSink {
     fn deliver(&self, env: ScrubbedEnvelope<'_>) {
-        if let Some(batch) = self.batch.push(env.envelope().clone()) {
+        // Spec 14 § 5 / spec 93 P0-8: ship the *scrubbed* payload.
+        let mut owned = env.envelope().clone();
+        owned.payload = env.payload().to_vec();
+        if let Some(batch) = self.batch.push(owned) {
             self.dispatch(batch);
         }
     }
@@ -519,7 +524,10 @@ impl OtlpTraceSinkBuilder {
 
 impl Sink for OtlpTraceSink {
     fn deliver(&self, env: ScrubbedEnvelope<'_>) {
-        if let Some(batch) = self.batch.push(env.envelope().clone()) {
+        // Spec 14 § 5 / spec 93 P0-8: ship the *scrubbed* payload.
+        let mut owned = env.envelope().clone();
+        owned.payload = env.payload().to_vec();
+        if let Some(batch) = self.batch.push(owned) {
             self.dispatch(batch);
         }
     }

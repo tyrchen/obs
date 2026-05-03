@@ -74,6 +74,7 @@ of 30/71, M3 closes everything else.
 | [90-roadmap.md](./90-roadmap.md) | Roadmap | Phased delivery M-1 → M4 with exit criteria, build-order graph, perf gates, definition of done (stakeholder-facing) |
 | [91-impl-plan.md](./91-impl-plan.md) | Impl-plan | Dependency-ordered build plan (engineer-facing); pairs 1:1 with roadmap milestones; covers readiness assessment, phase-by-phase task breakdown with effort estimates, and the three principles that drove the ordering |
 | [92-rfc-v1.md](./92-rfc-v1.md) | RFC | Public-comment-window summary for the v1.0 freeze (Phase 5.8 / impl-plan 5.8) |
+| [93-improvements-review.md](./93-improvements-review.md) | Review | Full-workspace audit of impl vs specs 10–72; P0/P1/P2/P3 backlog with file:line citations and a six-phase remediation plan |
 | [99-key-decisions.md](./99-key-decisions.md) | Reference | Consolidated load-bearing design decisions (D1–D49) |
 
 ## Reading order

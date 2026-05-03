@@ -7,12 +7,15 @@
 mod arrow;
 mod callsite_registry;
 mod erased;
+mod payload_decode;
 mod scrubbed;
+mod scrubber;
 
 use std::{collections::HashMap, sync::Arc};
 
 use linkme::distributed_slice;
 use obs_proto::obs::v1::ObsEnvelope;
+pub use scrubber::scrub_payload;
 
 pub use self::{
     arrow::{ArrowEventSchema, ArrowField, ArrowLeafType, ArrowSchemaModel, ENVELOPE_COLUMNS},

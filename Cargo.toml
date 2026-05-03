@@ -76,6 +76,7 @@ heck = "0.5"
 
 # buffa for proto encoding
 buffa = { version = "0.4", default-features = false, features = ["std"] }
+secrecy = { version = "0.10", features = ["serde"] }
 buffa-build = "0.4"
 buffa-descriptor = "0.4"
 buffa-reflect = "0.1"

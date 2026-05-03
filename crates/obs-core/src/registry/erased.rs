@@ -76,54 +76,59 @@ pub trait EventSchemaErased: Sealed + Send + Sync + 'static {
     }
 
     /// Decode the payload into a flat `KeyValueList` body for OTLP
-    /// `LogRecord.body`. Phase-1 default impl is a stub. Spec 14 § 2.
+    /// `LogRecord.body`. The default impl walks the buffa wire format
+    /// using the schema's [`Self::fields`] table; per spec 14 § 8 it
+    /// silently skips unknown field numbers. Codegen may override for
+    /// custom projection. Spec 14 § 2 / spec 93 P0-4.
     ///
     /// # Errors
     ///
-    /// Returns `DecodeError` when the payload cannot be decoded.
+    /// Returns `DecodeError::Truncated` when the payload ends mid-field.
     fn decode_to_otlp_kv(
         &self,
         payload: &[u8],
         out: &mut Vec<(&'static str, OtlpValue)>,
     ) -> Result<(), DecodeError> {
-        let _ = (payload, out);
-        Err(DecodeError::Invariant(
-            "decode_to_otlp_kv: Phase 2 codegen not yet emitted",
-        ))
+        super::payload_decode::decode_to_otlp_kv_default(payload, self.fields(), out)
     }
 
-    /// Render the payload as a JSON object value (no envelope).
-    /// Phase-1 default impl yields an empty object; codegen overrides
-    /// this with a typed projection in Phase 2 (task 2.1). Spec 14 § 2
-    /// / § 4.2.
+    /// Render the payload as a JSON object value (no envelope). The
+    /// default impl walks the wire format and projects each declared
+    /// field; Pii/Secret-classified fields are projected as the string
+    /// `"<redacted>"` so the JSON output never carries the secret
+    /// even if the upstream caller forgot to scrub. Spec 14 § 2 /
+    /// § 4.2 / spec 93 P0-4.
     ///
     /// # Errors
     ///
-    /// Returns `DecodeError` if the payload is truncated or contains
-    /// an unrecognised tag in strict mode.
+    /// Returns `DecodeError::Truncated` when the payload ends mid-field.
     fn render_json(
         &self,
         payload: &[u8],
         out: &mut serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DecodeError> {
-        let _ = (payload, out);
-        Ok(())
+        super::payload_decode::render_json_default(payload, self.fields(), out)
     }
 
-    /// Strip / redact classified fields in place. Phase-1 default impl
-    /// is a passthrough; codegen overrides this in Phase 2.
-    /// Spec 14 § 2 + spec 70 § 4.
+    /// Strip / redact classified fields in place. The default impl
+    /// walks the buffa wire format using the schema's [`Self::fields`]
+    /// table and re-emits the payload with `<redacted-{name}>`
+    /// markers for `Classification::Pii` / `Classification::Secret`
+    /// length-delimited fields, dropping classified varint/fixed
+    /// fields entirely (proto3 default elision). Spec 14 § 2 + spec
+    /// 70 § 4 / spec 93 P0-1.
     ///
     /// # Errors
     ///
-    /// Returns `ScrubError` when re-encoding the payload fails.
+    /// Returns `ScrubError::ReencodeFailed` when the payload is
+    /// truncated mid-field. The error name pinpoints the failing
+    /// decode site.
     fn scrub_for_log<'a>(
         &self,
         payload: &'a [u8],
         scratch: &'a mut BytesMut,
     ) -> Result<&'a [u8], ScrubError> {
-        let _ = scratch;
-        Ok(payload)
+        super::scrubber::scrub_payload(payload, self.fields(), scratch)
     }
 
     /// Returns the codegen-derived OTel attribute set for the per-event

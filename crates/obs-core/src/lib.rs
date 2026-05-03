@@ -49,6 +49,7 @@ pub mod sink;
 pub mod span_trace;
 #[cfg(feature = "test")]
 pub mod test;
+pub mod wire;
 
 pub use aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame};
 pub use callsite::ObsCallsite;
@@ -76,7 +77,7 @@ pub use registry::{
     ArrowEventSchema, ArrowField, ArrowLeafType, ArrowSchemaModel, ArrowStructBuilder,
     CallsiteRecord, CallsiteSource, DecodeError, ENVELOPE_COLUMNS, EVENT_SCHEMAS,
     EventSchemaErased, ObsCallsiteRegistry, OtelAttributeView, OtlpValue, SchemaRegistry,
-    ScrubError, ScrubbedEnvelope, callsite_id,
+    ScrubError, ScrubbedEnvelope, callsite_id, scrub_payload,
 };
 pub use sampling::{SamplingDecision, decide as sample_decide};
 pub use scope::{ScopeField, ScopeFrame, ScopeGuard, ScopeKind};
@@ -105,6 +106,7 @@ pub mod __private {
         obs::v1::{SamplingReason as ProtoSamplingReason, Tier as ProtoTier},
     };
     pub use obs_types::*;
+    pub use secrecy;
     pub use serde_json;
 
     pub use crate::{
@@ -113,6 +115,7 @@ pub mod __private {
         forensic::{ForensicLimiter, ensure_limiter, try_acquire_forensic},
         registry::{EVENT_SCHEMAS, EventSchemaErased, Sealed},
         scope::{ScopeField, ScopeGuard, ScopeKind},
+        wire::BuffaEncodeField,
     };
 
     /// L011 helper: const-time test that a string starts with a known

@@ -5,6 +5,12 @@
 //!
 //! Most downstream apps depend only on `obs-sdk`. Spec 61 § 2.11.
 
+/// Typed wrappers for `Classification::Secret` fields. Decision D6-2:
+/// SECRET-classified event fields should be declared as
+/// `secrecy::SecretString` / `secrecy::SecretBox<T>` so the in-memory
+/// value is also redacted at `Debug` time. The runtime scrubber (spec
+/// 14 § 5) then redacts the encoded bytes before any sink sees them.
+pub use obs_core::__private::secrecy;
 #[cfg(feature = "dev")]
 pub use obs_core::sink::FormatterStyle;
 pub use obs_core::{

@@ -441,26 +441,33 @@ fn project_impl(fields: &[ObsField]) -> TokenStream {
 }
 
 fn encode_payload_impl(fields: &[ObsField]) -> TokenStream {
-    // Phase-1 simplification: serialize the named fields as JSON
-    // bytes. Real buffa encoding lands in Phase 2 task 2.1. The
-    // JSON form is good enough for stdout and in-memory sinks; OTLP
-    // and analytics sinks are not on Phase-1's path.
-    let entries = fields.iter().map(|f| {
+    // Phase-6.1 / spec 93 P0-2 + decision D6-1: emit buffa wire-format
+    // bytes via `BuffaEncodeField`, byte-identical to what
+    // `buffa::Message::write_to` produces for the proto-first path.
+    //
+    // The trait is implemented on every supported scalar type plus
+    // `Option<T>`, `secrecy::SecretString`, and `secrecy::SecretBox<T>`,
+    // so the macro does not need to dispatch on the syntactic field
+    // type — trait resolution picks the right wire encoding at compile
+    // time. Fields whose value equals the proto3 default (empty string,
+    // zero, false, …) are elided.
+    let stmts = fields.iter().enumerate().map(|(i, f)| {
         let ident = &f.ident;
-        let name = LitStr::new(&ident.to_string(), Span::call_site());
-        quote! { (#name, ::std::string::ToString::to_string(&self.#ident)) }
+        let number: u32 = if f.proto_number == 0 {
+            (i as u32) + 1
+        } else {
+            f.proto_number
+        };
+        quote! {
+            <_ as ::obs_core::__private::BuffaEncodeField>::buffa_encode_field(
+                &self.#ident,
+                #number,
+                buf,
+            );
+        }
     });
     quote! {
-        let pairs: &[(&'static str, ::std::string::String)] = &[#(#entries),*];
-        let mut map = ::std::collections::BTreeMap::<&'static str, ::std::string::String>::new();
-        for (k, v) in pairs.iter().cloned() {
-            map.insert(k, v);
-        }
-        if let ::std::result::Result::Ok(s) =
-            ::obs_core::__private::serde_json::to_string(&map)
-        {
-            buf.extend_from_slice(s.as_bytes());
-        }
+        #(#stmts)*
     }
 }
 

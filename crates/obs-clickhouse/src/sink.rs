@@ -140,7 +140,12 @@ impl ClickHouseSink {
 
 impl Sink for ClickHouseSink {
     fn deliver(&self, env: ScrubbedEnvelope<'_>) {
-        let envelope = env.envelope().clone();
+        // Spec 14 § 5 / spec 93 P0-8: persist the *scrubbed* payload,
+        // not `env.envelope().payload`. The worker already ran the
+        // schema's scrubber; if we cloned the original envelope we
+        // would ship classified bytes to ClickHouse.
+        let mut envelope = env.envelope().clone();
+        envelope.payload = env.payload().to_vec();
         // Take, append, possibly flush. Release the lock before
         // invoking any I/O.
         let to_flush = {

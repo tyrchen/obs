@@ -152,31 +152,25 @@ impl ParquetSink {
 
 impl Sink for ParquetSink {
     fn deliver(&self, env: ScrubbedEnvelope<'_>) {
+        // Spec 14 § 5 / spec 93 P0-8: persist the *scrubbed* payload
+        // bytes — `env.envelope().payload` would be the original
+        // pre-scrub bytes and would leak Pii/Secret fields into the
+        // Parquet `payload_proto` column.
+        let scrubbed_payload = env.payload().to_vec();
         let envelope = env.envelope();
-        let key = if envelope.ts_ns == 0 {
-            // Stamp synthetic now.
+        let mut clone = envelope.clone();
+        clone.payload = scrubbed_payload;
+        if clone.ts_ns == 0 {
             let secs = now_seconds();
-            let ns = (secs * 1_000_000_000) as u64;
-            let mut clone = envelope.clone();
-            clone.ts_ns = ns;
-            let key = PartitionKey::from_envelope(&clone, &self.default_service);
-            {
-                let mut guard = self.batches.lock();
-                let buf = guard.entry(key.clone()).or_insert_with(PartitionBuf::new);
-                buf.bytes_estimate += clone.payload.len() as u64 + 256;
-                buf.envelopes.push(clone);
-            }
-            key
-        } else {
-            let key = PartitionKey::from_envelope(envelope, &self.default_service);
-            {
-                let mut guard = self.batches.lock();
-                let buf = guard.entry(key.clone()).or_insert_with(PartitionBuf::new);
-                buf.bytes_estimate += envelope.payload.len() as u64 + 256;
-                buf.envelopes.push(envelope.clone());
-            }
-            key
-        };
+            clone.ts_ns = (secs * 1_000_000_000) as u64;
+        }
+        let key = PartitionKey::from_envelope(&clone, &self.default_service);
+        {
+            let mut guard = self.batches.lock();
+            let buf = guard.entry(key.clone()).or_insert_with(PartitionBuf::new);
+            buf.bytes_estimate += clone.payload.len() as u64 + 256;
+            buf.envelopes.push(clone);
+        }
         self.maybe_flush_partition(&key);
     }
 

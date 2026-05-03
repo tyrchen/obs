@@ -29,6 +29,7 @@ mod test_obs_test_attribute;
 mod test_panic_hook;
 mod test_parallel_tests;
 mod test_quickstart_60s;
+mod test_redaction_pipeline;
 mod test_registry_init;
 mod test_scrubbed_envelope;
 mod test_tracing_bridge;
