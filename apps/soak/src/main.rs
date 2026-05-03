@@ -1,10 +1,18 @@
 //! Soak harness for the obs SDK — Phase 5 / impl-plan tasks 5.1 + 5.2.
 //!
 //! Drives a `StandardObserver` at a configurable event rate (default
-//! 50,000 events/sec) across **100+ distinct event types** with all
-//! locally-available sinks active (NDJSON file by default; OTLP /
-//! Parquet / ClickHouse opt-in via environment variables that the
-//! corresponding `*_from_env` factories already understand).
+//! 50,000 events/sec) across **100+ distinct event types** with the
+//! sinks the spec (90 § M4) calls for:
+//!
+//! - **NDJSON file** (default): `RollingFileWriter` wrapped by `NonBlockingWriter` so file IO does
+//!   not stall the per-tier worker.
+//! - **OTLP** (opt-in via `--with-otlp`): `OtlpLogSink` / `OtlpMetricSink` / `OtlpTraceSink` from
+//!   the standard `OTEL_EXPORTER_OTLP_*` env vars.
+//! - **Parquet** (opt-in via `--with-parquet`): `ParquetSink` rooted under `<out_dir>/parquet/`.
+//! - **ClickHouse** (opt-in via `--with-clickhouse <URL>`): `ClickHouseSink` against a running CH
+//!   server.
+//! - **Tracing bridge** (opt-in via `--with-bridge`): installs `TracingToObsLayer` so any
+//!   `tracing::*` emit (third-party deps, user code) routes through obs.
 //!
 //! At exit we print a structured report:
 //! ```text
@@ -43,20 +51,25 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use obs_clickhouse::ClickHouseSink;
 use obs_core::observer::WorkerCounters;
+use obs_otel::otlp_trio_from_env;
+use obs_parquet::{ParquetLayout, ParquetSink};
 use obs_sdk::{
     Event, FormatterStyle, NdjsonFileSink, NonBlockingWriter, NoopSink, RollingFileWriter,
-    RollingPolicy, StandardObserver, StdoutSink, WorkerGuard, install_observer,
+    RollingPolicy, StandardObserver, StdoutSink, Tier, WorkerGuard, install_observer,
     observer as resolve_observer,
 };
+use obs_tracing_bridge::TracingToObsLayer;
 use tokio::{signal, time::sleep};
+use tracing_subscriber::layer::SubscriberExt;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -94,6 +107,32 @@ struct Cli {
     /// SDK's emit-pipeline ceiling without IO contention.
     #[arg(long)]
     null_sink: bool,
+
+    /// Wire `OtlpLogSink` / `OtlpMetricSink` / `OtlpTraceSink` from
+    /// the standard `OTEL_EXPORTER_OTLP_*` env vars. Without this
+    /// flag the soak does not connect to any OTLP collector — the
+    /// 24-hour exit criterion (90 § M4) flips this on against a
+    /// local collector to validate end-to-end delivery.
+    #[arg(long)]
+    with_otlp: bool,
+
+    /// Wire a `ParquetSink` rooted at `<out_dir>/parquet/`. Spec
+    /// 22 § 2.0a single-table layout; the sink rolls per
+    /// 64 MiB / 1 h whichever first.
+    #[arg(long)]
+    with_parquet: bool,
+
+    /// Wire a `ClickHouseSink` to the URL given (e.g.
+    /// `clickhouse://localhost:8123`). Spec 22 § 3.
+    #[arg(long, value_name = "URL")]
+    with_clickhouse: Option<String>,
+
+    /// Install the `tracing → obs` bridge (Direction A) so
+    /// `tracing::info!()` emits inside the harness route through obs.
+    /// Useful for validating that the bridge keeps up at high rates.
+    /// Spec 30.
+    #[arg(long)]
+    with_bridge: bool,
 
     /// Where to write the NDJSON output (created if absent).
     #[arg(long, default_value = "/tmp/obs-soak")]
@@ -278,12 +317,28 @@ async fn run(cli: Cli) -> Result<()> {
     // it here so its `Drop` runs after `shutdown().await` below.
     let _guard = bundle._guard;
 
+    // Optional: install the tracing → obs bridge so `tracing::*` emits
+    // (e.g. from third-party deps) route into the same observer.
+    // Spec 30 § 2.
+    let _bridge_guard = if cli.with_bridge {
+        let subscriber = tracing_subscriber::registry().with(TracingToObsLayer::new());
+        Some(tracing::subscriber::set_default(subscriber))
+    } else {
+        None
+    };
+
     let emitted = Arc::new(AtomicU64::new(0));
+    // Producers poll this flag at slice boundaries; ctrl-c flips it so
+    // a `make soak-24h` interrupted at hour 17 returns control to the
+    // operator within ~50 ms instead of running until the original
+    // `stop_at`.
+    let stop_flag = Arc::new(AtomicBool::new(false));
     let started = Instant::now();
-    let mut handles = Vec::with_capacity(workers);
+    let mut joinset: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     for w in 0..workers {
         let emitted = Arc::clone(&emitted);
+        let stop_flag = Arc::clone(&stop_flag);
         // Run each producer on a dedicated OS thread (`spawn_blocking`)
         // so the producers never share executor threads with the
         // per-tier workers — that's what gave us only ~3 k/s on the
@@ -295,7 +350,7 @@ async fn run(cli: Cli) -> Result<()> {
         let worker_rate = cli.rate / workers as u64;
         let stop_at = started + Duration::from_secs(cli.duration);
         let unbounded = cli.unbounded;
-        handles.push(tokio::task::spawn_blocking(move || {
+        joinset.spawn_blocking(move || {
             // 50 ms slice. Emit `chunk_budget` events as fast as
             // possible, then `std::thread::sleep` the remainder.
             let slice = Duration::from_millis(50);
@@ -305,10 +360,10 @@ async fn run(cli: Cli) -> Result<()> {
                 ((worker_rate * slice.as_millis() as u64) / 1_000).max(1)
             };
             let mut seq: u64 = (w as u64) * 1_000_003;
-            while Instant::now() < stop_at {
+            while Instant::now() < stop_at && !stop_flag.load(Ordering::Relaxed) {
                 let slice_start = Instant::now();
                 for _ in 0..chunk_budget {
-                    if Instant::now() >= stop_at {
+                    if Instant::now() >= stop_at || stop_flag.load(Ordering::Relaxed) {
                         break;
                     }
                     emit_one(seq);
@@ -322,7 +377,7 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-        }));
+        });
     }
 
     let progress_handle = if cli.sample_secs > 0 {
@@ -358,11 +413,17 @@ async fn run(cli: Cli) -> Result<()> {
         None
     };
 
-    // Honour ctrl-c by short-circuiting the join.
+    // Honour ctrl-c by flipping `stop_flag`; the spawn_blocking
+    // producers check it at slice boundaries and exit within ~50 ms.
+    // We always join every producer before shutting the observer —
+    // otherwise an emit racing past `shutdown()` would tick
+    // `ObsSinkDropped` and fail the steady-state assertion below.
     tokio::select! {
-        _ = futures_join_all(handles) => {}
+        _ = wait_all(&mut joinset) => {}
         _ = signal::ctrl_c() => {
-            eprintln!("soak: ctrl-c received; finishing up.");
+            eprintln!("soak: ctrl-c received; signalling producers.");
+            stop_flag.store(true, Ordering::Relaxed);
+            wait_all(&mut joinset).await;
         }
     }
     if let Some(h) = progress_handle {
@@ -408,17 +469,15 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-async fn futures_join_all<F>(
-    handles: Vec<tokio::task::JoinHandle<F>>,
-) -> Vec<Result<F, tokio::task::JoinError>>
-where
-    F: Send + 'static,
-{
-    let mut out = Vec::with_capacity(handles.len());
-    for h in handles {
-        out.push(h.await);
+/// Drain a `JoinSet<()>` until empty. Used in place of
+/// `futures::future::join_all` so the dependency stays at
+/// workspace-level + we control cancellation semantics.
+async fn wait_all(set: &mut tokio::task::JoinSet<()>) {
+    while let Some(res) = set.join_next().await {
+        if let Err(e) = res {
+            eprintln!("soak worker join error: {e}");
+        }
     }
-    out
 }
 
 struct ObserverBundle {
@@ -431,6 +490,41 @@ struct ObserverBundle {
 fn build_observer(cli: &Cli) -> Result<ObserverBundle> {
     let mut builder = StandardObserver::builder().service("obs-soak", env!("CARGO_PKG_VERSION"));
     let mut guard: Option<WorkerGuard> = None;
+
+    // ─── Optional production-grade sinks (90 § M4 "all sinks active") ─
+    if cli.with_otlp {
+        // `otlp_trio_from_env` returns its own `String`-typed error;
+        // map it to `anyhow` so the soak's outer `Result` chain can
+        // carry it.
+        let (logs, metrics, traces) =
+            otlp_trio_from_env().map_err(|e| anyhow::anyhow!("otlp_trio_from_env: {e}"))?;
+        builder = builder
+            .sink_for(Tier::Log, Arc::new(logs))
+            .sink_for(Tier::Metric, Arc::new(metrics))
+            .sink_for(Tier::Trace, Arc::new(traces));
+    }
+    if cli.with_parquet {
+        let parquet_dir = cli.out_dir.join("parquet");
+        std::fs::create_dir_all(&parquet_dir)
+            .with_context(|| format!("create parquet dir {}", parquet_dir.display()))?;
+        let parquet = ParquetSink::builder()
+            .base_dir(parquet_dir)
+            .layout(ParquetLayout::Single)
+            .roll_max_bytes(64 * 1024 * 1024)
+            .build()
+            .context("build ParquetSink")?;
+        // Parquet defaults to LOG tier; if the user wants METRIC/TRACE
+        // they can extend the harness.
+        builder = builder.sink_for(Tier::Log, Arc::new(parquet));
+    }
+    if let Some(url) = &cli.with_clickhouse {
+        let ch = ClickHouseSink::builder()
+            .url(url.as_str())
+            .auto_migrate(true)
+            .build()
+            .context("build ClickHouseSink")?;
+        builder = builder.sink_for(Tier::Log, Arc::new(ch));
+    }
 
     // Always wire a fast fallback sink so a tier without a per-tier
     // sink still sees delivery (we want to count every event toward

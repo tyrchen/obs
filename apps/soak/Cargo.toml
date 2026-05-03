@@ -13,8 +13,12 @@ homepage.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+obs-clickhouse = { workspace = true }
 obs-core = { workspace = true }
+obs-otel = { workspace = true }
+obs-parquet = { workspace = true }
 obs-sdk = { workspace = true }
+obs-tracing-bridge = { workspace = true }
 tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",
@@ -23,6 +27,8 @@ tokio = { workspace = true, features = [
   "time",
   "signal",
 ] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

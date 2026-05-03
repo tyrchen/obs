@@ -14,8 +14,24 @@
 
 set -euo pipefail
 
-BASE="${1:-${BASE_REF:-origin/main}}"
+# Resolve the base ref. Prefer the explicit positional or env var; if
+# neither was set, probe `origin/main` then `origin/master` then
+# `main`/`master` so the same script works locally and in CI without
+# the caller having to know the project's default branch.
+BASE="${1:-${BASE_REF:-}}"
 HEAD="${2:-${HEAD_REF:-HEAD}}"
+if [[ -z "$BASE" ]]; then
+  for candidate in origin/main origin/master main master; do
+    if git rev-parse --verify "$candidate" >/dev/null 2>&1; then
+      BASE="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$BASE" ]]; then
+  echo "check-format-ver: no base ref found; pass one as the first arg" >&2
+  exit 1
+fi
 
 ENVELOPE_PROTO="crates/obs-proto/proto/obs/v1/envelope.proto"
 LIB_RS="crates/obs-proto/src/lib.rs"
