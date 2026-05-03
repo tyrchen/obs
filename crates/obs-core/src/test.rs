@@ -215,8 +215,12 @@ macro_rules! assert_emitted {
             // (cheap fast path) AND payload fields (decoded via
             // `EventSchemaErased::render_json`) so tests that assert on
             // `ATTRIBUTE`-class fields not promoted to labels still work.
-            let __payload_json: ::std::option::Option<::serde_json::Map<String, ::serde_json::Value>> =
-                $crate::test::render_envelope_payload_json(env);
+            let __payload_json: ::std::option::Option<
+                $crate::__macro_deps::serde_json::Map<
+                    String,
+                    $crate::__macro_deps::serde_json::Value,
+                >,
+            > = $crate::test::render_envelope_payload_json(env);
             for (k, v) in __pairs {
                 if let ::std::option::Option::Some(actual) = env.labels.get(*k)
                     && actual == v
@@ -227,7 +231,7 @@ macro_rules! assert_emitted {
                     && let ::std::option::Option::Some(json_val) = map.get(*k)
                 {
                     let s = match json_val {
-                        ::serde_json::Value::String(s) => s.clone(),
+                        $crate::__macro_deps::serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
                     };
                     if s == *v {

@@ -145,7 +145,7 @@ fn humantime_strict(s: &str) -> Result<Duration, String> {
             .map(|n| Duration::from_secs(n * 86_400))
             .map_err(|e| e.to_string());
     }
-    Err(format!("unparseable duration `{s}`"))
+    Err(format!("unparsable duration `{s}`"))
 }
 
 fn severity_at_least(actual: &str, min: &str) -> bool {

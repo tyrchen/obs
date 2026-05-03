@@ -19,10 +19,10 @@ this spec closes it.
 The SDK has two configuration surfaces. Each setting belongs to
 exactly one — we do not duplicate.
 
-| Surface | Lives in | Reload? | Examples |
-| --- | --- | --- | --- |
-| **Compile-time** | `Cargo.toml` `[workspace.metadata.obs]` and `[package.metadata.obs]` | No (rebuild) | `event_prefix`, `forensic_max`, `schema-source`, `proto-root` |
-| **Runtime** | `obs.yaml`, `OBS_*` env vars, programmatic `EventsConfig::builder()` | Yes (live, atomic) | `filter`, `sampling`, sink endpoints, queue sizes, AUDIT spool dir |
+| Surface          | Lives in                                                             | Reload?            | Examples                                                           |
+| ---------------- | -------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------ |
+| **Compile-time** | `Cargo.toml` `[workspace.metadata.obs]` and `[package.metadata.obs]` | No (rebuild)       | `event_prefix`, `forensic_max`, `schema-source`, `proto-root`      |
+| **Runtime**      | `obs.yaml`, `OBS_*` env vars, programmatic `EventsConfig::builder()` | Yes (live, atomic) | `filter`, `sampling`, sink endpoints, queue sizes, AUDIT spool dir |
 
 If a setting plausibly belongs to both, default to runtime — the
 "change at deploy time without recompile" property is more valuable
@@ -329,7 +329,7 @@ explicit.
 ### 4.3 Strictness
 
 `#[serde(deny_unknown_fields)]` is set on every struct. A typo like
-`fitler:` produces a config-load error rather than silently doing
+`filter:` produces a config-load error rather than silently doing
 nothing. The error message names the offending field and the line
 number from `serde_yaml`'s span info.
 
@@ -359,18 +359,18 @@ let config = EventsConfig::from_yaml_path(path)?.merged_with_env();
 after file load. Naming convention is **uppercase, double-underscore
 between path segments**:
 
-| Env var | Maps to |
-| --- | --- |
-| `OBS_FILTER` | `filter` |
-| `OBS_SAMPLING__DEFAULT_RATE` | `sampling.default_rate` |
+| Env var                                | Maps to                           |
+| -------------------------------------- | --------------------------------- |
+| `OBS_FILTER`                           | `filter`                          |
+| `OBS_SAMPLING__DEFAULT_RATE`           | `sampling.default_rate`           |
 | `OBS_SAMPLING__ALWAYS_LOG_AT_OR_ABOVE` | `sampling.always_log_at_or_above` |
-| `OBS_AUDIT__SPOOL_DIR` | `audit.spool_dir` |
-| `OBS_QUEUES__LOG` | `queues.log` |
-| `OBS_SINKS__OTLP__ENDPOINT` | `sinks.otlp.endpoint` |
+| `OBS_AUDIT__SPOOL_DIR`                 | `audit.spool_dir`                 |
+| `OBS_QUEUES__LOG`                      | `queues.log`                      |
+| `OBS_SINKS__OTLP__ENDPOINT`            | `sinks.otlp.endpoint`             |
 
 Implemented via the `config` crate's `Environment` source, prefix
 `OBS_`, separator `__`. Map fields (`per_event`, `headers`, `extra`)
-are not env-overrideable — env vars don't capture map structure
+are not env-overridable — env vars don't capture map structure
 cleanly.
 
 ### 5.3 Reload paths
@@ -401,18 +401,18 @@ On reload:
 Reload is **best-effort**; some settings can be applied in flight,
 others cannot. The runtime documents which is which:
 
-| Setting | Reloadable in place? |
-| --- | --- |
-| `filter` | ✅ via `reload_filter()` + generation bump |
-| `sampling.*` | ✅ — read on every emit through `ArcSwap` |
-| `limits.*` | ✅ — same |
-| `audit.on_failure` | ✅ — read on every spool failure |
-| `audit.spool_dir` | ⚠ partial — new files go to new dir; in-flight in old dir; emit `ObsConfigReloaded` with both paths |
+| Setting                              | Reloadable in place?                                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `filter`                             | ✅ via `reload_filter()` + generation bump                                                                                   |
+| `sampling.*`                         | ✅ — read on every emit through `ArcSwap`                                                                                    |
+| `limits.*`                           | ✅ — same                                                                                                                    |
+| `audit.on_failure`                   | ✅ — read on every spool failure                                                                                             |
+| `audit.spool_dir`                    | ⚠ partial — new files go to new dir; in-flight in old dir; emit `ObsConfigReloaded` with both paths                         |
 | `audit.channel_capacity`, `queues.*` | ❌ — channels are constructed once. Reload validates the value but logs a `ObsConfigInconsistent` warning. Restart to apply. |
-| `sinks.otlp.*` | ⚠ partial — new requests use new endpoint, in-flight retry uses old. To switch endpoints cleanly, restart. |
-| `sinks.parquet.base_dir` | ❌ — restart. |
-| `sinks.clickhouse.url` | ❌ — restart. |
-| `service.*` | ❌ — service identity is set once at observer init. |
+| `sinks.otlp.*`                       | ⚠ partial — new requests use new endpoint, in-flight retry uses old. To switch endpoints cleanly, restart.                  |
+| `sinks.parquet.base_dir`             | ❌ — restart.                                                                                                                |
+| `sinks.clickhouse.url`               | ❌ — restart.                                                                                                                |
+| `service.*`                          | ❌ — service identity is set once at observer init.                                                                          |
 
 Operators who need every setting to be live-reloadable must restart
 after changing the ❌ ones; the SDK does not pretend otherwise.
@@ -421,17 +421,17 @@ after changing the ❌ ones; the SDK does not pretend otherwise.
 
 After deserialisation, `EventsConfig::validate()` runs:
 
-| Check | Failure mode |
-| --- | --- |
-| `sampling.default_rate ∈ [0.0, 1.0]` | Reject; suggest valid range |
-| Each `sampling.per_event[k]` rate `∈ [0.0, 1.0]` | Reject; name the offending key |
-| `limits.max_payload_bytes ≥ 1024` | Reject; <1 KiB cripples even forensic |
-| `limits.max_payload_bytes ≤ 16 MiB` | Reject; over-large is a sign of misuse |
-| `audit.spool_dir` parent exists or is creatable | Reject (config load fails fast) |
-| `audit.spool_max_bytes ≥ 1 MiB` | Reject |
-| `queues.{log,metric,trace} ≥ 64` | Reject |
-| `filter` parses as a valid `obs::Filter` directive | Reject; quote the parse error |
-| Mutually exclusive sink combos (e.g. two `sinks.otlp.*` sub-sections) | Reject |
+| Check                                                                 | Failure mode                           |
+| --------------------------------------------------------------------- | -------------------------------------- |
+| `sampling.default_rate ∈ [0.0, 1.0]`                                  | Reject; suggest valid range            |
+| Each `sampling.per_event[k]` rate `∈ [0.0, 1.0]`                      | Reject; name the offending key         |
+| `limits.max_payload_bytes ≥ 1024`                                     | Reject; <1 KiB cripples even forensic  |
+| `limits.max_payload_bytes ≤ 16 MiB`                                   | Reject; over-large is a sign of misuse |
+| `audit.spool_dir` parent exists or is creatable                       | Reject (config load fails fast)        |
+| `audit.spool_max_bytes ≥ 1 MiB`                                       | Reject                                 |
+| `queues.{log,metric,trace} ≥ 64`                                      | Reject                                 |
+| `filter` parses as a valid `obs::Filter` directive                    | Reject; quote the parse error          |
+| Mutually exclusive sink combos (e.g. two `sinks.otlp.*` sub-sections) | Reject                                 |
 
 Validation runs at every load, including reload. An invalid reload
 keeps the old config (§ 5.3 step 2).
@@ -484,13 +484,13 @@ Windows CI).
 
 ## 9. Build dependencies
 
-| Depends on | Provides |
-| --- | --- |
-| [10-data-model.md](./10-data-model.md) | `Severity`, etc. |
-| [11-runtime-core.md](./11-runtime-core.md) | Reload triggers, generation bump, AUDIT semantics |
-| [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md) | Filter grammar |
-| [20-otel-and-sinks.md](./20-otel-and-sinks.md) | Sink config shapes |
-| (provides foundation for) | Phase 1 task 1.8 (`StandardObserver` shell wires `ArcSwap<EventsConfig>`); Phase 3 reload tasks |
+| Depends on                                                   | Provides                                                                                        |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| [10-data-model.md](./10-data-model.md)                       | `Severity`, etc.                                                                                |
+| [11-runtime-core.md](./11-runtime-core.md)                   | Reload triggers, generation bump, AUDIT semantics                                               |
+| [13-emit-scope-and-filter.md](./13-emit-scope-and-filter.md) | Filter grammar                                                                                  |
+| [20-otel-and-sinks.md](./20-otel-and-sinks.md)               | Sink config shapes                                                                              |
+| (provides foundation for)                                    | Phase 1 task 1.8 (`StandardObserver` shell wires `ArcSwap<EventsConfig>`); Phase 3 reload tasks |
 
 This spec ships in `obs-core::config`. The `obs-cli`'s
 `obs validate` subcommand ([50-cli.md § 3.2](./50-cli.md#32-obs-validate))

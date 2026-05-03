@@ -1,4 +1,4 @@
-//! Transport abstraction — spec 22 § 3.1 batched INSERTs.
+//! Transport abstraction — spec 22 § 3.1 batched INSERT.
 //!
 //! Spec 22 § 3 calls for native ClickHouse insertion; we keep the wire
 //! protocol pluggable so users can plug in `clickhouse-rs`,

@@ -63,6 +63,12 @@ pub mod span_trace;
 pub mod test;
 pub mod wire;
 
+#[doc(hidden)]
+#[cfg(feature = "test")]
+pub mod __macro_deps {
+    pub use serde_json;
+}
+
 pub use aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame};
 pub use callsite::ObsCallsite;
 pub use config::{EventsConfig, SamplingConfig};
