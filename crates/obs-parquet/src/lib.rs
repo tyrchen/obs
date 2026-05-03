@@ -29,6 +29,7 @@
 //! directory is swept for stale `.tmp` files (deleted; one
 //! `ObsAnalyticsPartialDropped` self-event per file).
 
+mod event_columns;
 mod model;
 mod partition;
 mod sink;

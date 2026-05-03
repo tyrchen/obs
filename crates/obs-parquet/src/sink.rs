@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use obs_core::{Sink, registry::ScrubbedEnvelope, sink::SinkFut};
+use obs_core::{SchemaRegistry, Sink, registry::ScrubbedEnvelope, sink::SinkFut};
 use obs_proto::obs::v1::ObsEnvelope;
 use parking_lot::Mutex;
 
@@ -17,7 +17,8 @@ use crate::{
     model::{ParquetCompression, ParquetLayout},
     partition::{PartitionKey, now_seconds},
     writer::{
-        build_record_batch, next_batch_id, sweep_tmp_files, unified_schema, write_parquet_atomic,
+        build_record_batch, build_record_batch_with_registry, next_batch_id, sweep_tmp_files,
+        unified_schema_with_registry, write_parquet_atomic,
     },
 };
 
@@ -66,6 +67,11 @@ pub struct ParquetSink {
     partition_fields: Vec<&'static str>,
     default_service: String,
     schema: Arc<arrow_schema::Schema>,
+    /// Optional schema registry. When set, the unified schema gets
+    /// per-event nested Struct columns (`payload_<full_name_snake>`)
+    /// and `build_record_batch_with_registry` populates them. Spec 22
+    /// § 1.1 / spec 94 § 2.8 / P1-F.
+    registry: Option<Arc<SchemaRegistry>>,
     /// Batches buffered per partition key.
     batches: Arc<Mutex<std::collections::HashMap<PartitionKey, PartitionBuf>>>,
     batch_counter: Arc<AtomicU64>,
@@ -106,7 +112,10 @@ impl ParquetSink {
         let id = next_batch_id(&self.batch_counter);
         let final_path = dir.join(format!("obs_events-{id}.parquet"));
         let tmp_path = dir.join(format!("obs_events-{id}.parquet.tmp"));
-        let batch = build_record_batch(&self.schema, &buf.envelopes)?;
+        let batch = match self.registry.as_deref() {
+            Some(reg) => build_record_batch_with_registry(&self.schema, &buf.envelopes, reg)?,
+            None => build_record_batch(&self.schema, &buf.envelopes)?,
+        };
         let bytes = write_parquet_atomic(
             &final_path,
             &tmp_path,
@@ -197,6 +206,7 @@ pub struct ParquetSinkBuilder {
     compression: Option<ParquetCompression>,
     partition_by: Vec<String>,
     default_service: Option<String>,
+    registry: Option<Arc<SchemaRegistry>>,
 }
 
 impl ParquetSinkBuilder {
@@ -250,6 +260,18 @@ impl ParquetSinkBuilder {
         self
     }
 
+    /// Inject the schema registry. When set, the unified Parquet
+    /// schema gets per-event nested Struct columns
+    /// (`payload_<full_name_snake>: Struct<…>`) and the writer
+    /// populates them by decoding each envelope's typed payload via
+    /// `EventSchemaErased::decode_to_arrow_struct`. Spec 22 § 1.1 /
+    /// spec 94 § 2.8 / P1-F.
+    #[must_use]
+    pub fn registry(mut self, registry: Arc<SchemaRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     /// Finalise.
     ///
     /// # Errors
@@ -282,6 +304,7 @@ impl ParquetSinkBuilder {
                 })
                 .collect()
         };
+        let schema = unified_schema_with_registry(self.registry.as_deref());
         Ok(ParquetSink {
             base_dir,
             layout: self.layout.unwrap_or_default(),
@@ -290,7 +313,8 @@ impl ParquetSinkBuilder {
             compression: self.compression.unwrap_or_default(),
             partition_fields: partitions,
             default_service: self.default_service.unwrap_or_else(|| "obs".to_string()),
-            schema: unified_schema(),
+            schema,
+            registry: self.registry,
             batches: Arc::new(Mutex::new(std::collections::HashMap::new())),
             batch_counter: Arc::new(AtomicU64::new(1)),
             encode_failures: Arc::new(AtomicU64::new(0)),

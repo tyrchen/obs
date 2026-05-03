@@ -134,6 +134,16 @@ impl SchemaRegistry {
             .or_else(|| self.by_name.get(env.full_name.as_str()).copied())
     }
 
+    /// Lookup by `full_name` only (no schema_hash dispatch). Used by
+    /// the per-event Struct dispatch in `obs-parquet`'s record-batch
+    /// builder: callers walk a registry-backed column array and need
+    /// the raw schema for the matching event without an envelope to
+    /// hand. Spec 94 § 2.8.
+    #[must_use]
+    pub fn lookup_by_full_name(&self, full_name: &str) -> Option<&'static dyn EventSchemaErased> {
+        self.by_name.get(full_name).copied()
+    }
+
     /// Number of registered schemas.
     #[must_use]
     pub fn len(&self) -> usize {

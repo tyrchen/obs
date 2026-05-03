@@ -15,6 +15,7 @@ homepage.workspace = true
 [dependencies]
 arc-swap = { workspace = true }
 arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }
 blake3 = { workspace = true }
 buffa = { workspace = true }
@@ -31,7 +32,13 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+buffa = { workspace = true }
+bytes = { workspace = true }
 obs-core = { workspace = true, features = ["test"] }
+obs-macros = { workspace = true }
+parquet = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 

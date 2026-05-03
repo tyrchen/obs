@@ -17,17 +17,42 @@ use arrow_array::{
     builder::{MapBuilder, StringBuilder},
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use obs_core::SchemaRegistry;
 use obs_proto::obs::v1::ObsEnvelope;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties as ParquetProps};
 
-use crate::{model::ParquetCompression, sink::ParquetSinkError};
+use crate::{
+    event_columns::{EventColumn, event_columns_from_registry},
+    model::ParquetCompression,
+    sink::ParquetSinkError,
+};
 
-/// Build the unified-table Arrow schema. Spec 22 § 1.1 envelope
-/// columns + maps + payload bytes column. The per-event Nested struct
-/// columns are exposed via `obs_core::ArrowSchemaModel` for downstream
-/// tools; the in-process Parquet writer stores the bytes in
-/// `payload_proto` and lets the consumer decode at query time.
-pub(crate) fn unified_schema() -> Arc<Schema> {
+/// Build the unified-table Arrow schema with per-event nested Struct
+/// columns sourced from `registry`. Spec 22 § 1.1 / spec 94 § 2.8 /
+/// P1-F. When `registry` is `None`, falls back to the legacy schema
+/// (envelope + labels/attrs + `payload_proto`).
+pub(crate) fn unified_schema_with_registry(registry: Option<&SchemaRegistry>) -> Arc<Schema> {
+    let mut fields = base_unified_fields();
+    if let Some(reg) = registry {
+        let columns = event_columns_from_registry(reg);
+        for col in columns {
+            let dt = DataType::Struct(col.struct_fields.clone().into());
+            fields.push(Field::new(&col.payload_column, dt, true));
+        }
+    }
+    Arc::new(Schema::new(fields))
+}
+
+/// Build the unified-table Arrow schema without per-event Struct
+/// columns. Retained for the legacy registry-less path used by the
+/// existing tests in this module; production sinks build the schema
+/// via [`unified_schema_with_registry`].
+#[cfg(test)]
+fn unified_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(base_unified_fields()))
+}
+
+fn base_unified_fields() -> Vec<Field> {
     let map_field = Arc::new(Field::new(
         "entries",
         DataType::Struct(
@@ -42,7 +67,7 @@ pub(crate) fn unified_schema() -> Arc<Schema> {
     let labels_ty = DataType::Map(Arc::clone(&map_field), false);
     let attrs_ty = DataType::Map(map_field, false);
 
-    let fields = vec![
+    vec![
         Field::new(
             "ts_ns",
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -63,15 +88,59 @@ pub(crate) fn unified_schema() -> Arc<Schema> {
         Field::new("labels", labels_ty, false),
         Field::new("attrs", attrs_ty, false),
         Field::new("payload_proto", DataType::Binary, true),
-    ];
-    Arc::new(Schema::new(fields))
+    ]
 }
 
-/// Build a `RecordBatch` from `envelopes` against the unified schema.
+/// Build a `RecordBatch` from `envelopes` against a unified schema
+/// that includes per-event nested Struct columns. Spec 94 § 2.8 / P1-F.
+pub(crate) fn build_record_batch_with_registry(
+    schema: &Arc<Schema>,
+    envelopes: &[ObsEnvelope],
+    registry: &SchemaRegistry,
+) -> Result<RecordBatch, ParquetSinkError> {
+    let mut event_columns = event_columns_from_registry(registry);
+    let mut by_full_name: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(event_columns.len());
+    for (i, col) in event_columns.iter().enumerate() {
+        by_full_name.insert(col.full_name.clone(), i);
+    }
+    let mut base = build_base_arrays(
+        envelopes,
+        &mut event_columns,
+        Some((registry, &by_full_name)),
+    )?;
+    // Append finalised per-event Struct arrays in the same order as
+    // the schema fields (which were appended in event_columns order).
+    for col in &mut event_columns {
+        base.push(col.finish()?);
+    }
+    RecordBatch::try_new(Arc::clone(schema), base)
+        .map_err(|e| ParquetSinkError::Encode(e.to_string()))
+}
+
+/// Build a `RecordBatch` from `envelopes` against the unified schema
+/// (no per-event Struct columns).
 pub(crate) fn build_record_batch(
     schema: &Arc<Schema>,
     envelopes: &[ObsEnvelope],
 ) -> Result<RecordBatch, ParquetSinkError> {
+    let mut empty: Vec<EventColumn> = Vec::new();
+    let arrays = build_base_arrays(envelopes, &mut empty, None)?;
+    RecordBatch::try_new(Arc::clone(schema), arrays)
+        .map_err(|e| ParquetSinkError::Encode(e.to_string()))
+}
+
+/// Build the envelope/labels/attrs/payload columns shared by both
+/// the legacy `build_record_batch` and the registry-aware
+/// `build_record_batch_with_registry`. When `dispatch` is `Some`,
+/// each envelope's typed payload is decoded into the matching
+/// `EventColumn` (or null'd across every column for unmatched
+/// envelopes). Spec 94 § 2.8 / P1-F.
+fn build_base_arrays(
+    envelopes: &[ObsEnvelope],
+    event_columns: &mut [EventColumn],
+    dispatch: Option<(&SchemaRegistry, &std::collections::HashMap<String, usize>)>,
+) -> Result<Vec<ArrayRef>, ParquetSinkError> {
     let n = envelopes.len();
     let mut ts_ns: Vec<i64> = Vec::with_capacity(n);
     let mut full_name: Vec<String> = Vec::with_capacity(n);
@@ -131,12 +200,47 @@ pub(crate) fn build_record_batch(
         attrs_builder
             .append(true)
             .map_err(|e| ParquetSinkError::Encode(e.to_string()))?;
+
+        // Per-event Struct column dispatch. Spec 94 § 2.8 / P1-F.
+        if let Some((registry, by_full_name)) = dispatch {
+            let matched_idx = by_full_name.get(env.full_name.as_str()).copied();
+            for (idx, col) in event_columns.iter_mut().enumerate() {
+                if Some(idx) == matched_idx {
+                    let schema = match registry.lookup_by_full_name(&env.full_name) {
+                        Some(s) => s,
+                        None => {
+                            // Schema disappeared between dispatch
+                            // computation and the lookup — bail to
+                            // unmatched.
+                            col.append_unmatched();
+                            continue;
+                        }
+                    };
+                    if let Err(e) = schema.decode_to_arrow_struct(&env.payload, col) {
+                        // Decode failure: log via tracing and treat
+                        // this row as unmatched. The legacy
+                        // `payload_proto` column still carries the
+                        // raw bytes for forensic recovery.
+                        tracing::debug!(
+                            error = ?e,
+                            full_name = %env.full_name,
+                            "obs-parquet: decode_to_arrow_struct failed"
+                        );
+                        col.append_unmatched();
+                    } else {
+                        col.finish_matched_row();
+                    }
+                } else {
+                    col.append_unmatched();
+                }
+            }
+        }
     }
 
     let labels = labels_builder.finish();
     let attrs = attrs_builder.finish();
 
-    let arrays: Vec<ArrayRef> = vec![
+    Ok(vec![
         Arc::new(TimestampNanosecondArray::from(ts_ns)),
         Arc::new(StringArray::from(full_name)),
         Arc::new(UInt64Array::from(schema_hash)),
@@ -155,9 +259,7 @@ pub(crate) fn build_record_batch(
         Arc::new(BinaryArray::from_iter(
             payload_proto.iter().map(|o| o.as_deref()),
         )),
-    ];
-    RecordBatch::try_new(Arc::clone(schema), arrays)
-        .map_err(|e| ParquetSinkError::Encode(e.to_string()))
+    ])
 }
 
 fn opt_str(s: &str) -> Option<String> {

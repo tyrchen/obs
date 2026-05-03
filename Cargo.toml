@@ -113,6 +113,7 @@ buffa-reflect = "0.1"
 
 # Phase-4 analytics + middleware deps.
 arrow-array = "58"
+arrow-buffer = "58"
 arrow-schema = "58"
 arrow-ipc = "58"
 parquet = { version = "58", default-features = false, features = [
