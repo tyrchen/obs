@@ -1,0 +1,34 @@
+syntax = "proto3";
+package orders.v1;
+
+import "obs/v1/options.proto";
+
+// A new order was placed. LOG/INFO so the order book can be replayed
+// from the NDJSON tail without sampling. `order_id` and `customer_id`
+// are LABEL/LOW so dashboards can break down by customer cohort, while
+// the monetary `total_micros` lands as ATTRIBUTE (free-form payload,
+// not a metric label).
+message ObsOrderPlaced {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string order_id     = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string customer_id  = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 total_micros = 3 [(obs.v1.field) = { kind: ATTRIBUTE }];
+  string currency     = 4 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}
+
+// Order shipped. `tracking_url` is ATTRIBUTE (high-cardinality URL
+// must not become a label or it blows up metric series cardinality).
+message ObsOrderShipped {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string order_id     = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string carrier      = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string tracking_url = 3 [(obs.v1.field) = { kind: ATTRIBUTE }];
+}

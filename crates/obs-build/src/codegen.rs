@@ -42,6 +42,12 @@ pub(crate) struct FieldDecl {
     /// Proto type as inferred from the descriptor's `Kind`, when known.
     /// Drives L014's proto-type validation (spec 95 § 2.2).
     pub proto_type: Option<LintProtoType>,
+    /// Precise Rust type emitted by buffa for this wire field (e.g.
+    /// `"u32"`, `"i64"`, `"f64"`). `None` when the proto Kind doesn't
+    /// map to a fixed scalar (string/bytes/message/enum). Used by the
+    /// builder setter to emit width-correct parameters — without this
+    /// a `uint32` field would get a `u64` setter and refuse to assign.
+    pub wire_rust_type: Option<&'static str>,
 }
 
 impl EventDecl {
@@ -436,40 +442,56 @@ impl {rust_path} {{
 
 fn render_setter(field: &FieldDecl, rust_path: &str) -> String {
     let kind = field.options.kind.unwrap_or(FieldKind::Attribute);
-    // For LABEL fields whose buffa type is String, we accept
-    // `impl Into<String>` to keep call sites short. Other fields take
-    // `impl Into<T>` of the field's declared protobuf type — which the
-    // codegen does not have direct access to. We emit an `impl Into<_>`
-    // setter that defers to the field's actual type via type inference
-    // on the assignment target.
-    //
-    // The buffa-generated message types use plain Rust types
-    // (`String`, `u64`, enums); the assignment target's type drives the
-    // `Into` resolution.
-    let setter_param = match kind {
-        FieldKind::Label
-        | FieldKind::Attribute
-        | FieldKind::TraceId
-        | FieldKind::SpanId
-        | FieldKind::ParentSpanId
-        | FieldKind::Forensic => "impl ::std::convert::Into<::std::string::String>",
-        // Numeric-typed fields. The exact width depends on the proto
-        // declaration; `Into<u64>` is the broadest accepted shape.
-        FieldKind::Measurement | FieldKind::TimestampNs | FieldKind::DurationNs => "u64",
-        _ => "impl ::std::convert::Into<::std::string::String>",
-    };
-    let assign = match kind {
-        FieldKind::Label
-        | FieldKind::Attribute
-        | FieldKind::TraceId
-        | FieldKind::SpanId
-        | FieldKind::ParentSpanId
-        | FieldKind::Forensic => format!("self.inner.{} = value.into();", field.name),
-        FieldKind::Measurement | FieldKind::TimestampNs | FieldKind::DurationNs => {
-            format!("self.inner.{} = value;", field.name)
+    // Setter shape is driven primarily by `FieldKind`, then refined by
+    // the inferred proto wire type so non-string ATTRIBUTE / LABEL
+    // fields (e.g. `bool`, `uint64`) get a typed setter instead of the
+    // String-coerced one. Without that refinement, a proto field like
+    // `bool was_completed = 3 [(obs.v1.field) = { kind: ATTRIBUTE }]`
+    // would compile-fail because `bool` does not implement
+    // `Into<String>`.
+    let proto_type = field.proto_type.as_ref();
+    // Prefer the precise wire Rust type when buffa exposed one — that
+    // way `uint32` gets a `u32` setter, `int64` gets `i64`, `double`
+    // gets `f64`, etc. Falling back to the coarse LintProtoType keeps
+    // older callers working when the precise type wasn't recorded.
+    let typed_setter = match (kind, proto_type, field.wire_rust_type) {
+        (FieldKind::Measurement | FieldKind::TimestampNs | FieldKind::DurationNs, _, _) => {
+            Some("u64")
         }
-        _ => format!("self.inner.{} = value.into();", field.name),
+        (
+            FieldKind::Label | FieldKind::Attribute | FieldKind::Forensic,
+            Some(LintProtoType::Bool),
+            _,
+        ) => Some("bool"),
+        (
+            FieldKind::Label | FieldKind::Attribute | FieldKind::Forensic,
+            Some(LintProtoType::Numeric),
+            Some(rust_ty),
+        ) => Some(rust_ty),
+        (
+            FieldKind::Label | FieldKind::Attribute | FieldKind::Forensic,
+            Some(LintProtoType::Numeric),
+            None,
+        ) => Some("u64"),
+        (
+            FieldKind::Label | FieldKind::Attribute | FieldKind::Forensic,
+            Some(LintProtoType::Bytes),
+            _,
+        ) => Some("::std::vec::Vec<u8>"),
+        _ => None,
     };
+    let (setter_param, assign) = match typed_setter {
+        Some(ty) => (
+            ty.to_string(),
+            format!("self.inner.{} = value;", field.name),
+        ),
+        None => (
+            "impl ::std::convert::Into<::std::string::String>".to_string(),
+            format!("self.inner.{} = value.into();", field.name),
+        ),
+    };
+    let setter_param = setter_param.as_str();
+    let assign = assign.as_str();
     format!(
         "    /// Setter for `{name}` (proto field {num}); generated for `{rust_path}`.\n    \
          #[allow(clippy::needless_pass_by_value, clippy::missing_const_for_fn)]\n    pub fn \

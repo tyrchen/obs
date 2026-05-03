@@ -1,47 +1,59 @@
 # obs SDK examples
 
-Three runnable apps showing how to integrate the obs SDK across the
-three observability surfaces. Each example is a workspace member —
-`cargo run -p <name>` from the repo root works without further setup.
+Six runnable apps. The first three are **canonical, proto-first** end-to-end
+examples that mirror what `obs init --mode proto` scaffolds — they are the
+reference shape for new services. The bottom three cover narrower
+ergonomics surfaces (`derive(Event)`, per-task observer routing, forensic
+events) and use the rust-first authoring path.
 
-| Example | Surface | Sinks exercised | What it shows |
+| Example | Authoring | Surface | What it shows |
 | --- | --- | --- | --- |
-| [`http-service`](./http-service/) | tracing | `StdoutSink`, `OtlpLogSink` (gRPC, opt-in) | axum HTTP service, `obs-tower::ObsHttpLayer::server()` for W3C `traceparent` propagation, typed events with severity escalation on 4xx |
-| [`batch-pipeline`](./batch-pipeline/) | analytics | `StdoutSink`, `ParquetSink` | synthetic ETL emitting LOG + METRIC tier events; produces partitioned `obs_events-*.parquet` files for downstream OLAP |
-| [`worker-pool`](./worker-pool/) | metrics | `StdoutSink`, `OtlpMetricSink` (gRPC, opt-in) | worker-pool simulator emitting MEASUREMENT-flagged fields; works with `StdoutDebugExporter` out of the box and a real OTLP collector when `OTEL_EXPORTER_OTLP_ENDPOINT` is set |
+| [`todomvc`](./todomvc/) | proto-first | full app | TodoMVC HTTP backend with proto-defined events end-to-end; uses `obs validate` / `obs lint` / `obs schema show` / `obs doctor` / `obs tail` / `obs query` against its own NDJSON output. |
+| [`interop-obs-host`](./interop-obs-host/) | proto-first | tracing → obs | obs-first service whose 3rd-party deps emit via `tracing::*`; `obs_tracing_bridge::init(...)` funnels everything into one observer. |
+| [`interop-tracing-host`](./interop-tracing-host/) | proto-first | obs → tracing | Existing `tracing-subscriber::fmt` host adopts an obs-typed library; `ObsToTracingSink` re-emits typed obs events as `tracing::event!()` so the host's pipeline stays the same. |
+| [`sinks-showcase`](./sinks-showcase/) | proto-first | sinks fan-out | Same `.emit()` calls land in console (Pretty), Parquet (always), and OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set). LOG/METRIC/AUDIT routed per-tier. |
+| [`multi-tenant`](./multi-tenant/) | rust-first | per-task routing | `with_observer_task` — each tenant runs under its own observer so emits land in tenant-scoped sinks. |
+| [`forensic-and-spantrace`](./forensic-and-spantrace/) | rust-first | escape hatches | `obs::forensic!` (rate-limited unstructured emit) + `obs::SpanTrace` (snapshot of the active scope ancestry). |
+
+## The proto-first canon
+
+`todomvc`, `interop-obs-host`, `interop-tracing-host`, and `sinks-showcase`
+all follow the same shape:
+
+```
+examples/<name>/
+├── Cargo.toml             # deps: anyhow, buffa, obs-core, obs-sdk, ...; build-deps: anyhow, obs-build
+├── build.rs               # obs_build::Config::new().files(...).include("proto").include_obs_options().compile()
+├── proto/<pkg>/v1/events.proto   # messages with obs.v1.event + obs.v1.field annotations
+├── README.md
+└── src/
+    ├── main.rs            # obs_sdk::include_schemas!("<pkg>.v1");  +  StandardObserver::builder()...
+    └── ...
+```
+
+Every example's README walks through the CLI dogfooding loop:
+
+```bash
+obs validate examples/<name>/proto/<pkg>/v1/events.proto --include examples/<name>/proto
+obs lint --schemas $(pwd)/examples/<name>/proto
+obs schema show <pkg>.v1.<EventName> --schemas $(pwd)/examples/<name>/proto
+obs doctor --root examples/<name>
+cargo run -p obs-example-<name>
+```
+
+Pair with `obs tail --file <ndjson>` and `obs query --from <ndjson> --event <full_name>`
+once an example writes NDJSON output.
 
 ## Run
 
 ```bash
-# tracing — start the service then probe it from another terminal
-cargo run -p obs-example-http-service
-
-# analytics — produces ./obs-out/parquet/...
-cargo run -p obs-example-batch-pipeline -- --batches 10 --rows 5000
-
-# metrics — workers + tasks
-cargo run -p obs-example-worker-pool -- --workers 4 --tasks 200
+cargo run -p obs-example-todomvc -- --port 8090
+cargo run -p obs-example-interop-obs-host
+RUST_LOG=info cargo run -p obs-example-interop-tracing-host
+cargo run -p obs-example-sinks-showcase -- --requests 50
+cargo run -p obs-example-multi-tenant
+cargo run -p obs-example-forensic-and-spantrace
 ```
 
-Each example's README explains its inputs, expected output, and any
-known gaps tracked in [`specs/93-improvements-review.md`](../specs/93-improvements-review.md).
-
-## Why these three?
-
-Together they cover the spec 93 § 6.1–6.3 surface and exercise every
-sink / observer path that landed in Phase 6:
-
-- The buffa payload encoder + runtime scrubber (P0-1 / P0-2) — every
-  emit goes through `EventSchema::encode_payload` and the
-  `scrub_for_log` default impl.
-- The OTLP/gRPC exporter (P0-6) — http-service and worker-pool both
-  wire `GrpcOtlpExporter` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-- The Parquet sink (P1-8 follow-up) — batch-pipeline produces real
-  Parquet files with the spec 22 sparse `obs_events` schema.
-- The async drain path (`Observer::shutdown().await`) — every
-  example explicitly drains so users see the correct shutdown
-  pattern.
-
-Each example also surfaces a known limitation in its README so the
-gap between "what works today" and "what spec 93 will close" is
-honest.
+Each example's README explains the inputs, expected output, and any
+known gaps tracked in [`specs/`](../specs/).

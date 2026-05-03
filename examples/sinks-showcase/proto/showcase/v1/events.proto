@@ -1,0 +1,58 @@
+syntax = "proto3";
+package showcase.v1;
+
+import "obs/v1/options.proto";
+
+// One per inbound HTTP request — the LOG-tier spine of the example so
+// console + Parquet (and OTLP when enabled) always receive a row per
+// emit. Labels are LOW cardinality so downstream metric labels stay
+// bounded.
+message ObsShowcaseRequest {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string endpoint    = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string method      = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string client      = 3 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint32 status_code = 4 [(obs.v1.field) = { kind: ATTRIBUTE }];
+}
+
+// Per-request latency + bytes-out, recorded as MEASUREMENT fields so
+// the metric pipeline (or OtlpMetricSink) can project them as
+// histograms / counters.
+message ObsShowcaseLatency {
+  option (obs.v1.event) = {
+    tier: TIER_METRIC,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string endpoint   = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 latency_ms = 2 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: {
+      kind: METRIC_KIND_HISTOGRAM,
+      unit: "ms",
+      bounds: [1.0, 10.0, 100.0, 1000.0]
+    }
+  }];
+  uint64 bytes_out  = 3 [(obs.v1.field) = {
+    kind: MEASUREMENT,
+    metric: { kind: METRIC_KIND_COUNTER, unit: "By" }
+  }];
+}
+
+// AUDIT-tier event for revenue-affecting operations. Always retained
+// in Parquet for analytics — the example never routes AUDIT through
+// OTLP because the audit row is the long-lived record of truth.
+message ObsShowcaseRevenue {
+  option (obs.v1.event) = {
+    tier: TIER_AUDIT,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string currency       = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 amount_micros  = 2 [(obs.v1.field) = { kind: ATTRIBUTE }];
+  string customer_id    = 3 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}

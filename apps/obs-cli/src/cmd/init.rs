@@ -102,9 +102,16 @@ fn write_unless_exists(path: &Path, body: &str) -> Result<()> {
 }
 
 fn cargo_toml(name: &str, mode: Mode) -> String {
-    let build_deps = match mode {
-        Mode::Rust => "",
-        Mode::Proto => "[build-dependencies]\nobs-build = \"0.1\"\n\n",
+    // Proto-first generated code references absolute `::buffa::` and
+    // `::obs_core::` paths (codegen.rs / include_schemas!), so the
+    // user crate must depend on both directly. Without these the
+    // `cargo build` after scaffolding fails with E0432/E0433.
+    let (extra_deps, build_deps) = match mode {
+        Mode::Rust => ("", String::new()),
+        Mode::Proto => (
+            "buffa = \"0.4\"\nobs-core = \"0.1\"\n",
+            "[build-dependencies]\nanyhow = \"1\"\nobs-build = \"0.1\"\n\n".to_string(),
+        ),
     };
     format!(
         r#"[package]
@@ -118,7 +125,7 @@ forensic_max  = 5
 
 [dependencies]
 anyhow = "1"
-obs-sdk = "0.1"
+{extra_deps}obs-sdk = "0.1"
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 
 {build_deps}"#,

@@ -244,9 +244,17 @@ impl ObsToTracingSink {
                 entries.insert("obs.labels", pretty);
             }
             if !env.payload.is_empty() && self.payload_decode == PayloadDecodeMode::Off {
-                // forensic message often lives in payload — surface
-                // as `message` if it fits.
-                if let Ok(s) = std::str::from_utf8(&env.payload) {
+                // Forensic events stash a free-form `message` in the
+                // payload as raw UTF-8. Typed events stash protobuf
+                // wire bytes — those happen to also be valid UTF-8
+                // (low-byte field tags + ASCII strings), so a plain
+                // `from_utf8(...).is_ok()` will misclassify them and
+                // leak protobuf framing into the rendered `message`
+                // field. Only promote when every byte is printable
+                // text (or whitespace), which protobuf framing is not.
+                if let Ok(s) = std::str::from_utf8(&env.payload)
+                    && s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t')
+                {
                     entries.insert("message", s.to_string());
                 }
             }

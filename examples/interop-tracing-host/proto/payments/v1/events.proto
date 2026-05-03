@@ -1,0 +1,35 @@
+syntax = "proto3";
+package payments.v1;
+
+import "obs/v1/options.proto";
+
+// A payment was authorized. LOG/INFO so each successful authorization
+// shows up in the host's existing tracing-subscriber output without
+// sampling. `amount_micros` is ATTRIBUTE — the monetary value should
+// not become a metric label.
+message ObsPaymentAuthorized {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_INFO,
+  };
+
+  string payment_id    = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string merchant_id   = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  uint64 amount_micros = 3 [(obs.v1.field) = { kind: ATTRIBUTE }];
+  string card_brand    = 4 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}
+
+// A payment was declined. `decline_reason` is LOW-card (a closed enum
+// of bank/processor reason codes) so dashboards can break down by
+// reason. Default severity is WARN — the schema author already knows
+// declines are warning-worthy, so callers just `.emit()`.
+message ObsPaymentDeclined {
+  option (obs.v1.event) = {
+    tier: TIER_LOG,
+    default_sev: SEVERITY_WARN,
+  };
+
+  string payment_id     = 1 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string merchant_id    = 2 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+  string decline_reason = 3 [(obs.v1.field) = { kind: LABEL, cardinality: LOW }];
+}

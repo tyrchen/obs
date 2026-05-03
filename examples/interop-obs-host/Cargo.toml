@@ -1,6 +1,6 @@
 [package]
-name = "obs-example-multi-tenant"
-description = "Per-task observer routing for multi-tenant services."
+name = "obs-example-interop-obs-host"
+description = "obs-first app that bridges 3rd-party tracing into the same obs pipeline."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,9 +9,17 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+buffa = { workspace = true }
+clap = { workspace = true }
 obs-core = { workspace = true }
 obs-sdk = { workspace = true }
+obs-tracing-bridge = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+
+[build-dependencies]
+anyhow = { workspace = true }
+obs-build = { workspace = true }
 
 [lints]
 workspace = true

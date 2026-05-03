@@ -1,0 +1,25 @@
+[package]
+name = "obs-example-interop-tracing-host"
+description = "tracing-host app that adopts an internal obs library; obs events fan out via the existing tracing-subscriber."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+buffa = { workspace = true }
+obs-core = { workspace = true }
+obs-sdk = { workspace = true }
+obs-tracing-bridge = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+anyhow = { workspace = true }
+obs-build = { workspace = true }
+
+[lints]
+workspace = true

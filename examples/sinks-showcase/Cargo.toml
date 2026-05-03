@@ -1,0 +1,25 @@
+[package]
+name = "obs-example-sinks-showcase"
+description = "Single binary fanning out the same events to console, OTLP, and Parquet."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+buffa = { workspace = true }
+clap = { workspace = true }
+obs-core = { workspace = true }
+obs-otel = { workspace = true }
+obs-parquet = { workspace = true }
+obs-sdk = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+[build-dependencies]
+anyhow = { workspace = true }
+obs-build = { workspace = true }
+
+[lints]
+workspace = true
