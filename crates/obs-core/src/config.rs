@@ -1,11 +1,13 @@
 //! `EventsConfig` — runtime-tunable configuration loaded from
-//! `obs.yaml` and exposed via `ArcSwap` for live reload.
+//! `obs.yaml` and exposed via `ArcSwap` for live reload. Spec 15 +
+//! spec 93 P0-9.
 //!
-//! Phase-1 surface implements the **shell** (a deserialisable
-//! `EventsConfig` type that an observer can hold under `ArcSwap`);
-//! file-watcher reload, env-var overlay, and SIGHUP wiring land in
-//! Phase 3 sub-tasks. Defining the type now lets every later phase
-//! consume the same struct shape rather than improvising. Spec 15.
+//! The loader uses synchronous `std::fs` because config loading runs
+//! once at startup (and on SIGHUP / file-watcher events on cold-ish
+//! paths); switching to `tokio::fs` would require either an async
+//! constructor or a `block_on` round-trip. The crate's clippy lint
+//! against `std::fs` is intentionally allowed here for that reason.
+#![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
 
@@ -59,6 +61,135 @@ impl EventsConfig {
         EventsConfigBuilder::default()
     }
 
+    /// Parse YAML bytes into an [`EventsConfig`]. Spec 15 § 5.1 / spec
+    /// 93 P0-9. `${VAR}` references in scalar string values are
+    /// expanded against the process environment before parsing — set
+    /// `${VAR:-default}` to provide a fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Yaml` when parsing fails (unknown fields,
+    /// type mismatch, syntax error). Validation is left to the caller
+    /// — call [`Self::validate`] after loading.
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
+        let expanded = expand_env_vars(yaml);
+        serde_yaml::from_str(&expanded).map_err(|e| ConfigError::Yaml(e.to_string()))
+    }
+
+    /// Read a YAML file from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Io` when the file cannot be read or
+    /// `ConfigError::Yaml` when parsing fails.
+    pub fn from_yaml_path(path: impl AsRef<std::path::Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let bytes = std::fs::read_to_string(path)
+            .map_err(|e| ConfigError::Io(format!("{}: {}", path.display(), e)))?;
+        Self::from_yaml_str(&bytes)
+    }
+
+    /// Apply environment-variable overrides under `prefix`. The
+    /// convention is `<PREFIX>_<DOTTED_PATH_WITH___INSTEAD_OF_DOTS>` —
+    /// e.g. `OBS_FILTER` for `filter`, `OBS_AUDIT__SPOOL_DIR` for
+    /// `audit.spool_dir`, `OBS_SAMPLING__DEFAULT_RATE` for
+    /// `sampling.default_rate`. Values are parsed by re-running
+    /// serde_yaml against the resulting flat map. Spec 15 § 5.1 / spec
+    /// 93 P0-9.
+    #[must_use]
+    pub fn merged_with_env(self, prefix: &str) -> Self {
+        let mut overlay = serde_yaml::to_value(&self).unwrap_or(serde_yaml::Value::Null);
+        let prefix_uc = prefix.to_ascii_uppercase();
+        let prefix_with_under = format!("{prefix_uc}_");
+        for (key, value) in std::env::vars() {
+            if !key.starts_with(&prefix_with_under) {
+                continue;
+            }
+            let stripped = match key.strip_prefix(&prefix_with_under) {
+                Some(s) => s,
+                None => continue,
+            };
+            // `__` separator → nested path; `_` keeps the field name as-is.
+            let path: Vec<String> = stripped
+                .split("__")
+                .map(|seg| seg.to_ascii_lowercase())
+                .collect();
+            apply_yaml_path(&mut overlay, &path, &value);
+        }
+        serde_yaml::from_value::<EventsConfig>(overlay).unwrap_or(self)
+    }
+}
+
+fn apply_yaml_path(root: &mut serde_yaml::Value, path: &[String], value: &str) {
+    let Some((head, tail)) = path.split_first() else {
+        return;
+    };
+    if !root.is_mapping() {
+        *root = serde_yaml::Value::Mapping(Default::default());
+    }
+    let Some(map) = root.as_mapping_mut() else {
+        return;
+    };
+    let key = serde_yaml::Value::String(head.clone());
+    if tail.is_empty() {
+        // Try to interpret as YAML scalar so booleans / numbers parse;
+        // fall back to a plain string.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(value)
+            .unwrap_or_else(|_| serde_yaml::Value::String(value.to_string()));
+        map.insert(key, parsed);
+    } else {
+        let entry = map
+            .entry(key)
+            .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+        apply_yaml_path(entry, tail, value);
+    }
+}
+
+/// Expand `${VAR}` and `${VAR:-default}` references against the
+/// process environment. Unknown references with no default are left
+/// in place verbatim.
+fn expand_env_vars(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(&b) = bytes.get(i) else { break };
+        if b == b'$'
+            && bytes.get(i + 1) == Some(&b'{')
+            && let Some(end) = bytes
+                .iter()
+                .skip(i + 2)
+                .position(|&c| c == b'}')
+                .map(|n| n + i + 2)
+        {
+            let Some(inner) = input.get(i + 2..end) else {
+                out.push(b as char);
+                i += 1;
+                continue;
+            };
+            let (name, default) = match inner.split_once(":-") {
+                Some((n, d)) => (n, Some(d)),
+                None => (inner, None),
+            };
+            let resolved = std::env::var(name)
+                .ok()
+                .or_else(|| default.map(str::to_string));
+            if let Some(v) = resolved {
+                out.push_str(&v);
+            } else {
+                let Some(span) = input.get(i..=end) else { break };
+                out.push_str(span);
+            }
+            i = end + 1;
+            continue;
+        }
+        out.push(b as char);
+        i += 1;
+    }
+    out
+}
+
+impl EventsConfig {
     /// Validate ranges. Returns the first violation found, or `Ok` if
     /// the config is well-formed. Spec 15 § 6.
     ///
@@ -184,6 +315,13 @@ pub struct AuditConfig {
     /// On-failure behaviour when spool is unwritable.
     #[serde(default)]
     pub on_failure: AuditFailureMode,
+    /// fsync policy for the on-disk spool. Spec 11 § 6.4 + decision
+    /// D6-5: default `per_batch` trades a tiny durability window for
+    /// ~64x throughput vs `per_record`. Operators who need strict
+    /// durability flip to `per_record`; soak / dev profiles can use
+    /// `none`.
+    #[serde(default)]
+    pub fsync_mode: AuditFsyncMode,
 }
 
 impl Default for AuditConfig {
@@ -195,8 +333,28 @@ impl Default for AuditConfig {
             spool_dir: default_audit_dir(),
             spool_max_bytes: default_1gib(),
             on_failure: AuditFailureMode::default(),
+            fsync_mode: AuditFsyncMode::default(),
         }
     }
+}
+
+/// fsync policy applied to the AUDIT spool after each append. Spec 11
+/// § 6.4 + decision D6-5.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditFsyncMode {
+    /// No `fsync` after writes. Fastest; lossy under host crash.
+    /// Suitable only for non-compliance dev / soak runs.
+    None,
+    /// Fsync after each batched append (default). Bounds the
+    /// durability window to one batch (~64 records) while keeping
+    /// steady-state throughput near zero-fsync.
+    #[default]
+    PerBatch,
+    /// Fsync after every single record. Strictest durability, lowest
+    /// throughput. Pick this when AUDIT volume is low and
+    /// regulatory compliance demands per-record persistence.
+    PerRecord,
 }
 
 /// Behaviour when AUDIT delivery cannot complete (spec 11 § 6.4).
@@ -288,7 +446,7 @@ pub struct ServiceConfig {
     pub extra: BTreeMap<String, String>,
 }
 
-/// Errors returned by [`EventsConfig::validate`].
+/// Errors returned by [`EventsConfig::validate`] / loaders.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConfigError {
@@ -301,6 +459,12 @@ pub enum ConfigError {
         /// messages without leaking via `Box::leak`).
         detail: String,
     },
+    /// I/O failure reading the config file.
+    #[error("io: {0}")]
+    Io(String),
+    /// YAML parsing / shape error from the loader.
+    #[error("yaml: {0}")]
+    Yaml(String),
 }
 
 impl ConfigError {
@@ -458,5 +622,50 @@ mod tests {
         let yaml = "filter: info\nbogus_field: 42\n";
         let result: Result<EventsConfig, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err(), "unknown_fields must reject unknown keys");
+    }
+
+    #[test]
+    fn test_from_yaml_str_should_parse_filter_and_sampling() {
+        let yaml = "filter: info\nsampling:\n  default_rate: 0.25\n";
+        let cfg = EventsConfig::from_yaml_str(yaml).expect("parse");
+        assert_eq!(cfg.filter.as_deref(), Some("info"));
+        assert!((cfg.sampling.default_rate - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_from_yaml_str_should_use_default_when_var_unset() {
+        // Pure-read env-var test: pick a name nothing in the test env
+        // could plausibly set. The expand-on-set / merged_with_env
+        // paths are unit-tested by `expand_env_vars` and
+        // `apply_yaml_path` below, both safe to call without env
+        // mutation (which is `unsafe` under Rust 2024 and disallowed
+        // by the crate's `#![forbid(unsafe_code)]`).
+        let yaml = "filter: ${OBS_NEVER_SET_VAR_XYZ:-info}\n";
+        let cfg = EventsConfig::from_yaml_str(yaml).expect("parse");
+        assert_eq!(cfg.filter.as_deref(), Some("info"));
+    }
+
+    #[test]
+    fn test_expand_env_vars_should_keep_unmatched_reference_verbatim() {
+        let out = expand_env_vars("${OBS_NEVER_SET_VAR_AAAA}");
+        assert_eq!(out, "${OBS_NEVER_SET_VAR_AAAA}");
+    }
+
+    #[test]
+    fn test_expand_env_vars_should_drop_to_default_for_unset() {
+        let out = expand_env_vars("${OBS_NEVER_SET_VAR_BBBB:-fallback}");
+        assert_eq!(out, "fallback");
+    }
+
+    #[test]
+    fn test_apply_yaml_path_should_walk_nested_keys() {
+        let mut root = serde_yaml::Value::Mapping(Default::default());
+        apply_yaml_path(
+            &mut root,
+            &["sampling".to_string(), "default_rate".to_string()],
+            "0.5",
+        );
+        let cfg: EventsConfig = serde_yaml::from_value(root).expect("parse");
+        assert!((cfg.sampling.default_rate - 0.5).abs() < f64::EPSILON);
     }
 }

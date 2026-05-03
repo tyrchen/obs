@@ -25,7 +25,7 @@ use std::{
 use obs_proto::{__private::Message, obs::v1::ObsEnvelope};
 use parking_lot::Mutex;
 
-use crate::config::AuditFailureMode;
+use crate::config::{AuditFailureMode, AuditFsyncMode};
 
 /// Polynomial used by CRC-32C / Castagnoli.
 const CRC32C_POLY: u32 = 0x82F63B78;
@@ -51,6 +51,7 @@ pub fn crc32c(data: &[u8]) -> u32 {
 pub struct SpoolWriter {
     inner: Arc<Mutex<SpoolInner>>,
     on_failure: AuditFailureMode,
+    fsync_mode: AuditFsyncMode,
 }
 
 #[derive(Debug)]
@@ -62,7 +63,15 @@ struct SpoolInner {
     crc_path: PathBuf,
     bytes_written: u64,
     max_bytes: u64,
+    /// Records appended since the last fsync; reset to 0 on flush.
+    pending_records: u32,
 }
+
+/// Records per fsync window when `AuditFsyncMode::PerBatch` is in
+/// effect. 64 was picked to balance throughput against the size of
+/// the durability window — at 1 KiB/record that is a 64 KiB blast
+/// radius per host crash, well under typical SSD page sizes.
+const FSYNC_BATCH_SIZE: u32 = 64;
 
 impl SpoolWriter {
     /// Open a fresh batch in `dir`. Files are named
@@ -77,6 +86,22 @@ impl SpoolWriter {
         max_bytes: u64,
         on_failure: AuditFailureMode,
     ) -> io::Result<Self> {
+        Self::open_with_fsync(dir, max_bytes, on_failure, AuditFsyncMode::default())
+    }
+
+    /// Same as [`Self::open`] but with an explicit fsync policy. Spec
+    /// 11 § 6.4 / decision D6-5.
+    ///
+    /// # Errors
+    ///
+    /// Returns `io::Error` when the directory cannot be created or the
+    /// files cannot be opened for append.
+    pub fn open_with_fsync(
+        dir: impl Into<PathBuf>,
+        max_bytes: u64,
+        on_failure: AuditFailureMode,
+        fsync_mode: AuditFsyncMode,
+    ) -> io::Result<Self> {
         let dir: PathBuf = dir.into();
         std::fs::create_dir_all(&dir)?;
         let stamp = batch_stamp();
@@ -90,6 +115,14 @@ impl SpoolWriter {
             .create(true)
             .append(true)
             .open(&crc_path)?;
+        // After creating new spool files, fsync the parent directory
+        // so the directory entries themselves are durable. Without
+        // this, an immediate host crash can leave the entries
+        // unrecorded on ext4/APFS even though the file open succeeded.
+        if !matches!(fsync_mode, AuditFsyncMode::None) {
+            let dir_handle = File::open(&dir)?;
+            let _ = dir_handle.sync_all();
+        }
         Ok(Self {
             inner: Arc::new(Mutex::new(SpoolInner {
                 dir,
@@ -99,8 +132,10 @@ impl SpoolWriter {
                 crc_path,
                 bytes_written: 0,
                 max_bytes,
+                pending_records: 0,
             })),
             on_failure,
+            fsync_mode,
         })
     }
 
@@ -135,6 +170,46 @@ impl SpoolWriter {
         crc_file.write_all(&crc.to_le_bytes())?;
         crc_file.flush()?;
         inner.bytes_written += buf.len() as u64 + 4;
+        inner.pending_records += 1;
+        // Spec 11 § 6.4 / decision D6-5: apply the configured fsync
+        // policy. `flush()` only pushes data into the kernel buffer;
+        // `sync_data()` blocks until the disk acknowledges so a host
+        // crash cannot lose recently-appended records.
+        let should_fsync = match self.fsync_mode {
+            AuditFsyncMode::None => false,
+            AuditFsyncMode::PerRecord => true,
+            AuditFsyncMode::PerBatch => inner.pending_records >= FSYNC_BATCH_SIZE,
+        };
+        if should_fsync {
+            // Borrow each file separately to avoid holding two mutable
+            // borrows on `inner`.
+            if let Some(bin) = inner.bin.as_mut() {
+                bin.sync_data()?;
+            }
+            if let Some(crc) = inner.crc.as_mut() {
+                crc.sync_data()?;
+            }
+            inner.pending_records = 0;
+        }
+        Ok(())
+    }
+
+    /// Force an immediate fsync regardless of the configured policy.
+    /// Used by `Sink::flush` / `shutdown` paths to guarantee that all
+    /// AUDIT records on disk are durable before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error if `sync_data` fails.
+    pub fn fsync_now(&self) -> io::Result<()> {
+        let mut inner = self.inner.lock();
+        if let Some(bin) = inner.bin.as_mut() {
+            bin.sync_data()?;
+        }
+        if let Some(crc) = inner.crc.as_mut() {
+            crc.sync_data()?;
+        }
+        inner.pending_records = 0;
         Ok(())
     }
 

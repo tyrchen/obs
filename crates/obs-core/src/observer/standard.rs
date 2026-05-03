@@ -340,7 +340,27 @@ impl StandardObserver {
     fn run_emit_pipeline(&self, env: &mut ObsEnvelope, sev: obs_types::Severity) -> bool {
         // Step 3 (post-project): auto-fill from scope frame stack.
         auto_fill_envelope(env);
-        // Step 4: head sampler.
+        // Step 3a: per-emit dynamic filter directive (`[field=value]=level`).
+        // Spec 13 § 7.1 / spec 93 P0-5. Skipped only for sampler bypasses
+        // — those decisions live in `sample_decide`, which honours
+        // `SamplingReason::Forensic / Audit / Override`.
+        let filter = self.filter.load();
+        if !filter.event_allowed(env, sev) {
+            return false;
+        }
+        // Step 4: head sampler. Spec 13 § 6 / spec 93 P2-7: forensic /
+        // audit / override emits bypass the sampler unconditionally.
+        let bypass_sampler = matches!(
+            env.sampling_reason,
+            ::buffa::EnumValue::Known(
+                PSamplingReason::SAMPLING_REASON_FORENSIC
+                    | PSamplingReason::SAMPLING_REASON_AUDIT
+                    | PSamplingReason::SAMPLING_REASON_OVERRIDE,
+            )
+        );
+        if bypass_sampler {
+            return true;
+        }
         let cfg = self.config.load();
         let inbound = inbound_traceparent_sampled();
         match sample_decide(&cfg.sampling, env.full_name.as_str(), sev, inbound) {
@@ -624,10 +644,11 @@ impl StandardObserverBuilder {
         let counters = Arc::new(WorkerCounters::default());
         let spool = if self.router.audit.is_some() {
             Some(Arc::new(
-                SpoolWriter::open(
+                SpoolWriter::open_with_fsync(
                     cfg.audit.spool_dir.clone(),
                     cfg.audit.spool_max_bytes,
                     cfg.audit.on_failure,
+                    cfg.audit.fsync_mode,
                 )
                 .map_err(BuildError::SpoolOpen)?,
             ))
