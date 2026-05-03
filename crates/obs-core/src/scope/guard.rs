@@ -9,7 +9,7 @@ use std::sync::Arc;
 use obs_proto::obs::v1::{ObsEnvelope, SamplingReason as PSamplingReason};
 
 use super::{ScopeField, ScopeFrame, ScopeKind, pop_frame, push_frame};
-use crate::observer::Observer;
+use crate::observer::{Observer, enter_emit_envelope};
 
 /// RAII guard returned by `obs::scope!` and `obs::context!`. Dropping
 /// pops the frame; for `Scope` kind frames where any `>= ERROR`
@@ -108,5 +108,8 @@ fn flush_through(observer: &Arc<dyn Observer>, frame: &mut ScopeFrame) {
 }
 
 fn flush_one(observer: &Arc<dyn Observer>, env: ObsEnvelope) {
-    observer.emit_envelope(env);
+    // Route through `enter_emit_envelope` so the CAN_ENTER re-entry
+    // guard (spec 11 § 3.1) is held during the dispatch — protects
+    // against a sink that synthesises events during tail flush.
+    enter_emit_envelope(observer, env);
 }

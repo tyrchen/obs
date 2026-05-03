@@ -41,7 +41,7 @@ pub struct WorkerCounters {
 
 /// Single-tier worker handle.
 pub struct TierWorker {
-    sender: Option<mpsc::Sender<ObsEnvelope>>,
+    sender: parking_lot::Mutex<Option<mpsc::Sender<ObsEnvelope>>>,
     join: AsyncMutex<Option<JoinHandle<()>>>,
     shutdown: Arc<AtomicBool>,
     sink: Arc<dyn Sink>,
@@ -50,7 +50,7 @@ pub struct TierWorker {
 impl std::fmt::Debug for TierWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TierWorker")
-            .field("alive", &self.sender.is_some())
+            .field("alive", &self.sender.lock().is_some())
             .finish()
     }
 }
@@ -74,23 +74,18 @@ impl TierWorker {
         let counters_in = counters;
         let join = tokio::spawn(async move {
             let mut scratch = BytesMut::with_capacity(4096);
-            loop {
-                tokio::select! {
-                    biased;
-                    Some(env) = rx.recv() => {
-                        deliver_one(&env, &registry_in, &mut scratch, &sink_in);
-                        counters_in.delivered.fetch_add(1, Ordering::Relaxed);
-                    }
-                    () = async {} , if shutdown_in.load(Ordering::Relaxed) && rx.is_empty() => {
-                        break;
-                    }
-                    else => break,
-                }
+            // Drain the channel until the sender side is dropped. The
+            // observer's `shutdown()` drops the sender, which makes
+            // `rx.recv()` return None and the loop exit cleanly.
+            while let Some(env) = rx.recv().await {
+                deliver_one(&env, &registry_in, &mut scratch, &sink_in);
+                counters_in.delivered.fetch_add(1, Ordering::Relaxed);
                 if shutdown_in.load(Ordering::Relaxed) && rx.is_empty() {
                     break;
                 }
             }
-            // Final drain.
+            // Final non-blocking drain (in case shutdown raced with
+            // an in-flight send).
             while let Ok(env) = rx.try_recv() {
                 deliver_one(&env, &registry_in, &mut scratch, &sink_in);
                 counters_in.delivered.fetch_add(1, Ordering::Relaxed);
@@ -99,7 +94,7 @@ impl TierWorker {
             let _ = tier;
         });
         Self {
-            sender: Some(tx),
+            sender: parking_lot::Mutex::new(Some(tx)),
             join: AsyncMutex::new(Some(join)),
             shutdown,
             sink,
@@ -113,7 +108,8 @@ impl TierWorker {
     /// the hot path.
     #[allow(clippy::result_large_err)]
     pub fn try_send(&self, env: ObsEnvelope) -> Result<(), ObsEnvelope> {
-        let Some(sender) = self.sender.as_ref() else {
+        let guard = self.sender.lock();
+        let Some(sender) = guard.as_ref() else {
             return Err(env);
         };
         match sender.try_send(env) {
@@ -127,14 +123,20 @@ impl TierWorker {
     /// Bounded blocking send used by the AUDIT tier. The future
     /// resolves when the envelope is enqueued or the timeout elapses.
     /// See [`Self::try_send`] for the rationale on `result_large_err`.
-    #[allow(clippy::result_large_err)]
+    ///
+    /// Currently the AUDIT path uses a sync `try_send` busy-wait loop
+    /// with `std::thread::sleep` instead of this async helper, so the
+    /// `#[allow(dead_code)]` keeps the helper around for callers that
+    /// want a future-shaped variant.
+    #[allow(clippy::result_large_err, dead_code)]
     pub async fn send_with_timeout(
         &self,
         env: ObsEnvelope,
         timeout: std::time::Duration,
     ) -> Result<(), ObsEnvelope> {
-        let Some(sender) = self.sender.as_ref() else {
-            return Err(env);
+        let sender = match self.sender.lock().as_ref() {
+            Some(s) => s.clone(),
+            None => return Err(env),
         };
         let cloned = env.clone();
         match tokio::time::timeout(timeout, sender.send(env)).await {
@@ -153,10 +155,13 @@ impl TierWorker {
         self.sink.flush().await;
     }
 
-    /// Shut down the worker: drop the sender, wait for drain, await
-    /// sink.shutdown.
+    /// Shut down the worker: drop the sender (so the receiver's
+    /// `recv().await` returns `None` and the loop exits), wait for the
+    /// task to finish, then call `Sink::shutdown`.
     pub async fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        // Drop the sender so rx.recv() returns None.
+        self.sender.lock().take();
         let mut guard = self.join.lock().await;
         if let Some(join) = guard.take() {
             let _ = join.await;

@@ -8,6 +8,7 @@ use std::sync::{
 };
 
 use arc_swap::ArcSwap;
+use bytes;
 use obs_proto::obs::v1::{ObsEnvelope, SamplingReason as PSamplingReason};
 use obs_types::Tier;
 use parking_lot::Mutex;
@@ -184,11 +185,19 @@ impl StandardObserver {
     }
 
     fn dispatch_sync(&self, env: ObsEnvelope, tier: Tier) {
+        // No tokio runtime ⇒ deliver in-emit-thread. The spec's
+        // "scrubber on the worker thread" rule (spec 11 § 4.1) still
+        // applies: sinks must never see an unscrubbed envelope, so we
+        // run the scrubber here and then dispatch.
         let _g = self.sync_dispatch_lock.lock();
         let Some(sink) = self.router.for_tier(tier) else {
             return;
         };
-        let scrubbed = ScrubbedEnvelope::pass_through(&env, &self.registry);
+        let mut scratch = bytes::BytesMut::with_capacity(env.payload.len());
+        let scrubbed = match ScrubbedEnvelope::scrub(&env, &self.registry, &mut scratch) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
         sink.deliver(scrubbed);
     }
 
@@ -219,23 +228,28 @@ impl StandardObserver {
 
     fn dispatch_audit(&self, worker: &TierWorker, env: ObsEnvelope) {
         let cfg = self.config.load();
-        let block_ms = cfg.audit.block_ms_max;
-        let timeout = std::time::Duration::from_millis(u64::from(block_ms));
+        let block_ms = u64::from(cfg.audit.block_ms_max);
         // First try a non-blocking send; if it succeeds, we're done.
-        let env = match worker.try_send(env) {
+        let mut env_unsent = match worker.try_send(env) {
             Ok(()) => return,
             Err(env) => env,
         };
-        // Fall back to bounded blocking with the configured timeout.
-        let send_result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(worker.send_with_timeout(env, timeout))
-        } else {
-            Err(env)
-        };
-        let env_unsent = match send_result {
-            Ok(()) => return,
-            Err(env) => env,
-        };
+        // Fall back to bounded busy-wait with the configured timeout.
+        // We deliberately do NOT call `Handle::block_on` here — that
+        // panics when the caller is already inside a runtime. Instead,
+        // poll `try_send` with a short sleep to honour the documented
+        // "bounded blocking" semantics (spec 11 § 6.4) without relying
+        // on `block_on`. The total wall-clock blocking is bounded by
+        // `audit.block_ms_max`.
+        let started = std::time::Instant::now();
+        let interval = std::time::Duration::from_millis(2);
+        while started.elapsed().as_millis() < u128::from(block_ms) {
+            match worker.try_send(env_unsent) {
+                Ok(()) => return,
+                Err(env) => env_unsent = env,
+            }
+            std::thread::sleep(interval);
+        }
         // Channel still full ⇒ spool to disk.
         if let Some(spool) = self.spool.as_ref() {
             match spool.append(&env_unsent) {
@@ -268,6 +282,46 @@ impl StandardObserver {
                 }
             }
         }
+    }
+
+    /// Drain any `*.audit.bin` files left in `audit.spool_dir` by a
+    /// prior process. Recovered envelopes are dispatched through the
+    /// AUDIT worker (or the sync fallback if no runtime is alive). One
+    /// `ObsAuditSpoolRecovered` self-event is emitted at the end with
+    /// the total count. Spec 11 § 6.4.
+    fn recover_audit_spool(&self) {
+        let cfg = self.config.load();
+        let dir = cfg.audit.spool_dir.clone();
+        if !dir.exists() {
+            return;
+        }
+        let mut total: u64 = 0;
+        let report = crate::audit_spool::recover(&dir, |env| {
+            total += 1;
+            // Re-enqueue: sync if no worker, async otherwise.
+            if let Some(worker) = self.workers.audit.as_ref() {
+                let _ = worker.try_send(env);
+            } else {
+                self.dispatch_sync(env, Tier::Audit);
+            }
+            Ok(())
+        });
+        if total == 0 {
+            let _ = report;
+            return;
+        }
+        let mut env = ObsEnvelope {
+            full_name: "obs.runtime.v1.ObsAuditSpoolRecovered".to_string(),
+            tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
+            sev: ::buffa::EnumValue::Known(obs_proto::obs::v1::Severity::SEVERITY_INFO),
+            ..Default::default()
+        };
+        env.labels
+            .insert("record_count".to_string(), total.to_string());
+        // Route directly through this observer (the global may not be
+        // installed yet at builder-time).
+        self.fill_identity(&mut env);
+        self.dispatch_sync(env, Tier::Log);
     }
 
     /// Apply scope auto-fill, head sampling, and tail-buffer push to
@@ -569,7 +623,7 @@ impl StandardObserverBuilder {
             WorkerPool::default()
         };
 
-        Ok(StandardObserver {
+        let observer = StandardObserver {
             router: self.router,
             workers,
             spool,
@@ -582,7 +636,14 @@ impl StandardObserverBuilder {
             instance,
             version,
             sync_dispatch_lock: Mutex::new(()),
-        })
+        };
+        // Spec 11 § 6.4: at observer init, drain any `*.audit.bin`
+        // files left over from a prior process. Each recovered record
+        // is enqueued onto the AUDIT worker; one
+        // `ObsAuditSpoolRecovered` self-event is emitted with the total
+        // count.
+        observer.recover_audit_spool();
+        Ok(observer)
     }
 }
 

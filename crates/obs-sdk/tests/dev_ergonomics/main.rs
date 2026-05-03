@@ -32,3 +32,4 @@ mod test_quickstart_60s;
 mod test_registry_init;
 mod test_scrubbed_envelope;
 mod test_tracing_bridge;
+mod test_worker_pool;

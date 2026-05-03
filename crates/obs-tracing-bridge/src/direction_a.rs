@@ -1,20 +1,23 @@
 //! Direction A — `tracing::Event` → `obs::ObsEnvelope` via a
 //! `tracing-subscriber` Layer. Spec 30 § 2.
 
-use std::{
-    fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
-};
+use std::{cell::Cell, fmt, sync::Arc, time::Instant};
 
 use obs_proto::obs::v1::ObsEnvelope;
 use parking_lot::Mutex;
 use tracing::{Subscriber, field::Visit};
 use tracing_core::{Event, Field, Level};
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
+
+thread_local! {
+    /// Spec 30 § 4.1: thread-local re-entry guard. The bridge's
+    /// outbound emit (Layer → `obs::observer().emit_envelope`) runs
+    /// synchronously, so a thread-local cell suffices to break the
+    /// loop without the cross-thread coupling an `AtomicBool` would
+    /// introduce. Mirrors the `IN_TRACING_BRIDGE` cell named in spec
+    /// 30 § 4.1.
+    static IN_TRACING_BRIDGE: Cell<bool> = const { Cell::new(false) };
+}
 
 use crate::{
     field_promotions::{FieldPromotions, level_to_severity},
@@ -42,7 +45,6 @@ pub struct TracingToObsLayer {
     promotions: Arc<FieldPromotions>,
     redactor: Arc<dyn Redactor>,
     span_event_mode: SpanEventMode,
-    loop_guard: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for TracingToObsLayer {
@@ -68,7 +70,6 @@ impl TracingToObsLayer {
             promotions: Arc::new(FieldPromotions::new()),
             redactor: Arc::new(DefaultPiiPatternRedactor::new()),
             span_event_mode: SpanEventMode::Off,
-            loop_guard: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -196,17 +197,23 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Loop guard: skip events whose target starts with `obs.bridge`.
+        // Loop guard: skip events whose target starts with `obs.bridge`
+        // (defence-in-depth from spec 30 § 4.1).
         let target = event.metadata().target();
         if target == "obs.bridge" || target.starts_with("obs.bridge.") {
             return;
         }
-        if self.loop_guard.swap(true, Ordering::Relaxed) {
+        // Thread-local re-entry guard. If a sink synthesises a
+        // tracing event while we are already inside the bridge, that
+        // synthetic event sees `IN_TRACING_BRIDGE = true` and returns
+        // immediately. Spec 30 § 4.1.
+        let was_in = IN_TRACING_BRIDGE.with(|c| c.replace(true));
+        if was_in {
             return;
         }
         let env = self.record_to_envelope(event);
         obs_core::observer().emit_envelope(env);
-        self.loop_guard.store(false, Ordering::Relaxed);
+        IN_TRACING_BRIDGE.with(|c| c.set(false));
     }
 
     fn on_new_span(

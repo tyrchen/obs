@@ -56,6 +56,10 @@ fn emit_panicked(info: &PanicHookInfo<'_>) {
     env.labels
         .insert("message".to_string(), truncate(&message, 1024));
     env.labels.insert("location".to_string(), location);
+    // Spec 11 § 6.1: capture trace_id / span_id from the active
+    // `obs::scope!` frame, so the panic event correlates with the
+    // request that triggered it.
+    crate::scope::auto_fill_envelope(&mut env);
 
     let observer = crate::observer::observer();
     observer.emit_envelope(env);
