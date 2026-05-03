@@ -68,5 +68,9 @@ harness = false
 name = "blake3_callsite"
 harness = false
 
+[[bench]]
+name = "encode_payload"
+harness = false
+
 [lints]
 workspace = true

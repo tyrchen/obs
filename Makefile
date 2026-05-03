@@ -66,4 +66,24 @@ soak-ceiling:
 check-format-ver:
 	@bash scripts/check-format-ver.sh
 
-.PHONY: build test release update-submodule lint-strict audit deny soak soak-24h soak-ceiling check-format-ver
+# ─── Bench gate (spec 94 § 3.6 / P2-F) ────────────────────────────────
+
+# Run every criterion harness across the workspace. Output lands under
+# `target/criterion/` for each bench group.
+bench:
+	@cargo bench --workspace
+
+# Refresh the checked-in baseline snapshot. Run locally after a
+# performance-affecting change; commit the resulting JSON. Spec 94 §
+# 3.6 / D7-5.
+bench-baseline:
+	@bash scripts/bench-baseline.sh
+
+# Compare the local bench numbers against the checked-in baseline and
+# fail when any named bench regresses by more than 10%. Wired into the
+# nightly `bench-gate` GitHub Actions job per D7-5; per-PR runs are
+# too slow.
+bench-gate:
+	@bash scripts/bench-gate.sh
+
+.PHONY: build test release update-submodule lint-strict audit deny soak soak-24h soak-ceiling check-format-ver bench bench-baseline bench-gate
