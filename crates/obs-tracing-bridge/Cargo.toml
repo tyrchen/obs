@@ -44,3 +44,15 @@ workspace = true
 [[bench]]
 name = "bridge_overhead"
 harness = false
+
+[[bench]]
+name = "interning_cold"
+harness = false
+
+[[bench]]
+name = "interning_warm"
+harness = false
+
+[[bench]]
+name = "callsite_id_compute"
+harness = false

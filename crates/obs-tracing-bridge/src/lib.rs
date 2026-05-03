@@ -27,7 +27,7 @@ mod typed;
 pub use direction_a::{InterningMode, SpanEventMode, TracingToObsLayer};
 pub use direction_b::{ObsToTracingSink, PayloadDecodeMode, SpanEmissionMode};
 pub use field_promotions::{FieldPromotions, level_to_severity};
-pub use interning::PrewarmStats;
+pub use interning::{PrewarmStats, intern_or_lookup, run_prewarm};
 pub use prewarm::{PREWARM_CALLSITES, PrewarmEntry};
 pub use redactor::{DefaultPiiPatternRedactor, RedactAction, Redactor};
 pub use typed::TypedMatcher;

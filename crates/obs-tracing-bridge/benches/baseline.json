@@ -1,0 +1,100 @@
+{
+  "baselines": [
+    {
+      "mean_ns": 4.408370673656464,
+      "name": "arcswap_load_full"
+    },
+    {
+      "mean_ns": 4.290532350540161,
+      "name": "arcswap_load_full_then_method"
+    },
+    {
+      "mean_ns": 11.540633513554893,
+      "name": "auto_fill_envelope_no_scope"
+    },
+    {
+      "mean_ns": 114.09831047328758,
+      "name": "auto_fill_envelope_one_scope"
+    },
+    {
+      "mean_ns": 115.89185563229096,
+      "name": "blake3_hash_descriptor"
+    },
+    {
+      "mean_ns": 0.26035273524341246,
+      "name": "callsite_enabled_always_cached"
+    },
+    {
+      "mean_ns": 0.7761678328728054,
+      "name": "callsite_enabled_unknown"
+    },
+    {
+      "mean_ns": 133.32587480161843,
+      "name": "callsite_id_compute"
+    },
+    {
+      "mean_ns": 0.6428939967187505,
+      "name": "emit_filtered_short_circuit"
+    },
+    {
+      "mean_ns": 215.96656508435146,
+      "name": "emit_inmemory"
+    },
+    {
+      "mean_ns": 4681262.879166667,
+      "name": "emit_ndjson"
+    },
+    {
+      "mean_ns": 104.43715000598115,
+      "name": "emit_noop"
+    },
+    {
+      "mean_ns": 39.56174035176441,
+      "name": "encode_payload_obshttprequestcompleted"
+    },
+    {
+      "mean_ns": 730.786147139362,
+      "name": "interning_cold_register"
+    },
+    {
+      "mean_ns": 251.26008347116195,
+      "name": "interning_warm_lookup"
+    },
+    {
+      "mean_ns": 39.81334763855785,
+      "name": "obs_to_tracing_overhead"
+    },
+    {
+      "mean_ns": 5.98436463534773,
+      "name": "observer_resolution"
+    },
+    {
+      "mean_ns": 15.38662453589702,
+      "name": "registry_init_empty"
+    },
+    {
+      "mean_ns": 19.520989913906327,
+      "name": "registry_init_from_link_section"
+    },
+    {
+      "mean_ns": 2.125354478964859,
+      "name": "registry_lookup_empty_envelope"
+    },
+    {
+      "mean_ns": 49.80091410095828,
+      "name": "scope_push_pop"
+    },
+    {
+      "mean_ns": 43.63659642214262,
+      "name": "scrub_payload_pii_field"
+    },
+    {
+      "mean_ns": 763.4392995046053,
+      "name": "tracing_to_obs_overhead"
+    },
+    {
+      "mean_ns": 8.060272526219432,
+      "name": "with_observer_poll_once"
+    }
+  ]
+}

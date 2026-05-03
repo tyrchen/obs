@@ -11,16 +11,22 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
+# Honour `CARGO_TARGET_DIR` / `.cargo/config.toml`'s `target-dir` so
+# the script works when the workspace's compiled artefacts live
+# outside the repo (common when developers share a global cache).
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+
 cargo bench --workspace --quiet
 
 write_baseline() {
   local crate="$1"
   local out="crates/${crate}/benches/baseline.json"
-  if [[ ! -d "target/criterion" ]]; then
-    echo "no criterion output for ${crate}; run 'cargo bench' first" >&2
+  if [[ ! -d "${TARGET_DIR}/criterion" ]]; then
+    echo "no criterion output for ${crate} at ${TARGET_DIR}/criterion; run 'cargo bench' first" >&2
     return 1
   fi
-  python3 - "$crate" "$out" <<'PY'
+  python3 - "$crate" "$out" "$TARGET_DIR" <<'PY'
 import json
 import os
 import sys
@@ -28,7 +34,8 @@ from pathlib import Path
 
 crate = sys.argv[1]
 out_path = Path(sys.argv[2])
-root = Path("target/criterion")
+target_dir = Path(sys.argv[3])
+root = target_dir / "criterion"
 records = []
 if not root.is_dir():
     sys.exit(0)

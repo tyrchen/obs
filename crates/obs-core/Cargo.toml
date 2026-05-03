@@ -73,5 +73,25 @@ harness = false
 name = "encode_payload"
 harness = false
 
+[[bench]]
+name = "emit_filtered"
+harness = false
+
+[[bench]]
+name = "emit_inmemory"
+harness = false
+
+[[bench]]
+name = "emit_ndjson"
+harness = false
+
+[[bench]]
+name = "with_observer_poll"
+harness = false
+
+[[bench]]
+name = "registry_init"
+harness = false
+
 [lints]
 workspace = true

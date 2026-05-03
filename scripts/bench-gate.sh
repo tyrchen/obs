@@ -10,6 +10,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 THRESHOLD_PCT="${BENCH_GATE_THRESHOLD_PCT:-10}"
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 
 cargo bench --workspace --quiet
 
@@ -23,18 +25,18 @@ compare_one() {
     echo "no baseline checked in for ${crate}; skipping" >&2
     return 0
   fi
-  python3 - "$crate" "$baseline" "$THRESHOLD_PCT" <<'PY' || fail=$((fail+1))
+  python3 - "$crate" "$baseline" "$THRESHOLD_PCT" "$TARGET_DIR" <<'PY' || fail=$((fail+1))
 import json
 import sys
 from pathlib import Path
 
-crate, baseline_path, threshold = sys.argv[1:]
+crate, baseline_path, threshold, target_dir = sys.argv[1:]
 threshold_pct = float(threshold)
 baselines = {
     rec["name"]: rec["mean_ns"]
     for rec in json.loads(Path(baseline_path).read_text())["baselines"]
 }
-root = Path("target/criterion")
+root = Path(target_dir) / "criterion"
 fail = False
 for name, prev in sorted(baselines.items()):
     estimates = root / name / "new" / "estimates.json"
