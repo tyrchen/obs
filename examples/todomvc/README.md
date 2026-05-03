@@ -177,3 +177,31 @@ obs query \
 You can also stack `--label list=groceries` and `--severity warn` to
 narrow further. The output is the same NDJSON shape on stdout, so it
 pipes cleanly into `jq` / `obs tail --stdin` / your warehouse loader.
+
+## Per-tenant routing
+
+If your service is multi-tenant and each tenant should ship to its
+own sink (per-tenant OTLP endpoint, per-tenant Parquet partition,
+etc.), wrap the per-request work in `with_observer_task`:
+
+```rust
+use obs_core::{Observer, observer::with_observer_task};
+use std::sync::Arc;
+
+// Resolve the tenant's observer however your tenancy model dictates —
+// from a header, a JWT claim, a path prefix, etc.
+async fn handle_request(tenant_id: &str, /* ... */) {
+    let tenant_observer: Arc<dyn Observer> = lookup_tenant_observer(tenant_id);
+    with_observer_task(tenant_observer, async {
+        // Every `.emit()` from inside this future lands on the
+        // tenant's observer. Anything spawned outside still uses the
+        // global default.
+        ObsTodoCreated::builder().todo_id(...).emit();
+        store.create(/* ... */).await;
+    }).await;
+}
+```
+
+The global observer (installed via `install_observer(...)` at startup)
+remains the fallback for background tasks and anything outside a
+tenant scope. `with_observer_task_sync` is the non-async equivalent.

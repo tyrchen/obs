@@ -1,24 +1,17 @@
 # obs SDK examples
 
-Six runnable apps. The first three are **canonical, proto-first** end-to-end
-examples that mirror what `obs init --mode proto` scaffolds — they are the
-reference shape for new services. The bottom three cover narrower
-ergonomics surfaces (`derive(Event)`, per-task observer routing, forensic
-events) and use the rust-first authoring path.
+Four runnable apps, all **proto-first**, all matching the shape that
+`obs init --mode proto` scaffolds. Each one is a real service pattern,
+not a feature smoke test — copy the one closest to what you're building.
 
-| Example | Authoring | Surface | What it shows |
-| --- | --- | --- | --- |
-| [`todomvc`](./todomvc/) | proto-first | full app | TodoMVC HTTP backend with proto-defined events end-to-end; uses `obs validate` / `obs lint` / `obs schema show` / `obs doctor` / `obs tail` / `obs query` against its own NDJSON output. |
-| [`interop-obs-host`](./interop-obs-host/) | proto-first | tracing → obs | obs-first service whose 3rd-party deps emit via `tracing::*`; `obs_tracing_bridge::init(...)` funnels everything into one observer. |
-| [`interop-tracing-host`](./interop-tracing-host/) | proto-first | obs → tracing | Existing `tracing-subscriber::fmt` host adopts an obs-typed library; `ObsToTracingSink` re-emits typed obs events as `tracing::event!()` so the host's pipeline stays the same. |
-| [`sinks-showcase`](./sinks-showcase/) | proto-first | sinks fan-out | Same `.emit()` calls land in console (Pretty), Parquet (always), and OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set). LOG/METRIC/AUDIT routed per-tier. |
-| [`multi-tenant`](./multi-tenant/) | rust-first | per-task routing | `with_observer_task` — each tenant runs under its own observer so emits land in tenant-scoped sinks. |
-| [`forensic-and-spantrace`](./forensic-and-spantrace/) | rust-first | escape hatches | `obs::forensic!` (rate-limited unstructured emit) + `obs::SpanTrace` (snapshot of the active scope ancestry). |
+| Example | Surface | What it shows |
+| --- | --- | --- |
+| [`todomvc`](./todomvc/) | full app | TodoMVC HTTP backend (axum + obs-tower) with 6 proto-defined events end-to-end; uses `obs validate` / `obs lint` / `obs schema show` / `obs doctor` / `obs tail` / `obs query` against its own NDJSON output. |
+| [`interop-obs-host`](./interop-obs-host/) | tracing → obs | obs-first service whose 3rd-party deps emit via `tracing::*`; `obs_tracing_bridge::init(...)` funnels everything into one observer. |
+| [`interop-tracing-host`](./interop-tracing-host/) | obs → tracing | Existing `tracing-subscriber::fmt` host adopts an obs-typed library; `ObsToTracingSink` re-emits typed obs events as `tracing::event!()` so the host's pipeline stays the same. |
+| [`sinks-showcase`](./sinks-showcase/) | sinks fan-out | Same `.emit()` calls land in console (Pretty), Parquet (always), and OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set). LOG/METRIC/AUDIT routed per-tier. |
 
-## The proto-first canon
-
-`todomvc`, `interop-obs-host`, `interop-tracing-host`, and `sinks-showcase`
-all follow the same shape:
+## Shared layout
 
 ```
 examples/<name>/
@@ -51,9 +44,21 @@ cargo run -p obs-example-todomvc -- --port 8090
 cargo run -p obs-example-interop-obs-host
 RUST_LOG=info cargo run -p obs-example-interop-tracing-host
 cargo run -p obs-example-sinks-showcase -- --requests 50
-cargo run -p obs-example-multi-tenant
-cargo run -p obs-example-forensic-and-spantrace
 ```
 
-Each example's README explains the inputs, expected output, and any
+## Patterns not covered by a standalone example
+
+A few SDK surfaces don't get their own crate because the API hook is
+small enough that a 5-line snippet in the relevant README (or in the
+SDK's own doc-comments) is more useful than a dedicated example:
+
+- **Per-task observer routing** (`with_observer_task`) — see the
+  *"Per-tenant routing"* section in [`todomvc/README.md`](./todomvc/README.md).
+- **`obs::forensic!`** — emergency unstructured emit; see the macro's
+  doc-comment in `obs-macros`. It's deliberately rate-limited and
+  budget-capped; reach for a typed `#[derive(Event)]` first.
+- **`obs::SpanTrace`** — snapshot of the active scope ancestry into an
+  error type; see the type's doc-comment in `obs-core`.
+
+Each example's README explains its inputs, expected output, and any
 known gaps tracked in [`specs/`](../specs/).
