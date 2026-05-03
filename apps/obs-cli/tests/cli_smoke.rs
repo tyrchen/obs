@@ -278,6 +278,84 @@ message ObsGood {
     assert!(stderr.contains("1 event(s) scanned"), "stderr: {stderr}");
 }
 
+// ─── Phase 8 P2-AK / spec 95 § 6 DoD: smoke tests for diff/decode/tail/audit/doctor ───
+
+#[test]
+fn test_obs_decode_should_print_help() {
+    let out = Command::new(obs_bin())
+        .args(["decode", "--help"])
+        .output()
+        .expect("run obs decode --help");
+    assert!(out.status.success(), "exit: {}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("--schemas"), "stdout: {text}");
+    assert!(text.contains("--audit-spool"), "stdout: {text}");
+}
+
+#[test]
+fn test_obs_tail_should_print_help_with_filter_flag() {
+    let out = Command::new(obs_bin())
+        .args(["tail", "--help"])
+        .output()
+        .expect("run obs tail --help");
+    assert!(out.status.success(), "exit: {}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("--filter"), "stdout: {text}");
+    assert!(text.contains("--file"), "stdout: {text}");
+}
+
+#[test]
+fn test_obs_diff_should_print_help() {
+    let out = Command::new(obs_bin())
+        .args(["diff", "--help"])
+        .output()
+        .expect("run obs diff --help");
+    assert!(out.status.success(), "exit: {}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("BASELINE"), "stdout: {text}");
+    assert!(text.contains("HEAD"), "stdout: {text}");
+}
+
+#[test]
+fn test_obs_audit_should_print_help() {
+    let out = Command::new(obs_bin())
+        .args(["audit", "--help"])
+        .output()
+        .expect("run obs audit --help");
+    assert!(out.status.success(), "exit: {}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("forensic") || text.contains("budget") || text.contains("Audit"),
+        "stdout: {text}"
+    );
+}
+
+#[test]
+fn test_obs_doctor_should_print_help() {
+    let out = Command::new(obs_bin())
+        .args(["doctor", "--help"])
+        .output()
+        .expect("run obs doctor --help");
+    assert!(out.status.success(), "exit: {}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("doctor") || text.contains("Diagnose") || text.contains("setup"),
+        "stdout: {text}"
+    );
+}
+
+#[test]
+fn test_obs_generate_should_print_help() {
+    // Spec 50 § 3.2 / spec 95 § 3.14 / P2-AK.
+    let out = Command::new(obs_bin())
+        .args(["generate", "--help"])
+        .output()
+        .expect("run obs generate --help");
+    assert!(out.status.success(), "exit: {}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("--proto"), "stdout: {text}");
+}
+
 // ─── tiny tempdir helper ──────────────────────────────────────────────
 
 struct TempDir(PathBuf);

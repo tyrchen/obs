@@ -49,10 +49,62 @@ pub fn run(args: AuditArgs) -> Result<()> {
         .filter(|e| matches!(e.tier(), obs_types::Tier::Audit))
         .count();
     println!("  {} AUDIT-tier events declared", audit_events);
+    println!();
+    // Spec 50 § 3.7 / spec 95 § 3.14: tracing-bridge call-site
+    // count. The accurate "events emitted last 7 days" requires a
+    // local audit spool / NDJSON history (out of CLI scope); the
+    // best-effort static answer is "how many call sites would route
+    // through the bridge if it were installed".
+    let mut bridge_callsites = 0usize;
+    for c in &crates {
+        bridge_callsites += scan_tracing_callsites(&c.src_dir).unwrap_or(0);
+    }
+    println!("Tracing bridge:");
+    println!(
+        "  {bridge_callsites} call site(s) of `tracing::{{info,warn,error,debug,trace}}!` across \
+         the workspace"
+    );
+    println!(
+        "  Run with `--src-history <NDJSON>` to bind to actual emit counts (lands with the next \
+         CLI follow-up)."
+    );
     if over_budget {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Best-effort static count of `tracing::*!` call sites in a source
+/// tree. Mirrors `scan_forensic_count` shape so the audit summary
+/// stays simple. Spec 50 § 3.7 / spec 95 § 3.14 / P2-AK.
+fn scan_tracing_callsites(src_dir: &std::path::Path) -> Option<usize> {
+    let mut count = 0usize;
+    let mut stack = vec![src_dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let entries = std::fs::read_dir(&d).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ftype = entry.file_type().ok()?;
+            if ftype.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).ok()?;
+            for needle in [
+                "tracing::info!",
+                "tracing::warn!",
+                "tracing::error!",
+                "tracing::debug!",
+                "tracing::trace!",
+            ] {
+                count += content.matches(needle).count();
+            }
+        }
+    }
+    Some(count)
 }
 
 #[derive(Debug)]

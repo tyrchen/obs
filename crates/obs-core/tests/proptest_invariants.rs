@@ -161,3 +161,125 @@ proptest! {
         prop_assert_ne!(ha, hb);
     }
 }
+
+// ─── 4. Envelope round-trip ─────────────────────────────────────────
+
+proptest! {
+    #[test]
+    fn envelope_should_round_trip_through_buffa(
+        full_name in "[a-z]{3,8}\\.v1\\.Obs[A-Z][A-Za-z0-9]{0,12}",
+        trace_id in "[0-9a-f]{32}",
+        span_id in "[0-9a-f]{16}",
+        labels in proptest::collection::vec(
+            ("[a-z][a-z0-9_]{0,12}", "[A-Za-z0-9 _.,/-]{0,32}"),
+            0..6,
+        ),
+        ts_ns in 1u64..u64::MAX / 2,
+    ) {
+        use buffa::Message;
+        use bytes::BytesMut;
+        let mut label_map = std::collections::HashMap::new();
+        for (k, v) in labels {
+            label_map.insert(k, v);
+        }
+        let env = obs_proto::obs::v1::ObsEnvelope {
+            full_name,
+            trace_id,
+            span_id,
+            ts_ns,
+            tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
+            sev: ::buffa::EnumValue::Known(obs_proto::obs::v1::Severity::SEVERITY_INFO),
+            labels: label_map,
+            ..Default::default()
+        };
+
+        let mut cache = ::buffa::SizeCache::default();
+        let size = env.compute_size(&mut cache);
+        let mut buf = BytesMut::with_capacity(size as usize);
+        env.write_to(&mut cache, &mut buf);
+        let decoded = obs_proto::obs::v1::ObsEnvelope::decode_from_slice(&buf)
+            .expect("envelope must round-trip");
+        prop_assert_eq!(decoded.full_name, env.full_name);
+        prop_assert_eq!(decoded.trace_id, env.trace_id);
+        prop_assert_eq!(decoded.span_id, env.span_id);
+        prop_assert_eq!(decoded.ts_ns, env.ts_ns);
+        prop_assert_eq!(decoded.labels, env.labels);
+    }
+}
+
+// ─── 5. Scrubber correctness (security-relevant) ───────────────────
+
+proptest! {
+    #[test]
+    fn scrubber_should_redact_pii_secret_and_be_bounded(
+        msg in "[A-Za-z0-9 ]{0,64}",
+        email in "[a-z]{1,16}@[a-z]{1,16}\\.com",
+        token in "[A-Za-z0-9]{16,64}",
+        latency in 0u64..1_000_000,
+    ) {
+        use bytes::BytesMut;
+        use obs_core::registry::scrub_payload;
+        use obs_core::FieldMeta;
+        use obs_types::{Cardinality, Classification};
+        use obs_core::FieldRole;
+
+        // Build a manual buffa payload with one Internal string,
+        // one PII string, one SECRET string, and one numeric.
+        let mut payload = BytesMut::new();
+        encode_string_field(&mut payload, 1, &msg);
+        encode_string_field(&mut payload, 2, &email);
+        encode_string_field(&mut payload, 3, &token);
+        encode_varint_field(&mut payload, 4, latency);
+
+        static FIELDS: &[FieldMeta] = &[
+            FieldMeta::new("msg", 1, FieldRole::Attribute, Cardinality::Low, Classification::Internal),
+            FieldMeta::new("email", 2, FieldRole::Attribute, Cardinality::High, Classification::Pii),
+            FieldMeta::new("token", 3, FieldRole::Attribute, Cardinality::Unbounded, Classification::Secret),
+            FieldMeta::new("latency", 4, FieldRole::Measurement, Cardinality::Unbounded, Classification::Internal),
+        ];
+
+        let mut scratch = BytesMut::new();
+        let scrubbed = scrub_payload(&payload, FIELDS, &mut scratch)
+            .expect("scrubber must accept well-formed payload");
+
+        // Internal string survives.
+        prop_assert!(contains_subseq(scrubbed, msg.as_bytes()));
+        // PII / SECRET strings do NOT survive.
+        prop_assert!(!contains_subseq(scrubbed, email.as_bytes()),
+            "PII email leaked: scrubbed={:?}, email={:?}", scrubbed, email);
+        prop_assert!(!contains_subseq(scrubbed, token.as_bytes()),
+            "SECRET token leaked: scrubbed={:?}, token={:?}", scrubbed, token);
+    }
+}
+
+fn encode_string_field(buf: &mut bytes::BytesMut, number: u32, value: &str) {
+    use bytes::BufMut;
+    let tag = (number << 3) | 2; // wire type LEN
+    encode_varint(buf, u64::from(tag));
+    encode_varint(buf, value.len() as u64);
+    buf.put_slice(value.as_bytes());
+}
+
+fn encode_varint_field(buf: &mut bytes::BytesMut, number: u32, value: u64) {
+    // Wire type 0 = Varint; the OR is left explicit to mirror the
+    // proto wire format documentation.
+    let tag = number << 3;
+    encode_varint(buf, u64::from(tag));
+    encode_varint(buf, value);
+}
+
+fn encode_varint(buf: &mut bytes::BytesMut, mut v: u64) {
+    use bytes::BufMut;
+    while v >= 0x80 {
+        buf.put_u8(((v & 0x7f) as u8) | 0x80);
+        v >>= 7;
+    }
+    buf.put_u8(v as u8);
+}
+
+fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
