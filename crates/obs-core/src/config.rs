@@ -177,7 +177,9 @@ fn expand_env_vars(input: &str) -> String {
             if let Some(v) = resolved {
                 out.push_str(&v);
             } else {
-                let Some(span) = input.get(i..=end) else { break };
+                let Some(span) = input.get(i..=end) else {
+                    break;
+                };
                 out.push_str(span);
             }
             i = end + 1;

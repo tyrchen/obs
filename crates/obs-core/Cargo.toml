@@ -23,6 +23,7 @@ linkme = { workspace = true }
 obs-proto = { workspace = true }
 obs-types = { workspace = true }
 once_cell = { workspace = true }
+notify = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 secrecy = { workspace = true }

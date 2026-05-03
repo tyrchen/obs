@@ -152,20 +152,30 @@ impl StandardObserver {
     /// Returns `BuildError::InvalidConfig` if validation rejects
     /// `new_config`.
     pub fn reload_config(&self, new_config: EventsConfig) -> Result<(), BuildError> {
-        new_config.validate().map_err(BuildError::InvalidConfig)?;
+        if let Err(e) = new_config.validate() {
+            crate::self_events::emit_config_reload_failed(&format!("validate: {e}"));
+            return Err(BuildError::InvalidConfig(e));
+        }
         if let Some(spec) = new_config.filter.as_deref() {
-            let parsed = Filter::parse(spec).map_err(|e| {
-                BuildError::InvalidConfig(crate::config::ConfigError::invalid_range(
-                    "filter",
-                    format!("{e}"),
-                ))
-            })?;
-            self.filter.store(Arc::new(parsed));
+            match Filter::parse(spec) {
+                Ok(parsed) => self.filter.store(Arc::new(parsed)),
+                Err(e) => {
+                    crate::self_events::emit_config_reload_failed(&format!("filter: {e}"));
+                    return Err(BuildError::InvalidConfig(
+                        crate::config::ConfigError::invalid_range("filter", format!("{e}")),
+                    ));
+                }
+            }
         } else {
             self.filter.store(Arc::new(Filter::new()));
         }
+        // Cheap rolling hash so operators can correlate
+        // `ObsConfigReloaded` events with config-file generations
+        // without leaking field values into labels.
+        let cfg_hash = config_hash(&new_config);
         self.config.store(Arc::new(new_config));
         self.generation.fetch_add(1, Ordering::Release);
+        crate::self_events::emit_config_reloaded(cfg_hash);
         Ok(())
     }
 
@@ -264,10 +274,15 @@ impl StandardObserver {
             match spool.append(&env_unsent) {
                 Ok(()) => {
                     note_channel_full(&self.counters, Tier::Audit);
+                    crate::self_events::emit_audit_spooled(env_unsent.full_name.as_str());
                 }
-                Err(_) => self.handle_spool_failure(),
+                Err(e) => {
+                    crate::self_events::emit_audit_spool_failed(&e.to_string());
+                    self.handle_spool_failure();
+                }
             }
         } else {
+            crate::self_events::emit_audit_spool_failed("no spool configured");
             self.handle_spool_failure();
         }
     }
@@ -340,6 +355,17 @@ impl StandardObserver {
     fn run_emit_pipeline(&self, env: &mut ObsEnvelope, sev: obs_types::Severity) -> bool {
         // Step 3 (post-project): auto-fill from scope frame stack.
         auto_fill_envelope(env);
+        // Step 3.0: enforce `limits.max_payload_bytes` (spec 11 § 6.2 /
+        // spec 93 P2-10). An oversized envelope is dropped and a
+        // `ObsOversizedDropped` self-event records the drop with a
+        // `full_name` label so operators can find the noisy schema.
+        let cfg_pre = self.config.load();
+        let max_bytes = u64::from(cfg_pre.limits.max_payload_bytes);
+        let payload_size = env.payload.len() as u64;
+        if max_bytes > 0 && payload_size > max_bytes {
+            crate::self_events::emit_oversized_dropped(env.full_name.as_str(), payload_size);
+            return false;
+        }
         // Step 3a: per-emit dynamic filter directive (`[field=value]=level`).
         // Spec 13 § 7.1 / spec 93 P0-5. Skipped only for sampler bypasses
         // — those decisions live in `sample_decide`, which honours
@@ -682,8 +708,26 @@ impl StandardObserverBuilder {
         // `ObsAuditSpoolRecovered` self-event is emitted with the total
         // count.
         observer.recover_audit_spool();
+        // Spec 11 § 10 / spec 93 P1-2: announce the registry size so
+        // operators can correlate sink behaviour with the schema set
+        // currently linked into the binary.
+        let schema_count = observer.registry.len() as u64;
+        crate::self_events::emit_registry_initialized(schema_count, 0);
         Ok(observer)
     }
+}
+
+fn config_hash(cfg: &EventsConfig) -> u64 {
+    let bytes = match serde_yaml::to_string(cfg) {
+        Ok(s) => s.into_bytes(),
+        Err(_) => return 0,
+    };
+    let h = blake3::hash(&bytes);
+    let arr: [u8; 8] = match <[u8; 8]>::try_from(&h.as_bytes()[..8]) {
+        Ok(a) => a,
+        Err(_) => return 0,
+    };
+    u64::from_le_bytes(arr)
 }
 
 fn spawn_pool(

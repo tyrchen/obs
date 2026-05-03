@@ -76,6 +76,7 @@ heck = "0.5"
 
 # buffa for proto encoding
 buffa = { version = "0.4", default-features = false, features = ["std"] }
+notify = "8"
 secrecy = { version = "0.10", features = ["serde"] }
 
 # OTLP transport (Phase 6.2 / spec 93 P0-6).
