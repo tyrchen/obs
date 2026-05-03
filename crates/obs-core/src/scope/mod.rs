@@ -122,6 +122,46 @@ pub fn inbound_traceparent_sampled() -> Option<bool> {
     frames.iter().find_map(|f| f.traceparent_sampled())
 }
 
+/// Read the active scope's correlation pair as
+/// `Some((trace_id, span_id))` when both have been pushed, otherwise
+/// `None`. Walks the stack innermost-first so the *deepest* set value
+/// wins — matches the auto-fill ordering in `auto_fill_envelope`.
+///
+/// This is the symmetrical *read* surface to `ScopeFrameBuilder` (D7-3,
+/// which writes frames). Spec 95 D8-2: outbound HTTP middleware,
+/// OTLP exporters, and any other generic code that needs to inherit
+/// the active trace context calls this function.
+#[must_use]
+pub fn active_correlation() -> Option<(String, String)> {
+    let frames = collect_active_stack();
+    let mut trace_id: Option<String> = None;
+    let mut span_id: Option<String> = None;
+    for frame in frames.iter().rev() {
+        for field in frame.fields() {
+            match field {
+                ScopeField::TraceId(v) if trace_id.is_none() => trace_id = Some(v.clone()),
+                ScopeField::SpanId(v) if span_id.is_none() => span_id = Some(v.clone()),
+                _ => {}
+            }
+        }
+        if trace_id.is_some() && span_id.is_some() {
+            break;
+        }
+    }
+    match (trace_id, span_id) {
+        (Some(t), Some(s)) => Some((t, s)),
+        _ => None,
+    }
+}
+
+/// Inbound sampled decision exposed under the same naming as
+/// [`active_correlation`] so callers can grab both with one symmetrical
+/// import. Equivalent to [`inbound_traceparent_sampled`]. Spec 95 D8-2.
+#[must_use]
+pub fn active_sampled() -> Option<bool> {
+    inbound_traceparent_sampled()
+}
+
 /// Push an envelope onto the innermost active scope's tail buffer (if
 /// the scope is a `Scope`, not a `Context`). No-op when no frame is
 /// active or the active frame is `Context`. Spec 13 § 6.
@@ -214,6 +254,50 @@ mod tests {
         let mut env = ObsEnvelope::default();
         auto_fill_envelope(&mut env);
         assert_eq!(env.trace_id, "abc");
+        let _ = pop_frame();
+    }
+
+    #[test]
+    fn test_should_return_active_correlation_when_present() {
+        let frame = make_frame(
+            vec![
+                ScopeField::TraceId("trc".to_string()),
+                ScopeField::SpanId("spn".to_string()),
+            ],
+            ScopeKind::Scope,
+        );
+        let _ = push_frame(frame);
+        assert_eq!(
+            active_correlation(),
+            Some(("trc".to_string(), "spn".to_string())),
+        );
+        let _ = pop_frame();
+    }
+
+    #[test]
+    fn test_should_return_none_when_no_correlation() {
+        // Each test runs on its own thread; no scope active.
+        assert_eq!(active_correlation(), None);
+    }
+
+    #[test]
+    fn test_should_walk_stack_for_correlation() {
+        let outer = make_frame(
+            vec![ScopeField::TraceId("outer-trc".to_string())],
+            ScopeKind::Scope,
+        );
+        let inner = make_frame(
+            vec![ScopeField::SpanId("inner-spn".to_string())],
+            ScopeKind::Scope,
+        );
+        let _ = push_frame(outer);
+        let _ = push_frame(inner);
+        // Walking innermost-first: span_id from inner, trace_id from outer.
+        assert_eq!(
+            active_correlation(),
+            Some(("outer-trc".to_string(), "inner-spn".to_string())),
+        );
+        let _ = pop_frame();
         let _ = pop_frame();
     }
 

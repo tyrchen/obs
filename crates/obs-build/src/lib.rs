@@ -29,9 +29,13 @@
 
 mod codegen;
 mod config;
+pub mod lints;
 mod options;
 
 pub use config::{Config, DescriptorSource};
+pub use lints::{
+    LintError, LintField, LintInput, LintProtoType, emit_cross_event_lints, emit_lints,
+};
 pub use options::{CodegenError, EventOptions, FieldOptions, MetricSpec};
 
 /// Reflection-based reader of `(obs.v1.event)` and `(obs.v1.field)`

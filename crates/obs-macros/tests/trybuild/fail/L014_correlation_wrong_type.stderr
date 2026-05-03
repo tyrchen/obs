@@ -1,0 +1,16 @@
+error[E0277]: the trait bound `Vec<u8>: ToString` is not satisfied
+ --> tests/trybuild/fail/L014_correlation_wrong_type.rs:6:26
+  |
+6 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ the trait `std::fmt::Display` is not implemented for `Vec<u8>`
+  |
+  = note: required for `Vec<u8>` to implement `ToString`
+  = note: this error originates in the derive macro `Event` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: obs L014: field `trace_id` has kind TRACE_ID but proto type is bytes; expected string
+              note: correlation slots are projected into `env.trace_id`/`env.span_id`/`env.parent_span_id` which are typed `string`; a non-string proto type would require a runtime cast.
+              help: change the field's proto type to `string`.
+ --> tests/trybuild/fail/L014_correlation_wrong_type.rs:6:26
+  |
+6 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

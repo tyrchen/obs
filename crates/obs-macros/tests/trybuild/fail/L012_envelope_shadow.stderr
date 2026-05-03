@@ -1,6 +1,6 @@
 error[E0080]: evaluation panicked: obs L012: field `ts_ns` shadows envelope-reserved name
               note: `ts_ns` is one of the obs envelope's first-class fields. A payload field by the same name would clash on the analytics surface.
-              help: rename the field; if the intent was to project onto the envelope slot, set the appropriate role (e.g. `#[obs(trace_id)]`).
+              help: rename the field; if the intent was to project onto the envelope slot, set the appropriate kind (e.g. `kind: TRACE_ID`).
  --> tests/trybuild/fail/L012_envelope_shadow.rs:5:26
   |
 5 | #[derive(Debug, Default, Event)]

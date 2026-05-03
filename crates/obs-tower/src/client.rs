@@ -8,8 +8,9 @@ use std::{
     time::Instant,
 };
 
+use bytes::BytesMut;
 use http::Request;
-use obs_proto::obs::v1::ObsEnvelope;
+use obs_proto::obs::v1::{ObsEnvelope, ObsHttpClientCompleted};
 use pin_project_lite::pin_project;
 use tower::Service;
 
@@ -134,14 +135,26 @@ where
         let propagator = Arc::clone(&self.layer.propagator);
         let status_classifier = Arc::clone(&self.layer.status_classifier);
 
-        // Inject the active trace context. We synthesise one if none
-        // is set (scope plumbing is the user's responsibility for the
-        // tower-http v1 surface; we ensure a header is sent regardless).
-        let ctx = TraceContext {
-            trace_id: fresh_trace_id(),
-            span_id: fresh_span_id(),
-            flags: "01".to_string(),
-            tracestate: String::new(),
+        // Spec 95 § 3.1 / D8-2: inherit the request's `trace_id` from
+        // the active scope so chained downstream calls preserve trace
+        // continuity. The outbound span gets a fresh `span_id` but its
+        // parent is the inbound caller's span. When no scope is active
+        // (e.g. background task), generate a fresh trace.
+        let sampled = obs_core::scope::active_sampled().unwrap_or(true);
+        let flags = if sampled { "01" } else { "00" };
+        let ctx = match obs_core::scope::active_correlation() {
+            Some((trace_id, parent_span)) => TraceContext {
+                trace_id,
+                span_id: fresh_span_id(),
+                flags: flags.to_string(),
+                tracestate: format!("parent={parent_span}"),
+            },
+            None => TraceContext {
+                trace_id: fresh_trace_id(),
+                span_id: fresh_span_id(),
+                flags: flags.to_string(),
+                tracestate: String::new(),
+            },
         };
         propagator.inject(req.headers_mut(), &ctx);
         let trace_id = ctx.trace_id.clone();
@@ -204,7 +217,23 @@ where
     }
 }
 
+/// Encode a buffa message into a `Vec<u8>` payload. Matches the helper
+/// in `server.rs`. Spec 94 P1-B / spec 95 § 3.2.
+fn encode_into<M: ::buffa::Message>(msg: &M, out: &mut Vec<u8>) {
+    let mut cache = ::buffa::SizeCache::default();
+    let size = msg.compute_size(&mut cache);
+    let mut buf = BytesMut::with_capacity(size as usize);
+    msg.write_to(&mut cache, &mut buf);
+    out.clear();
+    out.extend_from_slice(&buf);
+}
+
 fn emit_client_started(target: &str, method: &str, trace_id: &str) {
+    let typed = obs_proto::obs::v1::ObsHttpClientStarted {
+        method: method.to_string(),
+        host: target.to_string(),
+        __buffa_unknown_fields: Default::default(),
+    };
     let mut env = ObsEnvelope {
         full_name: "obs.v1.ObsHttpClientStarted".to_string(),
         tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
@@ -212,6 +241,7 @@ fn emit_client_started(target: &str, method: &str, trace_id: &str) {
         trace_id: trace_id.to_string(),
         ..Default::default()
     };
+    encode_into(&typed, &mut env.payload);
     env.labels.insert("host".to_string(), target.to_string());
     env.labels.insert("method".to_string(), method.to_string());
     obs_core::observer().emit_envelope(env);
@@ -225,6 +255,18 @@ fn emit_client_completed(
     trace_id: &str,
     span_id: &str,
 ) {
+    // Spec 95 § 3.2 / P1-AD: encode typed `ObsHttpClientCompleted` so
+    // the MEASUREMENT field (`latency_ms`) lives in the typed payload —
+    // `project_metrics` then dispatches it to the OTLP histogram. Drop
+    // `latency_ms` from `env.labels` (D7-4: labels are opt-in low-card
+    // dims, not a metric fallback).
+    let typed = ObsHttpClientCompleted {
+        method: method.to_string(),
+        host: target.to_string(),
+        status_class: status_class.to_string(),
+        latency_ms,
+        __buffa_unknown_fields: Default::default(),
+    };
     let mut env = ObsEnvelope {
         full_name: "obs.v1.ObsHttpClientCompleted".to_string(),
         tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
@@ -233,11 +275,10 @@ fn emit_client_completed(
         span_id: span_id.to_string(),
         ..Default::default()
     };
+    encode_into(&typed, &mut env.payload);
     env.labels.insert("host".to_string(), target.to_string());
     env.labels.insert("method".to_string(), method.to_string());
     env.labels
         .insert("status_class".to_string(), status_class.to_string());
-    env.labels
-        .insert("latency_ms".to_string(), latency_ms.to_string());
     obs_core::observer().emit_envelope(env);
 }

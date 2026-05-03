@@ -21,6 +21,8 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 heck = { workspace = true }
+obs-build = { workspace = true }
+obs-types = { workspace = true }
 
 [dev-dependencies]
 obs-core = { workspace = true }

@@ -27,8 +27,10 @@ tower-service = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+buffa = { workspace = true }
 bytes = { workspace = true }
 obs-core = { workspace = true, features = ["test"] }
+obs-proto = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 
 [lints]

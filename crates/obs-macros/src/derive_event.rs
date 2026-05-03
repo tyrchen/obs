@@ -1,8 +1,10 @@
 //! `#[derive(Event)]` expansion. Spec 12 § 1.2 + § 3.4.
 
 use heck::ToShoutySnakeCase;
+use obs_build::{LintField, LintInput, LintProtoType};
+use obs_types::{Cardinality, Classification, FieldKind, Tier};
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     Attribute, Data, DataStruct, DeriveInput, Field, Fields, Ident, LitStr, Meta, Token, Type,
     parse2, punctuated::Punctuated,
@@ -566,226 +568,85 @@ fn lint_block(
     container: &ContainerAttrs,
     fields: &[ObsField],
 ) -> syn::Result<TokenStream> {
-    let mut asserts = Vec::new();
-
-    // L011: name starts with the workspace event prefix. The default
-    // is `Obs` (spec 10 § 7); a workspace can override via the
-    // `OBS_EVENT_PREFIX` env var which `obs-build`/`build.rs` sets
-    // from `[workspace.metadata.obs] event_prefix`.
-    let n_str = name.to_string();
+    // Decision D8-1 / spec 95 § 2.1: both authoring paths build a
+    // `LintInput` and call `obs_build::emit_lints`. Each `LintError`
+    // becomes one `const _: () = panic!(MSG)`. Drift between this
+    // path and `obs-build::codegen` is impossible because both render
+    // identical message bytes.
     let prefix = std::env::var("OBS_EVENT_PREFIX").unwrap_or_else(|_| "Obs".to_string());
-    if !n_str.starts_with(&prefix) {
-        let msg = format!(
-            "obs L011: event type name `{n_str}` must start with `{prefix}`\nnote: the `{prefix}` \
-             prefix gives every event type a unique visual identity at call sites.\nhelp: rename \
-             to `{prefix}{n_str}`."
-        );
-        asserts.push(quote! {
-            const _: () = ::std::panic!(#msg);
-        });
-    }
 
-    // L001: every LABEL field's cardinality must be Low or Medium.
-    for f in fields {
-        if f.role == "label" {
-            let card = f.cardinality_token();
-            let msg = format!(
-                "obs L001: field `{name}` is LABEL but cardinality is not label-compatible\nnote: \
-                 LABEL fields must be Low or Medium cardinality. High and Unbounded are illegal \
-                 because they would explode the metric attribute set.\nhelp: change `#[obs(label, \
-                 ...)]` to `#[obs(attribute, ...)]` if the value is high-cardinality (an \
-                 ATTRIBUTE is logged but never becomes a metric dim).",
-                name = f.ident
-            );
-            asserts.push(quote! {
-                const _: () = ::std::assert!(#card.is_label_compatible(), #msg);
-            });
-        }
-    }
+    let input = LintInput {
+        event_name: name.to_string(),
+        tier: parse_tier(&container.tier),
+        event_prefix: prefix,
+        fields: fields.iter().map(field_to_lint).collect(),
+    };
 
-    // L002: PII classification must not be on LABEL fields.
-    for f in fields {
-        if f.role == "label" && f.classification == "pii" {
-            let msg = format!(
-                "obs L002: field `{name}` is LABEL with classification PII\nnote: PII fields \
-                 cannot be LABEL because labels become metric attributes that are kept \
-                 indefinitely and leak into vendor backends.\nhelp: change kind to `attribute` so \
-                 the value is logged + analytics-only, and the redactor can scrub it on the \
-                 durable path.",
-                name = f.ident
-            );
-            asserts.push(quote! {
-                const _: () = ::std::panic!(#msg);
-            });
-        }
-    }
-
-    // L003: SECRET classification must not appear on LOG/AUDIT tier events.
-    let tier_lower = container.tier.to_ascii_lowercase();
-    if matches!(tier_lower.as_str(), "log" | "audit") {
-        for f in fields {
-            if f.classification == "secret" {
-                let msg = format!(
-                    "obs L003: field `{name}` is SECRET on a `{tier}` tier event\nnote: SECRET \
-                     fields are forbidden on LOG/AUDIT tiers because those tiers persist payloads \
-                     to long-retained sinks.\nhelp: move the field to a non-secret column, or \
-                     move the event to TRACE/METRIC tier (which do not persist payload bytes).",
-                    name = f.ident,
-                    tier = container.tier
-                );
-                asserts.push(quote! {
-                    const _: () = ::std::panic!(#msg);
-                });
-            }
-        }
-    }
-
-    // L004: MEASUREMENT requires a metric kind. Spec 12 § 3.4.
-    for f in fields {
-        if f.role == "measurement" && f.metric_kind.is_empty() {
-            let msg = format!(
-                "obs L004: field `{name}` is MEASUREMENT without a metric kind\nnote: MEASUREMENT \
-                 fields must declare `metric = \"counter|gauge|histogram\"` so the OTLP metric \
-                 sink can dispatch correctly.\nhelp: add e.g. `#[obs(measurement, metric = \
-                 \"counter\", unit = \"1\")]`.",
-                name = f.ident
-            );
-            asserts.push(quote! {
-                const _: () = ::std::panic!(#msg);
-            });
-        }
-    }
-
-    // L006: TIER_AUDIT forbids PII / SECRET on any field. Spec 12 § 3.4.
-    if matches!(tier_lower.as_str(), "audit") {
-        for f in fields {
-            if matches!(f.classification.as_str(), "pii" | "secret") {
-                let msg = format!(
-                    "obs L006: AUDIT-tier event must not carry `{cls}` field `{name}`\nnote: \
-                     AUDIT events ship to long-retained immutable sinks; classified data must be \
-                     redacted at the source.\nhelp: drop the field or move the event to a \
-                     non-AUDIT tier.",
-                    cls = f.classification,
-                    name = f.ident
-                );
-                asserts.push(quote! {
-                    const _: () = ::std::panic!(#msg);
-                });
-            }
-        }
-    }
-
-    // L007: snake_case field names. Spec 12 § 3.4.
-    for f in fields {
-        let n = f.ident.to_string();
-        if !is_snake_case(&n) {
-            let msg = format!(
-                "obs L007: field `{name}` is not snake_case\nnote: every obs field name maps 1:1 \
-                 to a proto field, OTLP attribute, and analytics column; snake_case is required \
-                 so the projection round-trips deterministically.\nhelp: rename to `{suggest}`.",
-                name = n,
-                suggest = to_snake_case(&n),
-            );
-            asserts.push(quote! {
-                const _: () = ::std::panic!(#msg);
-            });
-        }
-    }
-
-    // L009: an event must declare at least one field. Spec 12 § 3.4.
-    if fields.is_empty() {
-        let msg = format!(
-            "obs L009: event `{name}` has no fields\nnote: empty events make analytics joins \
-             meaningless and indicate an unfinished schema.\nhelp: declare at least one field or \
-             rethink whether the event should exist.",
-            name = name
-        );
-        asserts.push(quote! {
-            const _: () = ::std::panic!(#msg);
-        });
-    }
-
-    // L014: TRACE_ID / SPAN_ID / PARENT_SPAN_ID role fields must be
-    // named with the matching envelope slot. Spec 94 § 3.1 / E-6.
-    for f in fields {
-        let expected = match f.role.as_str() {
-            "trace_id" => Some("trace_id"),
-            "span_id" => Some("span_id"),
-            "parent_span_id" => Some("parent_span_id"),
-            _ => None,
-        };
-        if let Some(expected_name) = expected {
-            let actual = f.ident.to_string();
-            if actual != expected_name {
-                let msg = format!(
-                    "obs L014: field `{actual}` declares `#[obs({role})]` but is not named \
-                     `{expected_name}`\nnote: codegen projects fields whose role is TRACE_ID / \
-                     SPAN_ID / PARENT_SPAN_ID into the envelope slot of the same name; renaming \
-                     keeps the analytics column predictable.\nhelp: rename the field to \
-                     `{expected_name}` or change the role to `attribute`.",
-                    role = f.role
-                );
-                asserts.push(quote! {
-                    const _: () = ::std::panic!(#msg);
-                });
-            }
-        }
-    }
-
-    // L012: field name must not shadow an envelope-reserved name. Spec
-    // 12 § 3.4 / spec 11 § 5.
-    const RESERVED: &[&str] = &[
-        "ts_ns",
-        "service",
-        "instance",
-        "trace_id",
-        "span_id",
-        "parent_span_id",
-        "schema_hash",
-        "callsite_id",
-        "sev",
-        "tier",
-        "labels",
-        "payload",
-        "sampling_reason",
-    ];
-    for f in fields {
-        let n = f.ident.to_string();
-        // Skip TraceId/SpanId/ParentSpanId roles — those are *meant*
-        // to project onto the envelope slots of the same name.
-        if matches!(f.role.as_str(), "trace_id" | "span_id" | "parent_span_id") {
-            continue;
-        }
-        if RESERVED.contains(&n.as_str()) {
-            let msg = format!(
-                "obs L012: field `{name}` shadows envelope-reserved name\nnote: `{name}` is one \
-                 of the obs envelope's first-class fields. A payload field by the same name would \
-                 clash on the analytics surface.\nhelp: rename the field; if the intent was to \
-                 project onto the envelope slot, set the appropriate role (e.g. \
-                 `#[obs(trace_id)]`).",
-                name = n
-            );
-            asserts.push(quote! {
-                const _: () = ::std::panic!(#msg);
-            });
-        }
-    }
+    let asserts: Vec<TokenStream> = obs_build::emit_lints(&input)
+        .into_iter()
+        .map(|err| {
+            let msg = err.message;
+            quote! { const _: () = ::std::panic!(#msg); }
+        })
+        .collect();
 
     Ok(quote! { #(#asserts)* })
 }
 
-fn is_snake_case(s: &str) -> bool {
-    !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        && !s.starts_with('_')
-        && !s.ends_with('_')
-        && !s.contains("__")
+fn parse_tier(s: &str) -> Tier {
+    match s.to_ascii_lowercase().as_str() {
+        "log" => Tier::Log,
+        "metric" => Tier::Metric,
+        "trace" => Tier::Trace,
+        "audit" => Tier::Audit,
+        _ => Tier::Unspecified,
+    }
 }
 
-fn to_snake_case(s: &str) -> String {
-    use heck::ToSnakeCase;
-    s.to_snake_case()
+fn parse_field_kind(s: &str) -> FieldKind {
+    match s {
+        "label" => FieldKind::Label,
+        "attribute" => FieldKind::Attribute,
+        "measurement" => FieldKind::Measurement,
+        "trace_id" => FieldKind::TraceId,
+        "span_id" => FieldKind::SpanId,
+        "parent_span_id" => FieldKind::ParentSpanId,
+        "timestamp_ns" => FieldKind::TimestampNs,
+        "duration_ns" => FieldKind::DurationNs,
+        "forensic" => FieldKind::Forensic,
+        _ => FieldKind::Attribute,
+    }
+}
+
+fn parse_cardinality(s: &str) -> Cardinality {
+    match s {
+        "low" => Cardinality::Low,
+        "medium" => Cardinality::Medium,
+        "high" => Cardinality::High,
+        "unbounded" => Cardinality::Unbounded,
+        _ => Cardinality::Unspecified,
+    }
+}
+
+fn parse_classification(s: &str) -> Classification {
+    match s {
+        "pii" => Classification::Pii,
+        "secret" => Classification::Secret,
+        "internal" => Classification::Internal,
+        _ => Classification::Internal,
+    }
+}
+
+fn field_to_lint(f: &ObsField) -> LintField {
+    let proto_type = LintProtoType::from_rust_token(&f.ty.to_token_stream().to_string());
+    LintField {
+        name: f.ident.to_string(),
+        kind: parse_field_kind(&f.role),
+        cardinality: parse_cardinality(&f.cardinality),
+        classification: parse_classification(&f.classification),
+        has_metric: !f.metric_kind.is_empty(),
+        proto_type: Some(proto_type),
+    }
 }
 
 fn compute_schema_hash(full_name: &str, container: &ContainerAttrs, fields: &[ObsField]) -> u64 {

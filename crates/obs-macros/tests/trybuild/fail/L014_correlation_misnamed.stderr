@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: obs L014: field `trc_id` declares `kind` as a correlation slot but is not named `trace_id`
+              note: codegen projects fields whose kind is TRACE_ID / SPAN_ID / PARENT_SPAN_ID into the envelope slot of the same name; renaming keeps the analytics column predictable.
+              help: rename the field to `trace_id` or change the `kind` to ATTRIBUTE.
+ --> tests/trybuild/fail/L014_correlation_misnamed.rs:6:26
+  |
+6 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

@@ -76,6 +76,7 @@ of 30/71, M3 closes everything else.
 | [92-rfc-v1.md](./92-rfc-v1.md) | RFC | Public-comment-window summary for the v1.0 freeze (Phase 5.8 / impl-plan 5.8) |
 | [93-improvements-review.md](./93-improvements-review.md) | Review | Full-workspace audit of impl vs specs 10–72; P0/P1/P2/P3 backlog with file:line citations and a six-phase remediation plan |
 | [94-improvements-review.md](./94-improvements-review.md) | Review | Phase-7 re-audit at HEAD `122c859`; verifies `93` closure claims, reopens trace-correlation/lint-parity/typed-payload gaps, surfaces 12 new findings, and ships a severity-ordered backlog with effort estimates and decisions D7-1–D7-5 |
+| [95-improvements-review.md](./95-improvements-review.md) | Review | Phase-8 re-audit at HEAD `f03c8df`; verifies Phase-7 closures (P0-A/B, P1-B–G, P2-A–E, P3-A, E-6 all confirmed), reopens lint-plumbing (D7-2 not honored), surfaces 16 new findings (outbound HTTP / OTLP traceparent / Parquet+ClickHouse Resource columns / examples / CLI gaps / property+fuzz tests), and ships a severity-ordered Phase-8 backlog with effort estimates and decisions D8-1–D8-5 |
 
 ## Examples
 

@@ -1,6 +1,6 @@
 error[E0080]: evaluation panicked: obs L002: field `email` is LABEL with classification PII
               note: PII fields cannot be LABEL because labels become metric attributes that are kept indefinitely and leak into vendor backends.
-              help: change kind to `attribute` so the value is logged + analytics-only, and the redactor can scrub it on the durable path.
+              help: change kind to ATTRIBUTE so the value is logged + analytics-only, and the redactor can scrub it on the durable path.
  --> tests/trybuild/fail/L002_pii_label.rs:5:26
   |
 5 | #[derive(Debug, Default, Event)]

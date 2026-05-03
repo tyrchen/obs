@@ -1,6 +1,6 @@
 error[E0080]: evaluation panicked: obs L001: field `user_id` is LABEL but cardinality is not label-compatible
               note: LABEL fields must be Low or Medium cardinality. High and Unbounded are illegal because they would explode the metric attribute set.
-              help: change `#[obs(label, ...)]` to `#[obs(attribute, ...)]` if the value is high-cardinality (an ATTRIBUTE is logged but never becomes a metric dim).
+              help: change `kind: LABEL` to `kind: ATTRIBUTE` if the value is high-cardinality (an ATTRIBUTE is logged but never becomes a metric dim).
  --> tests/trybuild/fail/L001_label_high_cardinality.rs:5:26
   |
 5 | #[derive(Debug, Default, Event)]
