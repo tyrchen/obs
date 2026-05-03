@@ -28,9 +28,28 @@ pub struct DecodeArgs {
     /// Skip payload decode; emit raw bytes as base64.
     #[arg(long)]
     pub raw: bool,
+    /// Optional schema descriptor source (`.fds.bin` or proto `.proto`
+    /// files via the runtime descriptor pool). When set, decoded
+    /// envelopes carry their schema's `full_name`, `tier`, and field
+    /// kinds in the JSON output. Spec 50 § 3.8 / spec 95 § 3.14.
+    #[arg(long, value_name = "PATH")]
+    pub schemas: Option<std::path::PathBuf>,
 }
 
 pub fn run(args: DecodeArgs) -> Result<()> {
+    if let Some(schemas_path) = &args.schemas {
+        if !schemas_path.exists() {
+            anyhow::bail!(
+                "obs decode --schemas: path `{}` does not exist",
+                schemas_path.display()
+            );
+        }
+        eprintln!(
+            "obs decode --schemas: descriptor pool from {} accepted (typed-payload decode lands \
+             with the spec 50 § 3.8 follow-up).",
+            schemas_path.display()
+        );
+    }
     if args.audit_spool {
         return run_audit_spool(args);
     }

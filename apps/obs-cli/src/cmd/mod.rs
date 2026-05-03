@@ -5,6 +5,7 @@ pub mod completions;
 pub mod decode;
 pub mod diff;
 pub mod doctor;
+pub mod generate;
 pub mod init;
 pub mod lint;
 pub mod migrate;

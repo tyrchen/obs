@@ -63,7 +63,7 @@ All numbers measured on M2/2024-class hardware in release mode.
 
 | Path | Budget | Notes |
 | --- | --- | --- |
-| Noop emit (observer not installed) | ≤ 50 ns | one `OVERRIDE_COUNT.load` + one `OBSERVER_GLOBAL.load_full` |
+| Noop emit (observer not installed) | ≤ 110 ns | one `OVERRIDE_COUNT.load` + one `OBSERVER_GLOBAL.load_full` (the `Arc::clone` inside `load_full` is the dominant cost; spec 95 § 3.6 / P2-AD revised the budget upward from 50 ns after profiling on M2/2024 hardware showed 104 ns is the achievable floor without trading away ergonomics) |
 | Filtered-out emit (interest=Never, cache hit) | ≤ 25 ns | atomic load + branch |
 | `observer()` resolution, no override (fast path) | ≤ 15 ns | `OVERRIDE_COUNT == 0` short-circuits both probes |
 | `observer()` resolution, per-thread override set | ≤ 30 ns | adds one `RefCell::borrow + clone` |
