@@ -37,7 +37,11 @@ use opentelemetry_proto::tonic::{
     },
 };
 use parking_lot::RwLock;
-use tonic::{Request, transport::Channel};
+use tonic::{
+    Request,
+    metadata::{AsciiMetadataValue, MetadataKey},
+    transport::Channel,
+};
 
 use crate::{
     OtlpError, env_config::OtlpEndpoint, logs::OtlpLogPayload, mapping::SpanRecord,
@@ -136,6 +140,7 @@ impl OtlpExporter for GrpcOtlpExporter {
         self.block_on(async move {
             let mut req = Request::new(request);
             req.set_timeout(timeout);
+            attach_traceparent(&mut req);
             let mut client = inner.logs.write().clone();
             client
                 .export(req)
@@ -152,6 +157,7 @@ impl OtlpExporter for GrpcOtlpExporter {
         self.block_on(async move {
             let mut req = Request::new(request);
             req.set_timeout(timeout);
+            attach_traceparent(&mut req);
             let mut client = inner.metrics.write().clone();
             client
                 .export(req)
@@ -168,6 +174,7 @@ impl OtlpExporter for GrpcOtlpExporter {
         self.block_on(async move {
             let mut req = Request::new(request);
             req.set_timeout(timeout);
+            attach_traceparent(&mut req);
             let mut client = inner.traces.write().clone();
             client
                 .export(req)
@@ -175,6 +182,27 @@ impl OtlpExporter for GrpcOtlpExporter {
                 .map(|_| ())
                 .map_err(|e| OtlpError::Transport(format!("traces: {e}")))
         })
+    }
+}
+
+/// Attach a W3C `traceparent` metadata header to the outbound RPC when
+/// an `obs::scope!` frame is active. Without a scope the header is
+/// omitted — the collector treats the export call as the root.
+/// Spec 95 § 3.4 / D8-2 / P1-AF.
+fn attach_traceparent<T>(req: &mut Request<T>) {
+    if let Some((trace_id, span_id)) = obs_core::scope::active_correlation() {
+        let flags = if obs_core::scope::active_sampled().unwrap_or(true) {
+            "01"
+        } else {
+            "00"
+        };
+        let value = format!("00-{trace_id}-{span_id}-{flags}");
+        if let (Ok(key), Ok(val)) = (
+            MetadataKey::from_bytes(b"traceparent"),
+            AsciiMetadataValue::try_from(value.as_str()),
+        ) {
+            req.metadata_mut().insert(key, val);
+        }
     }
 }
 

@@ -30,6 +30,11 @@ pub fn render_create_table_ddl(model: &ArrowSchemaModel, table: &str) -> String 
 }
 
 fn push_envelope_columns(s: &mut String) {
+    // Spec 95 § 3.3 / D8-3 / P1-AE: ResourceAttrs columns alongside the
+    // envelope identity so analytics joins on `service=…` can
+    // disambiguate environment / namespace / host. These columns are
+    // populated by `obs-clickhouse::sink` from
+    // `observer().resource_attrs()`.
     let lines = [
         "    ts_ns                            DateTime64(9)",
         "    full_name                        LowCardinality(String)",
@@ -43,6 +48,10 @@ fn push_envelope_columns(s: &mut String) {
         "    service                          LowCardinality(String)",
         "    instance                         LowCardinality(String)",
         "    version                          LowCardinality(String)",
+        "    service_namespace                LowCardinality(String)",
+        "    environment                      LowCardinality(String)",
+        "    host_name                        LowCardinality(String)",
+        "    host_arch                        LowCardinality(String)",
         "    sampling_reason                  LowCardinality(String)",
     ];
     for (i, l) in lines.iter().enumerate() {
@@ -107,5 +116,16 @@ mod tests {
         assert!(ddl.contains("MergeTree"));
         assert!(ddl.contains("PARTITION BY toDate(ts_ns)"));
         assert!(ddl.contains("ORDER BY (ts_ns, full_name, trace_id)"));
+    }
+
+    #[test]
+    fn test_should_render_resource_columns() {
+        let model = ArrowSchemaModel::default();
+        let ddl = render_create_table_ddl(&model, "obs_events");
+        // Spec 95 § 3.3 / P1-AE.
+        assert!(ddl.contains("service_namespace"));
+        assert!(ddl.contains("environment"));
+        assert!(ddl.contains("host_name"));
+        assert!(ddl.contains("host_arch"));
     }
 }

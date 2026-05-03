@@ -9,7 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use obs_core::{SchemaRegistry, Sink, registry::ScrubbedEnvelope, sink::SinkFut};
+use obs_core::{
+    ResourceAttrs, SchemaRegistry, Sink, observer::observer, registry::ScrubbedEnvelope,
+    sink::SinkFut,
+};
 use obs_proto::obs::v1::ObsEnvelope;
 use parking_lot::Mutex;
 
@@ -112,9 +115,17 @@ impl ParquetSink {
         let id = next_batch_id(&self.batch_counter);
         let final_path = dir.join(format!("obs_events-{id}.parquet"));
         let tmp_path = dir.join(format!("obs_events-{id}.parquet.tmp"));
+        // Spec 95 D8-3 / P1-AE: snapshot the active observer's
+        // ResourceAttrs once per batch so every row in the file shares
+        // the same identity — semconv columns survive the join with
+        // OTLP exports.
+        let resource = observer().resource_attrs();
+        let resource: &ResourceAttrs = &resource;
         let batch = match self.registry.as_deref() {
-            Some(reg) => build_record_batch_with_registry(&self.schema, &buf.envelopes, reg)?,
-            None => build_record_batch(&self.schema, &buf.envelopes)?,
+            Some(reg) => {
+                build_record_batch_with_registry(&self.schema, &buf.envelopes, reg, resource)?
+            }
+            None => build_record_batch(&self.schema, &buf.envelopes, resource)?,
         };
         let bytes = write_parquet_atomic(
             &final_path,

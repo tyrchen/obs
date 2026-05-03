@@ -100,7 +100,11 @@ impl ClickHouseSink {
         if rows.is_empty() {
             return;
         }
-        let body = serialize_rows(&rows);
+        // Spec 95 D8-3 / P1-AE: snapshot the active observer's
+        // ResourceAttrs once per batch so every row in the INSERT
+        // shares the same identity columns.
+        let resource = obs_core::observer().resource_attrs();
+        let body = serialize_rows(&rows, &resource);
         let batch = ClickHouseBatch {
             database: self.database.clone(),
             table: self.table.clone(),
@@ -328,8 +332,18 @@ impl ClickHouseSinkBuilder {
     }
 }
 
-fn serialize_rows(rows: &[ObsEnvelope]) -> Vec<u8> {
+fn serialize_rows(rows: &[ObsEnvelope], resource: &obs_core::ResourceAttrs) -> Vec<u8> {
     let mut out = Vec::with_capacity(rows.len() * 256);
+    // Resource semconv values are constant across the batch (spec 95
+    // D8-3); the `attrs` map carries `ResourceAttrs::extra`.
+    let mut resource_attrs = Map::new();
+    let mut extra_keys: Vec<&String> = resource.extra.keys().collect();
+    extra_keys.sort();
+    for k in &extra_keys {
+        if let Some(v) = resource.extra.get(k.as_str()) {
+            resource_attrs.insert((*k).clone(), Value::String(v.clone()));
+        }
+    }
     for env in rows {
         let mut row = Map::new();
         row.insert(
@@ -357,6 +371,22 @@ fn serialize_rows(rows: &[ObsEnvelope]) -> Vec<u8> {
         row.insert("instance".into(), Value::String(env.instance.clone()));
         row.insert("version".into(), Value::String(env.version.clone()));
         row.insert(
+            "service_namespace".into(),
+            Value::String(resource.service_namespace.clone()),
+        );
+        row.insert(
+            "environment".into(),
+            Value::String(resource.deployment_environment.clone()),
+        );
+        row.insert(
+            "host_name".into(),
+            Value::String(resource.host_name.clone()),
+        );
+        row.insert(
+            "host_arch".into(),
+            Value::String(resource.host_arch.clone()),
+        );
+        row.insert(
             "sampling_reason".into(),
             Value::String(super::ddl_sampling(env)),
         );
@@ -365,7 +395,7 @@ fn serialize_rows(rows: &[ObsEnvelope]) -> Vec<u8> {
             labels.insert(k.clone(), Value::String(v.clone()));
         }
         row.insert("labels".into(), Value::Object(labels));
-        row.insert("attrs".into(), Value::Object(Map::new()));
+        row.insert("attrs".into(), Value::Object(resource_attrs.clone()));
         // payload_proto is base64-encoded for transport safety; using
         // the JSONEachRow string representation per ClickHouse docs.
         if !env.payload.is_empty() {

@@ -166,3 +166,91 @@ fn test_grpc_exporter_should_carry_traces_to_collector() {
     // SpanKind::Server == 2.
     assert_eq!(spans[0].kind, 2);
 }
+
+#[test]
+fn test_grpc_exporter_should_attach_traceparent_when_scope_active() {
+    // Spec 95 § 3.4 / D8-2 / P1-AF: outbound RPCs carry a W3C
+    // `traceparent` metadata header reflecting the active obs scope.
+    let collector = MockOtelCollector::start().expect("start mock collector");
+    let url = collector.endpoint().to_string();
+    let state = collector.state();
+
+    let exporter = GrpcOtlpExporter::connect(&endpoint(url.clone())).expect("connect");
+
+    let scope_trace = "0af7651916cd43dd8448eb211c80319c";
+    let scope_span = "b7ad6b7169203331";
+    let frame = obs_core::ScopeFrameBuilder::new()
+        .context()
+        .trace_id(scope_trace.to_string())
+        .span_id(scope_span.to_string())
+        .into_frame();
+    obs_core::scope::push_frame_pub(frame);
+
+    let payload = obs_otel::logs::OtlpLogPayload {
+        resource: ResourceMessage::from_attrs(&resource()),
+        endpoint: url,
+        records: vec![LogRecord {
+            time_unix_nano: 1,
+            observed_time_unix_nano: 1,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            attributes: BTreeMap::new(),
+            body_bytes_len: 0,
+            body_bytes: Vec::new(),
+        }],
+    };
+
+    use obs_otel::OtlpExporter;
+    exporter.export_logs(&payload).expect("export");
+
+    let _ = obs_core::scope::pop_frame_pub();
+
+    let traceparents = state.take_traceparents();
+    let last = traceparents.last().expect("captured one request");
+    let header = last.as_deref().expect("traceparent header present");
+    assert!(
+        header.contains(scope_trace),
+        "traceparent must carry the active scope's trace_id (got `{header}`)"
+    );
+    assert!(
+        header.starts_with("00-"),
+        "expected version 00, got `{header}`"
+    );
+}
+
+#[test]
+fn test_grpc_exporter_should_omit_traceparent_when_no_scope() {
+    let collector = MockOtelCollector::start().expect("start mock collector");
+    let url = collector.endpoint().to_string();
+    let state = collector.state();
+
+    let exporter = GrpcOtlpExporter::connect(&endpoint(url.clone())).expect("connect");
+
+    let payload = obs_otel::logs::OtlpLogPayload {
+        resource: ResourceMessage::from_attrs(&resource()),
+        endpoint: url,
+        records: vec![LogRecord {
+            time_unix_nano: 1,
+            observed_time_unix_nano: 1,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            attributes: BTreeMap::new(),
+            body_bytes_len: 0,
+            body_bytes: Vec::new(),
+        }],
+    };
+
+    use obs_otel::OtlpExporter;
+    exporter.export_logs(&payload).expect("export");
+
+    let traceparents = state.take_traceparents();
+    let last = traceparents.last().expect("captured");
+    assert!(
+        last.is_none(),
+        "exporter must omit traceparent when no scope active (got `{last:?}`)"
+    );
+}

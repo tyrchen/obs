@@ -32,6 +32,9 @@ struct Captured {
     logs: Vec<ExportLogsServiceRequest>,
     metrics: Vec<ExportMetricsServiceRequest>,
     traces: Vec<ExportTraceServiceRequest>,
+    /// Outbound `traceparent` header values captured per request, in
+    /// order of arrival across all three services. Spec 95 § 3.4.
+    traceparents: Vec<Option<String>>,
 }
 
 /// Captures every OTLP request the exporter sends. Backing store
@@ -58,6 +61,13 @@ impl MockCollectorState {
     pub fn take_traces(&self) -> Vec<ExportTraceServiceRequest> {
         std::mem::take(&mut self.captured.lock().traces)
     }
+
+    /// Drain captured `traceparent` header values (`None` for requests
+    /// where the exporter omitted the header). Spec 95 § 3.4 / P1-AF.
+    #[must_use]
+    pub fn take_traceparents(&self) -> Vec<Option<String>> {
+        std::mem::take(&mut self.captured.lock().traceparents)
+    }
 }
 
 impl std::fmt::Debug for MockCollectorState {
@@ -71,13 +81,24 @@ impl std::fmt::Debug for MockCollectorState {
     }
 }
 
+fn extract_traceparent<T>(request: &Request<T>) -> Option<String> {
+    request
+        .metadata()
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok().map(ToString::to_string))
+}
+
 #[tonic::async_trait]
 impl LogsService for MockCollectorState {
     async fn export(
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        self.captured.lock().logs.push(request.into_inner());
+        let tp = extract_traceparent(&request);
+        let mut g = self.captured.lock();
+        g.logs.push(request.into_inner());
+        g.traceparents.push(tp);
+        drop(g);
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -90,7 +111,11 @@ impl MetricsService for MockCollectorState {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        self.captured.lock().metrics.push(request.into_inner());
+        let tp = extract_traceparent(&request);
+        let mut g = self.captured.lock();
+        g.metrics.push(request.into_inner());
+        g.traceparents.push(tp);
+        drop(g);
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -103,7 +128,11 @@ impl TraceService for MockCollectorState {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        self.captured.lock().traces.push(request.into_inner());
+        let tp = extract_traceparent(&request);
+        let mut g = self.captured.lock();
+        g.traces.push(request.into_inner());
+        g.traceparents.push(tp);
+        drop(g);
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))

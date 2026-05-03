@@ -17,7 +17,7 @@ use arrow_array::{
     builder::{MapBuilder, StringBuilder},
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use obs_core::SchemaRegistry;
+use obs_core::{ResourceAttrs, SchemaRegistry};
 use obs_proto::obs::v1::ObsEnvelope;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties as ParquetProps};
 
@@ -67,6 +67,10 @@ fn base_unified_fields() -> Vec<Field> {
     let labels_ty = DataType::Map(Arc::clone(&map_field), false);
     let attrs_ty = DataType::Map(map_field, false);
 
+    // Spec 95 § 3.3 / D8-3 / P1-AE: every analytics row carries the
+    // OTel semconv Resource columns alongside `service`, `instance`,
+    // `version` so a join on `service=…` between Parquet and OTLP can
+    // disambiguate environment / namespace / host.
     vec![
         Field::new(
             "ts_ns",
@@ -83,6 +87,10 @@ fn base_unified_fields() -> Vec<Field> {
         Field::new("service", DataType::Utf8, false),
         Field::new("instance", DataType::Utf8, true),
         Field::new("version", DataType::Utf8, true),
+        Field::new("service_namespace", DataType::Utf8, true),
+        Field::new("environment", DataType::Utf8, true),
+        Field::new("host_name", DataType::Utf8, true),
+        Field::new("host_arch", DataType::Utf8, true),
         Field::new("sampling_reason", DataType::Utf8, true),
         Field::new("callsite_id", DataType::UInt64, false),
         Field::new("labels", labels_ty, false),
@@ -93,10 +101,13 @@ fn base_unified_fields() -> Vec<Field> {
 
 /// Build a `RecordBatch` from `envelopes` against a unified schema
 /// that includes per-event nested Struct columns. Spec 94 § 2.8 / P1-F.
+/// `resource` is the active observer's `ResourceAttrs` snapshot,
+/// populated once per batch (spec 95 § 3.3 / D8-3).
 pub(crate) fn build_record_batch_with_registry(
     schema: &Arc<Schema>,
     envelopes: &[ObsEnvelope],
     registry: &SchemaRegistry,
+    resource: &ResourceAttrs,
 ) -> Result<RecordBatch, ParquetSinkError> {
     let mut event_columns = event_columns_from_registry(registry);
     let mut by_full_name: std::collections::HashMap<String, usize> =
@@ -108,9 +119,8 @@ pub(crate) fn build_record_batch_with_registry(
         envelopes,
         &mut event_columns,
         Some((registry, &by_full_name)),
+        resource,
     )?;
-    // Append finalised per-event Struct arrays in the same order as
-    // the schema fields (which were appended in event_columns order).
     for col in &mut event_columns {
         base.push(col.finish()?);
     }
@@ -123,9 +133,10 @@ pub(crate) fn build_record_batch_with_registry(
 pub(crate) fn build_record_batch(
     schema: &Arc<Schema>,
     envelopes: &[ObsEnvelope],
+    resource: &ResourceAttrs,
 ) -> Result<RecordBatch, ParquetSinkError> {
     let mut empty: Vec<EventColumn> = Vec::new();
-    let arrays = build_base_arrays(envelopes, &mut empty, None)?;
+    let arrays = build_base_arrays(envelopes, &mut empty, None, resource)?;
     RecordBatch::try_new(Arc::clone(schema), arrays)
         .map_err(|e| ParquetSinkError::Encode(e.to_string()))
 }
@@ -140,6 +151,7 @@ fn build_base_arrays(
     envelopes: &[ObsEnvelope],
     event_columns: &mut [EventColumn],
     dispatch: Option<(&SchemaRegistry, &std::collections::HashMap<String, usize>)>,
+    resource: &ResourceAttrs,
 ) -> Result<Vec<ArrayRef>, ParquetSinkError> {
     let n = envelopes.len();
     let mut ts_ns: Vec<i64> = Vec::with_capacity(n);
@@ -153,6 +165,10 @@ fn build_base_arrays(
     let mut service: Vec<String> = Vec::with_capacity(n);
     let mut instance: Vec<Option<String>> = Vec::with_capacity(n);
     let mut version: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut service_namespace: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut environment: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut host_name: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut host_arch: Vec<Option<String>> = Vec::with_capacity(n);
     let mut sampling_reason: Vec<Option<String>> = Vec::with_capacity(n);
     let mut callsite_id: Vec<u64> = Vec::with_capacity(n);
     let mut payload_proto: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
@@ -161,6 +177,13 @@ fn build_base_arrays(
         MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
     let mut attrs_builder: MapBuilder<StringBuilder, StringBuilder> =
         MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+
+    // Snapshot the resource semconv values once for the entire batch
+    // (spec 95 D8-3).
+    let resource_namespace = opt_str(&resource.service_namespace);
+    let resource_env = opt_str(&resource.deployment_environment);
+    let resource_host_name = opt_str(&resource.host_name);
+    let resource_host_arch = opt_str(&resource.host_arch);
 
     for env in envelopes {
         ts_ns.push(env.ts_ns as i64);
@@ -174,6 +197,10 @@ fn build_base_arrays(
         service.push(env.service.clone());
         instance.push(opt_str(&env.instance));
         version.push(opt_str(&env.version));
+        service_namespace.push(resource_namespace.clone());
+        environment.push(resource_env.clone());
+        host_name.push(resource_host_name.clone());
+        host_arch.push(resource_host_arch.clone());
         sampling_reason.push(Some(sampling_reason_str(env).to_string()));
         callsite_id.push(env.callsite_id);
         payload_proto.push(if env.payload.is_empty() {
@@ -195,8 +222,16 @@ fn build_base_arrays(
             .append(true)
             .map_err(|e| ParquetSinkError::Encode(e.to_string()))?;
 
-        // attrs is reserved for future per-event-type promoted attrs;
-        // keep it empty per row for now.
+        // attrs carries the ResourceAttrs::extra map (semconv keys
+        // that don't map to a first-class slot). Per-batch snapshot.
+        let mut extra_keys: Vec<&String> = resource.extra.keys().collect();
+        extra_keys.sort();
+        for k in &extra_keys {
+            if let Some(v) = resource.extra.get(k.as_str()) {
+                attrs_builder.keys().append_value(k.as_str());
+                attrs_builder.values().append_value(v.as_str());
+            }
+        }
         attrs_builder
             .append(true)
             .map_err(|e| ParquetSinkError::Encode(e.to_string()))?;
@@ -252,6 +287,10 @@ fn build_base_arrays(
         Arc::new(StringArray::from(service)),
         Arc::new(StringArray::from(instance)),
         Arc::new(StringArray::from(version)),
+        Arc::new(StringArray::from(service_namespace)),
+        Arc::new(StringArray::from(environment)),
+        Arc::new(StringArray::from(host_name)),
+        Arc::new(StringArray::from(host_arch)),
         Arc::new(StringArray::from(sampling_reason)),
         Arc::new(UInt64Array::from(callsite_id)),
         Arc::new(labels),
