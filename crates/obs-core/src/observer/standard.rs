@@ -434,11 +434,14 @@ impl Observer for StandardObserver {
     }
 
     fn enabled(&self, callsite: &ObsCallsite) -> bool {
+        // Spec 13 § 7 / spec 94 § 2.2: defer the entire decision to
+        // `Filter::callsite_interest`. The earlier `||` shortcut against
+        // the default-level floor silently bypassed `=off` directives
+        // when a callsite's static severity satisfied the global floor.
+        // The filter already handles bare-level / target=level / =off /
+        // dynamic precedence in one place.
         let filter = self.filter.load();
-        // Trust the filter's interest cache; default rejects below
-        // its severity floor.
-        callsite.default_sev() >= filter.default_level()
-            || filter.callsite_interest(callsite) != crate::callsite::Interest::Never
+        filter.callsite_interest(callsite) != crate::callsite::Interest::Never
     }
 
     fn generation(&self) -> u32 {

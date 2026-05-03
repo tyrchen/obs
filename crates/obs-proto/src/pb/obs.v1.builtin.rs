@@ -564,6 +564,17 @@ pub struct ObsSpanCompleted {
     pub target: ::buffa::alloc::string::String,
     /// Field 3: `latency_ns`
     pub latency_ns: u64,
+    /// Field 4: `trace_id`
+    pub trace_id: ::buffa::alloc::string::String,
+    /// Field 5: `span_id`
+    pub span_id: ::buffa::alloc::string::String,
+    /// Field 6: `parent_span_id`
+    pub parent_span_id: ::buffa::alloc::string::String,
+    /// Field 7: `fields`
+    pub fields: ::buffa::__private::HashMap<
+        ::buffa::alloc::string::String,
+        ::buffa::alloc::string::String,
+    >,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -573,6 +584,10 @@ impl ::core::fmt::Debug for ObsSpanCompleted {
             .field("name", &self.name)
             .field("target", &self.target)
             .field("latency_ns", &self.latency_ns)
+            .field("trace_id", &self.trace_id)
+            .field("span_id", &self.span_id)
+            .field("parent_span_id", &self.parent_span_id)
+            .field("fields", &self.fields)
             .finish()
     }
 }
@@ -609,6 +624,25 @@ impl ::buffa::Message for ObsSpanCompleted {
         if self.latency_ns != 0u64 {
             size += 1u32 + ::buffa::types::uint64_encoded_len(self.latency_ns) as u32;
         }
+        if !self.trace_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.trace_id) as u32;
+        }
+        if !self.span_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.span_id) as u32;
+        }
+        if !self.parent_span_id.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.parent_span_id) as u32;
+        }
+        #[allow(clippy::for_kv_map)]
+        for (k, v) in &self.fields {
+            let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
+                + 1u32 + ::buffa::types::string_encoded_len(v) as u32;
+            size
+                += 1u32 + ::buffa::encoding::varint_len(entry_size as u64) as u32
+                    + entry_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -639,6 +673,52 @@ impl ::buffa::Message for ObsSpanCompleted {
             ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
                 .encode(buf);
             ::buffa::types::encode_uint64(self.latency_ns, buf);
+        }
+        if !self.trace_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    4u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.trace_id, buf);
+        }
+        if !self.span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    5u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.span_id, buf);
+        }
+        if !self.parent_span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    6u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.parent_span_id, buf);
+        }
+        for (k, v) in &self.fields {
+            let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
+                + 1u32 + ::buffa::types::string_encoded_len(v) as u32;
+            ::buffa::encoding::Tag::new(
+                    7u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(entry_size as u64, buf);
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(k, buf);
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -683,6 +763,99 @@ impl ::buffa::Message for ObsSpanCompleted {
                 }
                 self.latency_ns = ::buffa::types::decode_uint64(buf)?;
             }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.trace_id, buf)?;
+            }
+            5u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 5u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.span_id, buf)?;
+            }
+            6u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 6u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.parent_span_id, buf)?;
+            }
+            7u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 7u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                let entry_len = ::buffa::encoding::decode_varint(buf)?;
+                let entry_len = usize::try_from(entry_len)
+                    .map_err(|_| ::buffa::DecodeError::MessageTooLarge)?;
+                if buf.remaining() < entry_len {
+                    return ::core::result::Result::Err(
+                        ::buffa::DecodeError::UnexpectedEof,
+                    );
+                }
+                let entry_limit = buf.remaining() - entry_len;
+                let mut key = ::core::default::Default::default();
+                let mut val = ::core::default::Default::default();
+                while buf.remaining() > entry_limit {
+                    let entry_tag = ::buffa::encoding::Tag::decode(buf)?;
+                    match entry_tag.field_number() {
+                        1 => {
+                            if entry_tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: entry_tag.field_number(),
+                                    expected: 2u8,
+                                    actual: entry_tag.wire_type() as u8,
+                                });
+                            }
+                            key = ::buffa::types::decode_string(buf)?;
+                        }
+                        2 => {
+                            if entry_tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: entry_tag.field_number(),
+                                    expected: 2u8,
+                                    actual: entry_tag.wire_type() as u8,
+                                });
+                            }
+                            val = ::buffa::types::decode_string(buf)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(entry_tag, buf, depth)?;
+                        }
+                    }
+                }
+                if buf.remaining() != entry_limit {
+                    let remaining = buf.remaining();
+                    if remaining > entry_limit {
+                        buf.advance(remaining - entry_limit);
+                    } else {
+                        return ::core::result::Result::Err(
+                            ::buffa::DecodeError::UnexpectedEof,
+                        );
+                    }
+                }
+                self.fields.insert(key, val);
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
@@ -694,6 +867,10 @@ impl ::buffa::Message for ObsSpanCompleted {
         self.name.clear();
         self.target.clear();
         self.latency_ns = 0u64;
+        self.trace_id.clear();
+        self.span_id.clear();
+        self.parent_span_id.clear();
+        self.fields.clear();
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -712,6 +889,12 @@ pub struct ObsSpanEntered {
     pub name: ::buffa::alloc::string::String,
     /// Field 2: `target`
     pub target: ::buffa::alloc::string::String,
+    /// Field 3: `trace_id`
+    pub trace_id: ::buffa::alloc::string::String,
+    /// Field 4: `span_id`
+    pub span_id: ::buffa::alloc::string::String,
+    /// Field 5: `parent_span_id`
+    pub parent_span_id: ::buffa::alloc::string::String,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -720,6 +903,9 @@ impl ::core::fmt::Debug for ObsSpanEntered {
         f.debug_struct("ObsSpanEntered")
             .field("name", &self.name)
             .field("target", &self.target)
+            .field("trace_id", &self.trace_id)
+            .field("span_id", &self.span_id)
+            .field("parent_span_id", &self.parent_span_id)
             .finish()
     }
 }
@@ -753,6 +939,17 @@ impl ::buffa::Message for ObsSpanEntered {
         if !self.target.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.target) as u32;
         }
+        if !self.trace_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.trace_id) as u32;
+        }
+        if !self.span_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.span_id) as u32;
+        }
+        if !self.parent_span_id.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.parent_span_id) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -778,6 +975,30 @@ impl ::buffa::Message for ObsSpanEntered {
                 )
                 .encode(buf);
             ::buffa::types::encode_string(&self.target, buf);
+        }
+        if !self.trace_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    3u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.trace_id, buf);
+        }
+        if !self.span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    4u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.span_id, buf);
+        }
+        if !self.parent_span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    5u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.parent_span_id, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -812,6 +1033,36 @@ impl ::buffa::Message for ObsSpanEntered {
                 }
                 ::buffa::types::merge_string(&mut self.target, buf)?;
             }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.trace_id, buf)?;
+            }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.span_id, buf)?;
+            }
+            5u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 5u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.parent_span_id, buf)?;
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, depth)?);
@@ -822,6 +1073,9 @@ impl ::buffa::Message for ObsSpanEntered {
     fn clear(&mut self) {
         self.name.clear();
         self.target.clear();
+        self.trace_id.clear();
+        self.span_id.clear();
+        self.parent_span_id.clear();
         self.__buffa_unknown_fields.clear();
     }
 }

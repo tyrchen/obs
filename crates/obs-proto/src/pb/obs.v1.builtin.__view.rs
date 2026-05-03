@@ -681,6 +681,14 @@ pub struct ObsSpanCompletedView<'a> {
     pub target: &'a str,
     /// Field 3: `latency_ns`
     pub latency_ns: u64,
+    /// Field 4: `trace_id`
+    pub trace_id: &'a str,
+    /// Field 5: `span_id`
+    pub span_id: &'a str,
+    /// Field 6: `parent_span_id`
+    pub parent_span_id: &'a str,
+    /// Field 7: `fields` (map)
+    pub fields: ::buffa::MapView<'a, &'a str, &'a str>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ObsSpanCompletedView<'a> {
@@ -751,6 +759,86 @@ impl<'a> ObsSpanCompletedView<'a> {
                     }
                     view.latency_ns = ::buffa::types::decode_uint64(&mut cur)?;
                 }
+                4u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 4u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.trace_id = ::buffa::types::borrow_str(&mut cur)?;
+                }
+                5u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 5u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.span_id = ::buffa::types::borrow_str(&mut cur)?;
+                }
+                6u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 6u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.parent_span_id = ::buffa::types::borrow_str(&mut cur)?;
+                }
+                7u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 7u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    let entry_bytes = ::buffa::types::borrow_bytes(&mut cur)?;
+                    let mut entry_cur: &'a [u8] = entry_bytes;
+                    let mut key = "";
+                    let mut val = "";
+                    while !entry_cur.is_empty() {
+                        let entry_tag = ::buffa::encoding::Tag::decode(&mut entry_cur)?;
+                        match entry_tag.field_number() {
+                            1 => {
+                                if entry_tag.wire_type()
+                                    != ::buffa::encoding::WireType::LengthDelimited
+                                {
+                                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                        field_number: entry_tag.field_number(),
+                                        expected: 2u8,
+                                        actual: entry_tag.wire_type() as u8,
+                                    });
+                                }
+                                key = ::buffa::types::borrow_str(&mut entry_cur)?;
+                            }
+                            2 => {
+                                if entry_tag.wire_type()
+                                    != ::buffa::encoding::WireType::LengthDelimited
+                                {
+                                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                        field_number: entry_tag.field_number(),
+                                        expected: 2u8,
+                                        actual: entry_tag.wire_type() as u8,
+                                    });
+                                }
+                                val = ::buffa::types::borrow_str(&mut entry_cur)?;
+                            }
+                            _ => {
+                                ::buffa::encoding::skip_field_depth(
+                                    entry_tag,
+                                    &mut entry_cur,
+                                    depth,
+                                )?;
+                            }
+                        }
+                    }
+                    view.fields.push(key, val);
+                }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
                     let span_len = before_tag.len() - cur.len();
@@ -782,6 +870,14 @@ impl<'a> ::buffa::MessageView<'a> for ObsSpanCompletedView<'a> {
             name: self.name.to_string(),
             target: self.target.to_string(),
             latency_ns: self.latency_ns,
+            trace_id: self.trace_id.to_string(),
+            span_id: self.span_id.to_string(),
+            parent_span_id: self.parent_span_id.to_string(),
+            fields: self
+                .fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             __buffa_unknown_fields: self
                 .__buffa_unknown_fields
                 .to_owned()
@@ -805,6 +901,25 @@ impl<'a> ::buffa::ViewEncode<'a> for ObsSpanCompletedView<'a> {
         }
         if self.latency_ns != 0u64 {
             size += 1u32 + ::buffa::types::uint64_encoded_len(self.latency_ns) as u32;
+        }
+        if !self.trace_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.trace_id) as u32;
+        }
+        if !self.span_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.span_id) as u32;
+        }
+        if !self.parent_span_id.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.parent_span_id) as u32;
+        }
+        #[allow(clippy::for_kv_map)]
+        for (k, v) in &self.fields {
+            let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
+                + 1u32 + ::buffa::types::string_encoded_len(v) as u32;
+            size
+                += 1u32 + ::buffa::encoding::varint_len(entry_size as u64) as u32
+                    + entry_size;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -838,6 +953,52 @@ impl<'a> ::buffa::ViewEncode<'a> for ObsSpanCompletedView<'a> {
                 .encode(buf);
             ::buffa::types::encode_uint64(self.latency_ns, buf);
         }
+        if !self.trace_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    4u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.trace_id, buf);
+        }
+        if !self.span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    5u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.span_id, buf);
+        }
+        if !self.parent_span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    6u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.parent_span_id, buf);
+        }
+        for (k, v) in &self.fields {
+            let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
+                + 1u32 + ::buffa::types::string_encoded_len(v) as u32;
+            ::buffa::encoding::Tag::new(
+                    7u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(entry_size as u64, buf);
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(k, buf);
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(v, buf);
+        }
         self.__buffa_unknown_fields.write_to(buf);
     }
 }
@@ -859,6 +1020,12 @@ pub struct ObsSpanEnteredView<'a> {
     pub name: &'a str,
     /// Field 2: `target`
     pub target: &'a str,
+    /// Field 3: `trace_id`
+    pub trace_id: &'a str,
+    /// Field 4: `span_id`
+    pub span_id: &'a str,
+    /// Field 5: `parent_span_id`
+    pub parent_span_id: &'a str,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ObsSpanEnteredView<'a> {
@@ -919,6 +1086,36 @@ impl<'a> ObsSpanEnteredView<'a> {
                     }
                     view.target = ::buffa::types::borrow_str(&mut cur)?;
                 }
+                3u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 3u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.trace_id = ::buffa::types::borrow_str(&mut cur)?;
+                }
+                4u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 4u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.span_id = ::buffa::types::borrow_str(&mut cur)?;
+                }
+                5u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 5u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    view.parent_span_id = ::buffa::types::borrow_str(&mut cur)?;
+                }
                 _ => {
                     ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
                     let span_len = before_tag.len() - cur.len();
@@ -949,6 +1146,9 @@ impl<'a> ::buffa::MessageView<'a> for ObsSpanEnteredView<'a> {
         super::super::ObsSpanEntered {
             name: self.name.to_string(),
             target: self.target.to_string(),
+            trace_id: self.trace_id.to_string(),
+            span_id: self.span_id.to_string(),
+            parent_span_id: self.parent_span_id.to_string(),
             __buffa_unknown_fields: self
                 .__buffa_unknown_fields
                 .to_owned()
@@ -969,6 +1169,17 @@ impl<'a> ::buffa::ViewEncode<'a> for ObsSpanEnteredView<'a> {
         }
         if !self.target.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.target) as u32;
+        }
+        if !self.trace_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.trace_id) as u32;
+        }
+        if !self.span_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.span_id) as u32;
+        }
+        if !self.parent_span_id.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.parent_span_id) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -996,6 +1207,30 @@ impl<'a> ::buffa::ViewEncode<'a> for ObsSpanEnteredView<'a> {
                 )
                 .encode(buf);
             ::buffa::types::encode_string(&self.target, buf);
+        }
+        if !self.trace_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    3u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.trace_id, buf);
+        }
+        if !self.span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    4u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.span_id, buf);
+        }
+        if !self.parent_span_id.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    5u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.parent_span_id, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }

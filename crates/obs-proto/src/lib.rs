@@ -46,16 +46,22 @@ pub static BUILTIN_FDS: &[u8] = include_bytes!(env!("OBS_PROTO_FDS"));
 ///
 /// Bumped to `2` alongside the move from JSON-payload (Phase-1
 /// `#[derive(Event)]`) to buffa-encoded payload bytes for both
-/// authoring paths (decision D6-1 in spec 93). Any further change to
-/// the field layout of `obs/v1/envelope.proto` (adding, removing,
-/// renumbering, or repurposing fields) requires bumping this constant
-/// **and** the corresponding `format_ver` field on every
-/// encoder/decoder. The CI guard at
-/// `.github/workflows/format-ver-guard.yml` fails any commit that
-/// touches `envelope.proto` without also bumping this value.
+/// authoring paths (decision D6-1 in spec 93).
 ///
-/// Spec 90 § 3.3 / spec 93 § 1 P0-2 + decision D6-1.
-pub const ENVELOPE_FORMAT_VER: u32 = 2;
+/// Bumped to `3` in Phase 7 alongside spec 94 § P0-A:
+/// `ObsSpanCompleted` / `ObsSpanEntered` gained typed
+/// `trace_id`/`span_id`/`parent_span_id` fields and the bridge
+/// switched from raw-byte payloads to buffa-encoded typed payloads
+/// (spec 94 § P1-B). Both producers and consumers therefore must
+/// agree on the new wire shape. Any further change to the field
+/// layout of `obs/v1/envelope.proto` (adding, removing, renumbering,
+/// or repurposing fields) requires bumping this constant **and** the
+/// corresponding `format_ver` field on every encoder/decoder. The CI
+/// guard at `.github/workflows/format-ver-guard.yml` fails any commit
+/// that touches `envelope.proto` without also bumping this value.
+///
+/// Spec 90 § 3.3 / spec 93 § 1 P0-2 + decision D6-1 / spec 94 D7-1.
+pub const ENVELOPE_FORMAT_VER: u32 = 3;
 
 /// Re-export buffa traits user code rarely touches but generated code
 /// needs in scope.
@@ -80,15 +86,16 @@ mod tests {
     }
 
     #[test]
-    fn test_envelope_format_ver_locked_at_two() {
-        // Spec 90 § 3.3 / impl-plan task 5.5 / spec 93 P0-2 + decision
-        // D6-1: bumped from 1 to 2 alongside the move from JSON to
-        // buffa-encoded payloads in the `#[derive(Event)]` path. The
-        // CI guard at `.github/workflows/format-ver-guard.yml` forces
-        // a bump on any `envelope.proto` edit; this assertion is the
-        // second line of defence so a forced merge cannot quietly
-        // desync the const from the proto.
-        assert_eq!(ENVELOPE_FORMAT_VER, 2);
+    fn test_envelope_format_ver_locked_at_three() {
+        // Spec 90 § 3.3 / spec 94 D7-1: bumped from 2 to 3 alongside
+        // P0-A (typed trace fields on ObsSpanCompleted / ObsSpanEntered)
+        // and P1-B (bridge typed-payload encoding). Both producers and
+        // consumers must agree on the new wire shape. The CI guard at
+        // `.github/workflows/format-ver-guard.yml` forces a bump on any
+        // `envelope.proto` edit; this assertion is the second line of
+        // defence so a forced merge cannot quietly desync the const
+        // from the proto.
+        assert_eq!(ENVELOPE_FORMAT_VER, 3);
     }
 
     #[test]

@@ -57,11 +57,17 @@ impl Default for InMemoryObserver {
 }
 
 impl Observer for InMemoryObserver {
-    fn emit_envelope(&self, env: ObsEnvelope) {
+    fn emit_envelope(&self, mut env: ObsEnvelope) {
         // Skip the worker pool: in-memory observers are synchronous
         // for testing determinism. The pass-through wrapper feeds the
         // sink without running the scrubber (spec 14 § 5: scrubber
         // belongs in the worker; here we are the worker).
+        //
+        // Spec 13 § 2.1 / spec 94 § 2.1: still apply scope auto-fill so
+        // tests that observe trace correlation through the bridge or
+        // tower scope frames see the same `(trace_id, span_id,
+        // parent_span_id)` flow as production.
+        crate::scope::auto_fill_envelope(&mut env);
         let envref: &ObsEnvelope = &env;
         let scrubbed = ScrubbedEnvelope::pass_through(envref, &self.registry);
         self.sink.deliver(scrubbed);

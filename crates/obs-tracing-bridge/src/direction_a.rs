@@ -10,7 +10,9 @@ use std::{
 
 use dashmap::DashMap;
 use obs_core::{
-    FieldCapture, ObsCallsiteRegistry, SpanCtx, SpanFrame, fresh_span_id, fresh_trace_id,
+    FieldCapture, ObsCallsiteRegistry, ScopeFrameBuilder, SpanCtx, SpanFrame, fresh_span_id,
+    fresh_trace_id,
+    scope::{pop_frame_pub, push_frame_pub},
 };
 use obs_proto::obs::v1::ObsEnvelope;
 use obs_types::Severity;
@@ -562,6 +564,35 @@ where
         if !was_in {
             obs_core::observer().emit_envelope(env);
             IN_TRACING_BRIDGE.with(|c| c.set(false));
+        }
+    }
+
+    /// Push an `obs::scope!` frame so native `obs::emit!` calls inside
+    /// the tracing span inherit the bridged `(trace_id, span_id,
+    /// parent_span_id)`. Spec 94 § 2.1 / P0-A. The frame is popped on
+    /// `on_exit`. tracing's `Layer::on_enter` / `on_exit` are paired
+    /// LIFO within a poll, so push/pop order is guaranteed.
+    fn on_enter(&self, id: &tracing_core::span::Id, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let bridged = match span.extensions().get::<BridgedSpanCtx>().cloned() {
+            Some(b) => b,
+            None => return,
+        };
+        let frame = ScopeFrameBuilder::new()
+            .context()
+            .trace_id(bridged.trace_id)
+            .span_id(bridged.span_id)
+            .parent_span_id(bridged.parent_span_id)
+            .into_frame();
+        push_frame_pub(frame);
+    }
+
+    fn on_exit(&self, id: &tracing_core::span::Id, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        // Pop only if we pushed in `on_enter`. `BridgedSpanCtx`
+        // presence is the same gate so push/pop are symmetric.
+        if span.extensions().get::<BridgedSpanCtx>().is_some() {
+            let _ = pop_frame_pub();
         }
     }
 

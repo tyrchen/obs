@@ -37,7 +37,7 @@ fn test_obs_version_should_print_envelope_formats() {
         .expect("run obs version");
     assert!(out.status.success(), "exit: {}", out.status);
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("envelope formats: 2"), "stdout: {text}");
+    assert!(text.contains("envelope formats: 3"), "stdout: {text}");
 }
 
 #[test]

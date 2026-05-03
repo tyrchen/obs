@@ -26,6 +26,7 @@ tower-service = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+bytes = { workspace = true }
 obs-core = { workspace = true, features = ["test"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 

@@ -38,7 +38,7 @@ message ObsFnEntered {
   string fn_name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
 }
 
-// Span carriers from the tracing bridge (spec 30).
+// Span carriers from the tracing bridge (spec 30 + spec 94 § 2.1).
 message ObsSpanCompleted {
   option (obs.v1.event) = { tier: TIER_LOG, default_sev: SEVERITY_DEBUG };
 
@@ -48,6 +48,11 @@ message ObsSpanCompleted {
     kind: MEASUREMENT,
     metric: { kind: METRIC_KIND_HISTOGRAM, unit: "ns" }
   }];
+  // Trace-correlation typed fields. Spec 94 § 2.1 / D7-1.
+  string trace_id = 4 [(obs.v1.field) = { kind: TRACE_ID }];
+  string span_id = 5 [(obs.v1.field) = { kind: SPAN_ID }];
+  string parent_span_id = 6 [(obs.v1.field) = { kind: PARENT_SPAN_ID }];
+  map<string, string> fields = 7 [(obs.v1.field) = { kind: ATTRIBUTE, cardinality: UNBOUNDED }];
 }
 
 message ObsSpanEntered {
@@ -55,6 +60,10 @@ message ObsSpanEntered {
 
   string name = 1 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
   string target = 2 [(obs.v1.field) = { kind: LABEL, cardinality: MEDIUM }];
+  // Trace-correlation typed fields. Spec 94 § 2.1 / D7-1.
+  string trace_id = 3 [(obs.v1.field) = { kind: TRACE_ID }];
+  string span_id = 4 [(obs.v1.field) = { kind: SPAN_ID }];
+  string parent_span_id = 5 [(obs.v1.field) = { kind: PARENT_SPAN_ID }];
 }
 
 message ObsTracingForensicEvent {

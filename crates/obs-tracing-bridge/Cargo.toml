@@ -29,6 +29,7 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 buffa = { workspace = true }
+bytes = { workspace = true }
 criterion = { workspace = true }
 obs-core = { workspace = true, features = ["test"] }
 obs-proto = { workspace = true }

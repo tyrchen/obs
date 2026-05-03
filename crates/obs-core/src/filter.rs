@@ -22,6 +22,14 @@ use obs_types::Severity;
 
 use crate::callsite::{Interest, ObsCallsite};
 
+/// Resolved static directive: either an explicit veto (`=off`) or a
+/// severity floor.
+#[derive(Debug, Clone, Copy)]
+enum StaticDirective {
+    Off,
+    Level(Severity),
+}
+
 /// One parsed directive.
 #[derive(Debug, Clone)]
 pub struct Directive {
@@ -32,7 +40,12 @@ pub struct Directive {
     /// Field-value clauses (`[field=value]`). Empty ⇒ static directive.
     pub fields: Vec<(String, String)>,
     /// Severity threshold; events at this severity or above match.
+    /// Ignored when [`Self::off`] is `true`.
     pub level: Severity,
+    /// `true` for `=off` directives — callsites matched by this
+    /// directive are vetoed regardless of severity. Spec 13 § 7 / spec
+    /// 94 § 2.2.
+    pub off: bool,
 }
 
 /// Parsed `obs::Filter`. Statics are checked first against the
@@ -42,6 +55,10 @@ pub struct Directive {
 pub struct Filter {
     /// Severity floor when no directive matches; default `Info`.
     default_level: Severity,
+    /// `true` when the bare-target floor is `off` (e.g. filter `off`).
+    /// Vetoes every callsite that no static / dynamic directive elects
+    /// to keep.
+    default_off: bool,
     /// Static directives (no `[field=value]` clause).
     statics: Vec<Directive>,
     /// Dynamic directives bucketed by full_name. The bucket vector is
@@ -55,6 +72,7 @@ impl Filter {
     pub fn new() -> Self {
         Self {
             default_level: Severity::Info,
+            default_off: false,
             statics: Vec::new(),
             dynamics: HashMap::new(),
         }
@@ -87,7 +105,15 @@ impl Filter {
     pub fn add_directive(&mut self, raw: &str) -> Result<(), FilterParseError> {
         let directive = parse_directive(raw)?;
         if directive.target.is_none() && directive.fields.is_empty() {
-            self.default_level = directive.level;
+            // A bare `off` directive disables every callsite; we model
+            // that by setting the floor to `Fatal+1` semantics. Use a
+            // boolean on the filter so the comparison is unambiguous.
+            if directive.off {
+                self.default_off = true;
+            } else {
+                self.default_level = directive.level;
+                self.default_off = false;
+            }
             return Ok(());
         }
         if directive.fields.is_empty() {
@@ -106,24 +132,53 @@ impl Filter {
     /// `Sometimes` is returned whenever a dynamic directive references
     /// the callsite — the per-emit `event_allowed` is then consulted
     /// once the envelope is available.
+    ///
+    /// Spec 94 § 2.2: a static directive that matches the callsite
+    /// vetoes inclusion regardless of the global default floor — i.e.
+    /// `info,my_module=off` rejects every `my_module::*` callsite even
+    /// when its default severity is at or above `info`.
     #[must_use]
     pub fn callsite_interest(&self, callsite: &ObsCallsite) -> Interest {
-        let sev_floor = self
-            .static_level_for(callsite.full_name(), callsite.module())
-            .unwrap_or(self.default_level);
+        let resolved = self.static_level_for(callsite.full_name(), callsite.module());
         let dynamic_present = self.has_dynamic_for(callsite.full_name());
-        if callsite.default_sev() < sev_floor {
-            // Always keep dynamics live — a `[field=value]` directive at
-            // a higher level may still elect to keep this site.
-            if dynamic_present {
-                Interest::Sometimes
-            } else {
-                Interest::Never
+        match resolved {
+            Some(StaticDirective::Off) => {
+                // Explicit veto — only dynamics can rescue. Spec 94 § 2.2.
+                if dynamic_present {
+                    Interest::Sometimes
+                } else {
+                    Interest::Never
+                }
             }
-        } else if dynamic_present {
-            Interest::Sometimes
-        } else {
-            Interest::Always
+            Some(StaticDirective::Level(sev_floor)) => {
+                if callsite.default_sev() < sev_floor {
+                    if dynamic_present {
+                        Interest::Sometimes
+                    } else {
+                        Interest::Never
+                    }
+                } else if dynamic_present {
+                    Interest::Sometimes
+                } else {
+                    Interest::Always
+                }
+            }
+            None => {
+                // No matching static directive — fall back to the
+                // bare-target floor (or `off` global veto).
+                let blocked = self.default_off || callsite.default_sev() < self.default_level;
+                if blocked {
+                    if dynamic_present {
+                        Interest::Sometimes
+                    } else {
+                        Interest::Never
+                    }
+                } else if dynamic_present {
+                    Interest::Sometimes
+                } else {
+                    Interest::Always
+                }
+            }
         }
     }
 
@@ -131,17 +186,27 @@ impl Filter {
     /// directives (`[field=value]`) by reading `env.labels`.
     #[must_use]
     pub fn event_allowed(&self, env: &ObsEnvelope, callsite_sev: Severity) -> bool {
-        let sev_floor = self
-            .static_level_for(&env.full_name, "") // module not needed once full_name matched
-            .unwrap_or(self.default_level);
         if let Some(buckets) = self.dynamics.get(env.full_name.as_str()) {
             for d in buckets {
                 if directive_matches_env(d, env) {
+                    if d.off {
+                        return false;
+                    }
                     return callsite_sev >= d.level;
                 }
             }
         }
-        callsite_sev >= sev_floor
+        match self.static_level_for(&env.full_name, "") {
+            Some(StaticDirective::Off) => false,
+            Some(StaticDirective::Level(sev)) => callsite_sev >= sev,
+            None => {
+                if self.default_off {
+                    false
+                } else {
+                    callsite_sev >= self.default_level
+                }
+            }
+        }
     }
 
     /// `true` when at least one dynamic directive references this
@@ -150,21 +215,27 @@ impl Filter {
         self.dynamics.contains_key(full_name)
     }
 
-    fn static_level_for(&self, full_name: &str, module: &str) -> Option<Severity> {
-        // Spec 13 § 7 / spec 93 P2-6: target match must respect
-        // segment boundaries. `my_app::foo=info` should match
-        // `my_app::foo` and `my_app::foo::bar`, but not `my_app::foobar`.
-        let mut best: Option<(usize, Severity)> = None;
+    fn static_level_for(&self, full_name: &str, module: &str) -> Option<StaticDirective> {
+        // Spec 13 § 7 / spec 93 P2-6 / spec 94 § 2.2: target match must
+        // respect segment boundaries; the longest matching directive
+        // wins, and an `=off` directive is preserved so callers can
+        // veto the callsite.
+        let mut best: Option<(usize, StaticDirective)> = None;
         for d in &self.statics {
             let Some(t) = d.target.as_deref() else {
                 continue;
             };
             let matches = matches_segment(full_name, t) || matches_segment(module, t);
             if matches && best.map(|(len, _)| t.len() > len).unwrap_or(true) {
-                best = Some((t.len(), d.level));
+                let resolved = if d.off {
+                    StaticDirective::Off
+                } else {
+                    StaticDirective::Level(d.level)
+                };
+                best = Some((t.len(), resolved));
             }
         }
-        best.map(|(_, lvl)| lvl)
+        best.map(|(_, d)| d)
     }
 
     /// Default severity floor.
@@ -221,22 +292,35 @@ fn parse_directive(raw: &str) -> Result<Directive, FilterParseError> {
     //   target[field=value,...]=level
     //   [field=value,...]=level
     //
-    // The bare-level form (`info`, `warn`, …) is special: when `raw`
-    // parses as a Severity, we treat it as a default-level directive
-    // (target/fields both empty).
+    // The bare-level form (`info`, `warn`, `off`, …) is special: when
+    // `raw` parses as a Severity (or the literal `off`), we treat it
+    // as a default-level directive (target/fields both empty).
+    if raw.trim().eq_ignore_ascii_case("off") {
+        return Ok(Directive {
+            target: None,
+            fields: Vec::new(),
+            level: Severity::Trace,
+            off: true,
+        });
+    }
     if let Ok(level) = Severity::from_str(raw.trim()) {
         return Ok(Directive {
             target: None,
             fields: Vec::new(),
             level,
+            off: false,
         });
     }
-    let (head, level) = match raw.rfind('=') {
+    let (head, level, off) = match raw.rfind('=') {
         Some(idx) => {
-            let level = parse_level(&raw[idx + 1..])?;
-            (&raw[..idx], level)
+            let level_str = raw[idx + 1..].trim();
+            if level_str.eq_ignore_ascii_case("off") {
+                (&raw[..idx], Severity::Trace, true)
+            } else {
+                (&raw[..idx], parse_level(level_str)?, false)
+            }
         }
-        None => (raw, Severity::Trace),
+        None => (raw, Severity::Trace, false),
     };
     let (target, fields) = if let Some(open) = head.find('[') {
         let target = if open == 0 {
@@ -280,6 +364,7 @@ fn parse_directive(raw: &str) -> Result<Directive, FilterParseError> {
         target,
         fields,
         level,
+        off,
     })
 }
 
@@ -337,6 +422,43 @@ mod tests {
             .unwrap();
         let dynamic_count = f.dynamics().count();
         assert_eq!(dynamic_count, 1);
+    }
+
+    #[test]
+    fn test_off_directive_vetoes_callsite_above_floor() {
+        // Spec 94 § 2.2: `info,my_module=off` must veto every callsite
+        // whose target lives under `my_module`, even when its default
+        // severity is `>= info` (the global floor).
+        static CALLSITE: ObsCallsite = ObsCallsite::new(
+            "myapp.v1.ObsNoisy",
+            Severity::Warn,
+            "my_module::auth",
+            "lib.rs",
+            1,
+        );
+        let f: Filter = "info,my_module=off".parse().unwrap();
+        assert_eq!(f.callsite_interest(&CALLSITE), Interest::Never);
+    }
+
+    #[test]
+    fn test_off_directive_targets_full_name() {
+        static CALLSITE: ObsCallsite = ObsCallsite::new(
+            "myapp.v1.ObsNoisyFn",
+            Severity::Warn,
+            "myapp::handler",
+            "lib.rs",
+            1,
+        );
+        let f: Filter = "info,myapp.v1.ObsNoisyFn=off".parse().unwrap();
+        assert_eq!(f.callsite_interest(&CALLSITE), Interest::Never);
+    }
+
+    #[test]
+    fn test_global_off_blocks_everything() {
+        static CALLSITE: ObsCallsite =
+            ObsCallsite::new("myapp.v1.ObsXyz", Severity::Error, "myapp", "lib.rs", 1);
+        let f: Filter = "off".parse().unwrap();
+        assert_eq!(f.callsite_interest(&CALLSITE), Interest::Never);
     }
 
     #[test]

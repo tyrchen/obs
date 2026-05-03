@@ -75,6 +75,7 @@ of 30/71, M3 closes everything else.
 | [91-impl-plan.md](./91-impl-plan.md) | Impl-plan | Dependency-ordered build plan (engineer-facing); pairs 1:1 with roadmap milestones; covers readiness assessment, phase-by-phase task breakdown with effort estimates, and the three principles that drove the ordering |
 | [92-rfc-v1.md](./92-rfc-v1.md) | RFC | Public-comment-window summary for the v1.0 freeze (Phase 5.8 / impl-plan 5.8) |
 | [93-improvements-review.md](./93-improvements-review.md) | Review | Full-workspace audit of impl vs specs 10–72; P0/P1/P2/P3 backlog with file:line citations and a six-phase remediation plan |
+| [94-improvements-review.md](./94-improvements-review.md) | Review | Phase-7 re-audit at HEAD `122c859`; verifies `93` closure claims, reopens trace-correlation/lint-parity/typed-payload gaps, surfaces 12 new findings, and ships a severity-ordered backlog with effort estimates and decisions D7-1–D7-5 |
 
 ## Examples
 

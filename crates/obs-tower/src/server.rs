@@ -9,7 +9,7 @@ use std::{
 };
 
 use http::Request;
-use obs_core::{Observer, with_observer_task_sync};
+use obs_core::{Observer, ScopeFrame, ScopeFrameBuilder, with_observer_task_sync};
 use obs_proto::obs::v1::ObsEnvelope;
 use pin_project_lite::pin_project;
 use tower::Service;
@@ -223,6 +223,17 @@ where
 
         let inner_fut = self.inner.call(req);
 
+        // Spec 94 § 2.1 / P0-A: build an `obs::scope!` frame so handler
+        // emits inherit `trace_id`/`span_id`/`parent_span_id`. The
+        // frame is re-entered on every poll via `Instrumented<F>`-style
+        // push/pop in `Future::poll`.
+        let scope_seed = ScopeFrameBuilder::new()
+            .context()
+            .trace_id(trace_id.clone())
+            .span_id(span_id.clone())
+            .parent_span_id(parent_span.clone())
+            .into_frame();
+
         ObsHttpFuture {
             inner: inner_fut,
             started: Some(started),
@@ -234,6 +245,7 @@ where
             status_classifier,
             emit_metrics,
             observer_override,
+            scope_seed: Some(scope_seed),
         }
     }
 }
@@ -252,6 +264,10 @@ pin_project! {
         status_classifier: StatusFn,
         emit_metrics: bool,
         observer_override: Option<Arc<dyn Observer>>,
+        // Cloned per poll into a fresh `ScopeFrame`; the frame is
+        // pushed at poll-start and popped at poll-end so handler emits
+        // inherit the request's trace context (spec 94 P0-A).
+        scope_seed: Option<ScopeFrame>,
     }
 }
 
@@ -263,6 +279,13 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
+        // Spec 94 § 2.1 / P0-A: push a fresh `obs::scope!` frame per
+        // poll so handler emits inherit trace context across `.await`
+        // and thread migration. The guard pops the frame on drop.
+        let _scope_guard = this
+            .scope_seed
+            .as_ref()
+            .map(|seed| RequestScopeGuard::push(seed.clone()));
         // If a per-request observer override is present, install it
         // for this poll. Otherwise just poll directly.
         let result = if let Some(o) = this.observer_override.clone() {
@@ -310,6 +333,26 @@ where
                 Poll::Ready(out)
             }
         }
+    }
+}
+
+/// Per-poll RAII guard that pushes a request-scope frame at poll-start
+/// and pops it at poll-end. Mirrors the `Instrumented<F>` pattern in
+/// `obs-core`'s instrumented module so handler emits inherit
+/// `trace_id`/`span_id`/`parent_span_id` across thread migration.
+/// Spec 94 § 2.1.
+struct RequestScopeGuard;
+
+impl RequestScopeGuard {
+    fn push(frame: ScopeFrame) -> Self {
+        obs_core::scope::push_frame_pub(frame);
+        Self
+    }
+}
+
+impl Drop for RequestScopeGuard {
+    fn drop(&mut self) {
+        let _ = obs_core::scope::pop_frame_pub();
     }
 }
 

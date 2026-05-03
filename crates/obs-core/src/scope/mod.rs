@@ -4,6 +4,7 @@
 //!
 //! Spec 13 §§ 2 + 3, spec 11 § 4.1 (pipeline order steps 3 + 5).
 
+mod builder;
 mod frame;
 mod guard;
 
@@ -12,6 +13,7 @@ use std::cell::RefCell;
 use obs_proto::obs::v1::ObsEnvelope;
 
 pub use self::{
+    builder::ScopeFrameBuilder,
     frame::{ScopeField, ScopeFrame, ScopeKind},
     guard::ScopeGuard,
 };
@@ -48,6 +50,22 @@ pub(crate) fn pop_frame() -> Option<ScopeFrame> {
         return frame;
     }
     THREAD_STACK.with(|cell| cell.borrow_mut().pop())
+}
+
+/// Public push helper for external integrations that own their own
+/// pop (e.g. the tracing bridge pushes on `on_enter` and pops on
+/// `on_exit`). External callers MUST pair every call to
+/// [`push_frame_pub`] with exactly one call to [`pop_frame_pub`] in
+/// LIFO order — using [`ScopeFrameBuilder`] + the returned
+/// [`ScopeGuard`] is preferred when the lifetime is RAII-shaped.
+/// Spec 94 D7-3.
+pub fn push_frame_pub(frame: ScopeFrame) {
+    let _ = push_frame(frame);
+}
+
+/// Public pop helper. See [`push_frame_pub`] for ownership rules.
+pub fn pop_frame_pub() -> Option<ScopeFrame> {
+    pop_frame()
 }
 
 /// Visit every active scope frame innermost-first. Used by

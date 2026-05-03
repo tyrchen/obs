@@ -57,6 +57,16 @@ impl ScopeGuard {
         Self { armed: true }
     }
 
+    /// Push a fully-built [`ScopeFrame`] onto the active scope stack.
+    /// Used by [`super::ScopeFrameBuilder::push`] so external crates
+    /// can build a frame programmatically (instead of via the
+    /// `obs::scope!` macro) and own the resulting RAII guard.
+    /// Spec 94 D7-3.
+    pub fn enter_with_frame(frame: ScopeFrame) -> Self {
+        let _ = push_frame(frame);
+        Self { armed: true }
+    }
+
     /// Detach the guard so the caller can layer it onto a
     /// `Future::instrument(...)` (the future then re-applies the frame
     /// on every poll). The frame is popped immediately so the caller

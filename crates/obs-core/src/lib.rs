@@ -103,7 +103,7 @@ pub use registry::{
     ScrubError, ScrubbedEnvelope, callsite_id, scrub_payload,
 };
 pub use sampling::{SamplingDecision, decide as sample_decide};
-pub use scope::{ScopeField, ScopeFrame, ScopeGuard, ScopeKind};
+pub use scope::{ScopeField, ScopeFrame, ScopeFrameBuilder, ScopeGuard, ScopeKind};
 pub use sink::{
     FormatterStyle, InMemorySink, LevelSplitWriter, MakeWriter, NdjsonFileSink, NonBlockingWriter,
     NoopSink, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy, Sink, StderrWriter,
