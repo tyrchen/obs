@@ -68,11 +68,20 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     };
 
     let body_expr = if is_async {
+        // Spec 13 § 5 / spec 93 P2-8: capture the scope inside the
+        // async block so the RAII guard travels with the future
+        // across `.await` boundaries. The scope! macro pushes onto a
+        // tokio `task_local!` stack, so the frame is task-scoped
+        // (not thread-scoped) and survives executor migration. A
+        // proper `Instrumented<F>` adapter that also handles
+        // `tokio::spawn` is tracked in spec 93 P2-8 follow-up.
         quote! {
             let __obs_started = ::std::time::Instant::now();
-            #scope_setup
-            #emit_entered
-            let __obs_res = async move #body.await;
+            let __obs_res = async move {
+                #scope_setup
+                #emit_entered
+                #body
+            }.await;
             #executed_emit
             __obs_res
         }
