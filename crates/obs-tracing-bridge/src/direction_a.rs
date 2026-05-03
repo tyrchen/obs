@@ -312,7 +312,11 @@ impl TracingToObsLayer {
                 // Promoted fields appear in `env.labels` *and* the
                 // typed `attrs` map (D7-4: typed payload is mandatory;
                 // labels are an opt-in promotion).
-                if self.promotions.admit(name, &value).is_some() {
+                if self
+                    .promotions
+                    .admit_with_target(&target, name, &value)
+                    .is_some()
+                {
                     env.labels.insert((*name).to_string(), value.clone());
                 }
                 attrs_sorted.insert((*name).to_string(), value);

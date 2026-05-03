@@ -237,8 +237,25 @@ impl Sink for OtlpLogSink {
 }
 
 impl OtlpLogSink {
+    /// Resolve the resource attribute snapshot to ship with this
+    /// batch: prefer the live observer-held set (spec 94 § 2.7) and
+    /// fall back to the sink's builder-provided set when no observer
+    /// exposes one (e.g. unit tests with `NoopObserver`).
+    fn live_resource(&self) -> Arc<OtlpResourceAttrs> {
+        let attrs = obs_core::observer().resource_attrs();
+        if attrs.service_name.is_empty()
+            && attrs.service_version.is_empty()
+            && attrs.extra.is_empty()
+        {
+            Arc::clone(&self.resource)
+        } else {
+            Arc::new(OtlpResourceAttrs::from(attrs.as_ref()))
+        }
+    }
+
     fn dispatch(&self, envelopes: Vec<obs_proto::obs::v1::ObsEnvelope>) {
-        let payload = OtlpLogPayload::from_envelopes(&envelopes, &self.resource, &self.endpoint);
+        let resource = self.live_resource();
+        let payload = OtlpLogPayload::from_envelopes(&envelopes, &resource, &self.endpoint);
         let _g = self.last_flush.lock();
         match self.exporter.export_logs(&payload) {
             Ok(()) => {}
@@ -418,10 +435,23 @@ impl Sink for OtlpMetricSink {
 }
 
 impl OtlpMetricSink {
+    fn live_resource(&self) -> Arc<OtlpResourceAttrs> {
+        let attrs = obs_core::observer().resource_attrs();
+        if attrs.service_name.is_empty()
+            && attrs.service_version.is_empty()
+            && attrs.extra.is_empty()
+        {
+            Arc::clone(&self.resource)
+        } else {
+            Arc::new(OtlpResourceAttrs::from(attrs.as_ref()))
+        }
+    }
+
     fn dispatch(&self, envelopes: Vec<obs_proto::obs::v1::ObsEnvelope>) {
+        let resource = self.live_resource();
         let payload = OtlpMetricPayload::from_envelopes(
             &envelopes,
-            &self.resource,
+            &resource,
             &self.endpoint,
             &self.registry,
         );
@@ -605,10 +635,23 @@ impl Sink for OtlpTraceSink {
 }
 
 impl OtlpTraceSink {
+    fn live_resource(&self) -> Arc<OtlpResourceAttrs> {
+        let attrs = obs_core::observer().resource_attrs();
+        if attrs.service_name.is_empty()
+            && attrs.service_version.is_empty()
+            && attrs.extra.is_empty()
+        {
+            Arc::clone(&self.resource)
+        } else {
+            Arc::new(OtlpResourceAttrs::from(attrs.as_ref()))
+        }
+    }
+
     fn dispatch(&self, envelopes: Vec<obs_proto::obs::v1::ObsEnvelope>) {
+        let resource = self.live_resource();
         let payload = OtlpTracePayload::from_envelopes(
             &envelopes,
-            &self.resource,
+            &resource,
             &self.endpoint,
             &self.pair_tracker,
             &self.registry,

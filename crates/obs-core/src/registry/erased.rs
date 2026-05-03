@@ -63,22 +63,22 @@ pub trait EventSchemaErased: Sealed + Send + Sync + 'static {
     }
 
     /// Decode the payload into a `StructArray` row whose schema matches
-    /// the codegen-emitted Arrow fragment for this event type. Phase-1
-    /// default impl is a stub; Phase 2 codegen lands the real
-    /// implementation. Spec 14 § 2.
+    /// the codegen-emitted Arrow fragment for this event type. The
+    /// default impl walks the buffa wire format using the schema's
+    /// [`Self::fields`] table and dispatches to the matching
+    /// [`ArrowStructBuilder`] method per declared field. Codegen may
+    /// override for per-event projections that need column-specific
+    /// projections beyond the generic shape. Spec 14 § 2 / spec 94 P1-C.
     ///
     /// # Errors
     ///
-    /// Returns `DecodeError` when the payload cannot be decoded.
+    /// Returns `DecodeError::Truncated` when the payload ends mid-field.
     fn decode_to_arrow_struct(
         &self,
         payload: &[u8],
         builder: &mut dyn ArrowStructBuilder,
     ) -> Result<(), DecodeError> {
-        let _ = (payload, builder);
-        Err(DecodeError::Invariant(
-            "decode_to_arrow_struct: Phase 2 codegen not yet emitted",
-        ))
+        super::payload_decode::decode_to_arrow_struct_default(payload, self.fields(), builder)
     }
 
     /// Decode the payload into a flat `KeyValueList` body for OTLP
@@ -145,13 +145,54 @@ pub trait EventSchemaErased: Sealed + Send + Sync + 'static {
     }
 }
 
-/// Codegen-emitted Arrow `StructArray` row builder. Phase-1 ships only
-/// the trait shape; the real impl lives in `obs-parquet`/`obs-clickhouse`
-/// in Phase 4A. Spec 14 § 2.
+/// Codegen-emitted Arrow `StructArray` row builder. The default
+/// [`EventSchemaErased::decode_to_arrow_struct`] implementation walks
+/// the buffa wire format and calls the matching `append_*` method per
+/// declared field, in declaration order from the schema's `FIELDS`
+/// table. Sinks (`obs-parquet`, `obs-clickhouse`) implement this trait
+/// over their builder types; Phase 4A codegen may override
+/// `decode_to_arrow_struct` for per-event projections. Spec 14 § 2 /
+/// spec 94 § 2.5.
 pub trait ArrowStructBuilder: Send {
-    /// Append one row's worth of fields to the underlying builder.
-    /// The codegen impl calls `append_*` methods per declared field.
+    /// Append a null in this row across every field of this struct.
     fn append_null(&mut self);
+
+    /// Append a string value for the named field in this row.
+    /// Default no-op so sinks that haven't wired this column can still
+    /// satisfy the trait without breaking the build.
+    fn append_str(&mut self, name: &'static str, value: &str) {
+        let _ = (name, value);
+    }
+
+    /// Append an i64 value for the named field. Default no-op.
+    fn append_i64(&mut self, name: &'static str, value: i64) {
+        let _ = (name, value);
+    }
+
+    /// Append a u64 value for the named field. Default no-op.
+    fn append_u64(&mut self, name: &'static str, value: u64) {
+        let _ = (name, value);
+    }
+
+    /// Append an f64 value for the named field. Default no-op.
+    fn append_f64(&mut self, name: &'static str, value: f64) {
+        let _ = (name, value);
+    }
+
+    /// Append a bool value for the named field. Default no-op.
+    fn append_bool(&mut self, name: &'static str, value: bool) {
+        let _ = (name, value);
+    }
+
+    /// Append a binary blob value for the named field. Default no-op.
+    fn append_bytes(&mut self, name: &'static str, value: &[u8]) {
+        let _ = (name, value);
+    }
+
+    /// Mark a field as unset/null in this row. Default no-op.
+    fn append_field_null(&mut self, name: &'static str) {
+        let _ = name;
+    }
 }
 
 /// OTLP `AnyValue` substitute for the Phase-1 surface. The real OTLP

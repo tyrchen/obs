@@ -19,7 +19,7 @@ use bytes::Buf;
 use obs_types::Classification;
 use serde_json::{Map, Value};
 
-use super::erased::{DecodeError, OtlpValue};
+use super::erased::{ArrowStructBuilder, DecodeError, OtlpValue};
 use crate::{
     envelope::{FieldMeta, FieldRole},
     metric::MetricEmitter,
@@ -118,6 +118,82 @@ pub fn project_metrics_default(
                 sink.record_gauge_f64(meta.name, f64::from(f32::from_bits(v)), None);
             }
             RawValue::Bytes(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Decode a payload's declared fields into `builder`. Walks the buffa
+/// wire format using `fields`; for each known field number dispatches
+/// to the typed `append_*` method on [`ArrowStructBuilder`]. Pii /
+/// Secret fields are appended as the redacted marker `<redacted>`.
+/// Unknown field numbers are silently skipped (forward-compat per
+/// spec 14 § 8). Spec 94 § 2.5 / P1-C.
+///
+/// # Errors
+///
+/// Returns [`DecodeError::Truncated`] when the payload ends mid-field.
+pub fn decode_to_arrow_struct_default(
+    payload: &[u8],
+    fields: &'static [FieldMeta],
+    builder: &mut dyn ArrowStructBuilder,
+) -> Result<(), DecodeError> {
+    use obs_types::Classification;
+
+    let mut cursor = payload;
+    let mut offset: usize = 0;
+    // Track which declared field numbers have been seen so we can
+    // emit `append_field_null` for the rest at the end.
+    let mut seen_numbers: Vec<u32> = Vec::with_capacity(fields.len());
+    while cursor.has_remaining() {
+        let before = cursor.remaining();
+        let tag = match Tag::decode(&mut cursor) {
+            Ok(t) => t,
+            Err(_) => return Err(DecodeError::Truncated(offset)),
+        };
+        offset += before - cursor.remaining();
+        let value = decode_field_value(&mut cursor, tag.wire_type(), &mut offset)?;
+        let Some(meta) = fields.iter().find(|m| m.number == tag.field_number()) else {
+            continue;
+        };
+        seen_numbers.push(meta.number);
+        let is_classified = matches!(
+            meta.classification,
+            Classification::Pii | Classification::Secret
+        );
+        if is_classified {
+            builder.append_str(meta.name, "<redacted>");
+            continue;
+        }
+        match value {
+            RawValue::Varint(v) => match meta.role {
+                FieldRole::Measurement | FieldRole::DurationNs | FieldRole::TimestampNs => {
+                    builder.append_u64(meta.name, v);
+                }
+                _ => builder.append_i64(meta.name, v as i64),
+            },
+            RawValue::Fixed64(v) => match meta.role {
+                FieldRole::Measurement | FieldRole::DurationNs | FieldRole::TimestampNs => {
+                    builder.append_u64(meta.name, v);
+                }
+                _ => builder.append_f64(meta.name, f64::from_bits(v)),
+            },
+            RawValue::Fixed32(v) => match meta.role {
+                FieldRole::Measurement => {
+                    builder.append_u64(meta.name, u64::from(v));
+                }
+                _ => builder.append_f64(meta.name, f64::from(f32::from_bits(v))),
+            },
+            RawValue::Bytes(b) => match String::from_utf8(b.clone()) {
+                Ok(s) => builder.append_str(meta.name, &s),
+                Err(_) => builder.append_bytes(meta.name, &b),
+            },
+        }
+    }
+    // Mark unset fields as null so the row has consistent shape.
+    for f in fields {
+        if !seen_numbers.contains(&f.number) {
+            builder.append_field_null(f.name);
         }
     }
     Ok(())
@@ -353,6 +429,94 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "latency_ms");
         assert!(matches!(out[0].1, OtlpValue::Int(1_500)));
+    }
+
+    #[test]
+    fn test_decode_to_arrow_struct_default_should_dispatch_per_field() {
+        // Build a payload: field 1 (string) = "alice", field 2 (varint
+        // measurement) = 1500. The default impl must call append_str
+        // for the string and append_u64 for the measurement.
+        use std::collections::BTreeMap;
+
+        struct StubBuilder {
+            calls: BTreeMap<&'static str, String>,
+        }
+        impl ArrowStructBuilder for StubBuilder {
+            fn append_null(&mut self) {}
+            fn append_str(&mut self, name: &'static str, value: &str) {
+                self.calls.insert(name, format!("str:{value}"));
+            }
+            fn append_u64(&mut self, name: &'static str, value: u64) {
+                self.calls.insert(name, format!("u64:{value}"));
+            }
+            fn append_i64(&mut self, name: &'static str, value: i64) {
+                self.calls.insert(name, format!("i64:{value}"));
+            }
+            fn append_field_null(&mut self, name: &'static str) {
+                self.calls.insert(name, "null".to_string());
+            }
+        }
+
+        let mut p = BytesMut::new();
+        Tag::new(1, WireType::LengthDelimited).encode(&mut p);
+        types::encode_string("alice", &mut p);
+        Tag::new(2, WireType::Varint).encode(&mut p);
+        types::encode_uint64(1_500, &mut p);
+        let payload = p.freeze();
+
+        let fields: &'static [FieldMeta] = Box::leak(
+            vec![
+                meta("user", 1, FieldRole::Attribute, Classification::Internal),
+                meta(
+                    "latency_ms",
+                    2,
+                    FieldRole::Measurement,
+                    Classification::Internal,
+                ),
+                meta("missing", 3, FieldRole::Attribute, Classification::Internal),
+            ]
+            .into_boxed_slice(),
+        );
+        let mut builder = StubBuilder {
+            calls: BTreeMap::new(),
+        };
+        decode_to_arrow_struct_default(&payload, fields, &mut builder).expect("decode");
+        assert_eq!(
+            builder.calls.get("user"),
+            Some(&"str:alice".to_string()),
+            "string field must dispatch to append_str"
+        );
+        assert_eq!(
+            builder.calls.get("latency_ms"),
+            Some(&"u64:1500".to_string()),
+            "MEASUREMENT field must dispatch to append_u64"
+        );
+        assert_eq!(
+            builder.calls.get("missing"),
+            Some(&"null".to_string()),
+            "unset declared field must dispatch to append_field_null"
+        );
+    }
+
+    #[test]
+    fn test_decode_to_arrow_struct_default_should_redact_pii() {
+        struct Captured(Option<String>);
+        impl ArrowStructBuilder for Captured {
+            fn append_null(&mut self) {}
+            fn append_str(&mut self, _name: &'static str, value: &str) {
+                self.0 = Some(value.to_string());
+            }
+        }
+        let mut p = BytesMut::new();
+        Tag::new(1, WireType::LengthDelimited).encode(&mut p);
+        types::encode_string("alice@example.com", &mut p);
+        let payload = p.freeze();
+        let fields: &'static [FieldMeta] = Box::leak(
+            vec![meta("email", 1, FieldRole::Attribute, Classification::Pii)].into_boxed_slice(),
+        );
+        let mut b = Captured(None);
+        decode_to_arrow_struct_default(&payload, fields, &mut b).expect("decode");
+        assert_eq!(b.0, Some("<redacted>".to_string()));
     }
 
     #[test]

@@ -98,6 +98,16 @@ pub trait Observer: Send + Sync + 'static {
     fn schema_registry(&self) -> Option<std::sync::Arc<crate::registry::SchemaRegistry>> {
         None
     }
+
+    /// Snapshot of the workspace-shared `ResourceAttrs` (OTel
+    /// semantic-convention keys). Sinks call this at flush time so a
+    /// single config-watcher reload re-projects every sink. Default
+    /// returns the empty / observer-less attribute set; concrete
+    /// observers (`StandardObserver`) override. Spec 20 § 2.1 / spec
+    /// 94 § 2.7 / P1-E.
+    fn resource_attrs(&self) -> std::sync::Arc<crate::resource::ResourceAttrs> {
+        std::sync::Arc::new(crate::resource::ResourceAttrs::default())
+    }
 }
 
 // ─── Resolution slots (spec 11 § 3) ───────────────────────────────────

@@ -45,6 +45,7 @@ pub mod observer;
 pub mod panic_hook;
 pub mod propagator;
 pub mod registry;
+pub mod resource;
 pub mod sampling;
 pub mod scope;
 pub(crate) mod self_events;
@@ -54,6 +55,7 @@ pub(crate) mod self_events;
 pub mod self_events_public {
     pub use crate::self_events::{
         emit_callsite_hash_collision_pub as emit_callsite_hash_collision,
+        emit_label_cardinality_high_pub as emit_label_cardinality_high,
         emit_span_pair_orphaned_pub as emit_span_pair_orphaned,
     };
 }
@@ -102,6 +104,7 @@ pub use registry::{
     EventSchemaErased, ObsCallsiteRegistry, OtelAttributeView, OtlpValue, SchemaRegistry,
     ScrubError, ScrubbedEnvelope, callsite_id, scrub_payload,
 };
+pub use resource::ResourceAttrs;
 pub use sampling::{SamplingDecision, decide as sample_decide};
 pub use scope::{ScopeField, ScopeFrame, ScopeFrameBuilder, ScopeGuard, ScopeKind};
 pub use sink::{

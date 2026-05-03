@@ -23,6 +23,7 @@ use crate::{
     config::{AuditFailureMode, EventsConfig},
     filter::Filter,
     registry::{ObsCallsiteRegistry, SchemaRegistry, ScrubbedEnvelope},
+    resource::ResourceAttrs,
     sampling::{SamplingDecision, decide as sample_decide},
     scope::{auto_fill_envelope, inbound_traceparent_sampled, push_tail_buffer},
     sink::{NoopSink, Sink, SinkFut, StdoutSink},
@@ -82,6 +83,9 @@ pub struct StandardObserver {
     callsites: Arc<ObsCallsiteRegistry>,
     config: ArcSwap<EventsConfig>,
     filter: ArcSwap<Filter>,
+    /// Workspace-shared OTel resource attribute set; sinks read the
+    /// snapshot at flush time. Spec 20 § 2.1 / spec 94 § 2.7 / P1-E.
+    resource: ArcSwap<ResourceAttrs>,
     counters: Arc<WorkerCounters>,
     generation: AtomicU32,
     service: String,
@@ -142,6 +146,13 @@ impl StandardObserver {
     #[must_use]
     pub fn config(&self) -> arc_swap::Guard<Arc<EventsConfig>> {
         self.config.load()
+    }
+
+    /// Atomically swap the resource attribute set. Sinks pick up the
+    /// new value on the next [`Observer::resource_attrs`] call.
+    /// Spec 20 § 2.1 / spec 94 § 2.7 / P1-E.
+    pub fn set_resource_attrs(&self, attrs: ResourceAttrs) {
+        self.resource.store(Arc::new(attrs));
     }
 
     /// Atomically swap the config and bump the generation so all
@@ -535,6 +546,10 @@ impl Observer for StandardObserver {
     fn schema_registry(&self) -> Option<Arc<SchemaRegistry>> {
         Some(Arc::clone(&self.registry))
     }
+
+    fn resource_attrs(&self) -> Arc<ResourceAttrs> {
+        self.resource.load_full()
+    }
 }
 
 #[allow(non_snake_case, non_upper_case_globals)]
@@ -725,6 +740,7 @@ impl StandardObserverBuilder {
             WorkerPool::default()
         };
 
+        let resource = build_resource_from_env(&service, &version, &instance);
         let observer = StandardObserver {
             router: self.router,
             workers,
@@ -733,6 +749,7 @@ impl StandardObserverBuilder {
             callsites: Arc::new(ObsCallsiteRegistry::new()),
             config: ArcSwap::from_pointee(cfg),
             filter: ArcSwap::from_pointee(filter),
+            resource: ArcSwap::from_pointee(resource),
             counters,
             generation: AtomicU32::new(1),
             service,
@@ -753,6 +770,60 @@ impl StandardObserverBuilder {
         crate::self_events::emit_registry_initialized(schema_count, 0);
         Ok(observer)
     }
+}
+
+/// Populate a [`ResourceAttrs`] from `OTEL_SERVICE_NAME` /
+/// `OTEL_RESOURCE_ATTRIBUTES` plus the observer's own service /
+/// version / instance identity. Spec 20 § 2.1 / spec 94 § 2.7.
+fn build_resource_from_env(service: &str, version: &str, instance: &str) -> ResourceAttrs {
+    let mut r = ResourceAttrs {
+        service_name: service.to_string(),
+        service_version: version.to_string(),
+        service_instance_id: instance.to_string(),
+        ..Default::default()
+    };
+    if let Ok(name) = std::env::var("OTEL_SERVICE_NAME")
+        && !name.is_empty()
+    {
+        r.service_name = name;
+    }
+    if let Ok(extras) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        for pair in extras.split(',') {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = pair.split_once('=') {
+                let key = k.trim();
+                let val = v.trim().to_string();
+                match key {
+                    "service.name" => r.service_name = val,
+                    "service.version" => r.service_version = val,
+                    "service.namespace" => r.service_namespace = val,
+                    "service.instance.id" => r.service_instance_id = val,
+                    "deployment.environment" => r.deployment_environment = val,
+                    "host.name" => r.host_name = val,
+                    "host.arch" => r.host_arch = val,
+                    _ => {
+                        r.extra.insert(key.to_string(), val);
+                    }
+                }
+            }
+        }
+    }
+    if r.host_arch.is_empty() {
+        r.host_arch = match std::env::consts::ARCH {
+            "x86_64" => "amd64".to_string(),
+            "aarch64" => "arm64".to_string(),
+            other => other.to_string(),
+        };
+    }
+    if r.host_name.is_empty()
+        && let Ok(host) = std::env::var("HOSTNAME")
+    {
+        r.host_name = host;
+    }
+    r
 }
 
 fn config_hash(cfg: &EventsConfig) -> u64 {
@@ -829,4 +900,32 @@ pub enum BuildError {
 #[allow(dead_code)]
 fn _ensure_noop_compiles() {
     let _: Arc<dyn Sink> = Arc::new(NoopSink);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource::ResourceAttrs;
+
+    #[test]
+    fn test_set_resource_attrs_is_visible_to_observer_callers() {
+        // Spec 94 § 2.7 / P1-E: a single ArcSwap on the observer; a
+        // mutation must be visible to subsequent reads.
+        let observer = StandardObserver::builder()
+            .service("test", "1.0.0")
+            .sink_fallback(Arc::new(NoopSink))
+            .spawn_workers(false)
+            .build()
+            .expect("build");
+        let before = observer.resource_attrs();
+        assert_eq!(before.service_name, "test");
+        observer.set_resource_attrs(ResourceAttrs {
+            service_name: "rotated".to_string(),
+            deployment_environment: "prod".to_string(),
+            ..Default::default()
+        });
+        let after = observer.resource_attrs();
+        assert_eq!(after.service_name, "rotated");
+        assert_eq!(after.deployment_environment, "prod");
+    }
 }

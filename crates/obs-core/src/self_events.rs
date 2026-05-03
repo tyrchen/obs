@@ -126,6 +126,26 @@ pub fn emit_span_pair_orphaned_pub(full_name: &str) {
     emit_self(env);
 }
 
+/// Emitted when bridge field promotion sees a label-key whose distinct
+/// value count crossed the declared cardinality cap. Public so the
+/// `obs-tracing-bridge` field-promoter can fire it. Spec 30 § 2.4 /
+/// spec 94 § 2.6 / P1-D.
+pub fn emit_label_cardinality_high_pub(full_name: &str, label_key: &str, estimated_distinct: u64) {
+    let mut env = base_envelope(
+        "obs.runtime.v1.ObsLabelCardinalityHigh",
+        PSeverity::SEVERITY_WARN,
+    );
+    env.labels
+        .insert("full_name".to_string(), full_name.to_string());
+    env.labels
+        .insert("label_key".to_string(), label_key.to_string());
+    env.labels.insert(
+        "estimated_distinct".to_string(),
+        estimated_distinct.to_string(),
+    );
+    emit_self(env);
+}
+
 /// Emitted when an envelope exceeds `limits.max_payload_bytes` at
 /// projection time.
 pub(crate) fn emit_oversized_dropped(full_name: &str, size_bytes: u64) {

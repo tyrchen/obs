@@ -84,6 +84,24 @@ pub struct OtlpResourceAttrs {
     pub extra: BTreeMap<String, String>,
 }
 
+impl From<&obs_core::ResourceAttrs> for OtlpResourceAttrs {
+    /// Project the workspace-shared `ResourceAttrs` (held on the
+    /// observer per spec 94 § 2.7) into the OTLP-flavoured shape this
+    /// crate uses on the wire. Spec 94 P1-E.
+    fn from(r: &obs_core::ResourceAttrs) -> Self {
+        Self {
+            service_name: r.service_name.clone(),
+            service_version: r.service_version.clone(),
+            service_namespace: r.service_namespace.clone(),
+            service_instance_id: r.service_instance_id.clone(),
+            deployment_environment: r.deployment_environment.clone(),
+            host_name: r.host_name.clone(),
+            host_arch: r.host_arch.clone(),
+            extra: r.extra.clone(),
+        }
+    }
+}
+
 impl OtlpResourceAttrs {
     /// Render this attribute set as a `BTreeMap<String, String>` where
     /// every populated first-class slot becomes the corresponding
