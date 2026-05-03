@@ -18,7 +18,9 @@ blake3 = { workspace = true }
 buffa = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
+getrandom = { workspace = true }
 governor = { workspace = true }
+http = { workspace = true }
 linkme = { workspace = true }
 obs-proto = { workspace = true }
 obs-types = { workspace = true }
@@ -52,6 +54,18 @@ harness = false
 
 [[bench]]
 name = "scope_overhead"
+harness = false
+
+[[bench]]
+name = "registry_lookup"
+harness = false
+
+[[bench]]
+name = "scrub_for_log"
+harness = false
+
+[[bench]]
+name = "blake3_callsite"
 harness = false
 
 [lints]

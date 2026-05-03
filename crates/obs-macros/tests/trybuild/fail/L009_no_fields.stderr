@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: obs L009: event `ObsEmptyEvent` has no fields
+              note: empty events make analytics joins meaningless and indicate an unfinished schema.
+              help: declare at least one field or rethink whether the event should exist.
+ --> tests/trybuild/fail/L009_no_fields.rs:5:26
+  |
+5 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

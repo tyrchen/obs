@@ -273,8 +273,9 @@ message ObsGood {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("1 event(s) scanned"), "stdout: {stdout}");
+    // Spec 50 § 4 / spec 93 P1-9: summary line lives on stderr.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("1 event(s) scanned"), "stderr: {stderr}");
 }
 
 // ─── tiny tempdir helper ──────────────────────────────────────────────

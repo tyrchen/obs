@@ -140,6 +140,11 @@ fn render_one_schema(decl: &EventDecl) -> String {
     fields_lit.push(']');
 
     let project_body = render_project_body(&decl.fields);
+    let project_metrics_body = render_project_metrics_body(&decl.full_name, &decl.fields);
+    let paired_with_lit = match decl.event.paired_with.as_deref() {
+        Some(s) if !s.is_empty() => format!("::std::option::Option::Some({})", rust_str_lit(s)),
+        _ => "::std::option::Option::None".to_string(),
+    };
 
     format!(
         r#"impl ::obs_core::EventSchema for {rust_path} {{
@@ -148,6 +153,7 @@ fn render_one_schema(decl: &EventDecl) -> String {
     const DEFAULT_SEV: ::obs_core::__private::Severity = {sev_path};
     const FIELDS: &'static [::obs_core::FieldMeta] = {fields};
     const SCHEMA_HASH: u64 = {hash}u64;
+    const SPANS_PAIRED_WITH: ::std::option::Option<&'static str> = {paired_with};
 
     fn encode_payload(&self, buf: &mut ::obs_core::__private::BytesMut) {{
         // Delegate to buffa's `Message::write_to`. The size cache is
@@ -160,6 +166,9 @@ fn render_one_schema(decl: &EventDecl) -> String {
 
     fn project(&self, env: &mut ::obs_core::ObsEnvelope) {{
 {project_body}    }}
+
+    fn project_metrics(&self, sink: &mut dyn ::obs_core::MetricEmitter) {{
+{project_metrics_body}    }}
 }}
 
 #[doc(hidden)]
@@ -175,6 +184,9 @@ impl ::obs_core::__private::EventSchemaErased for {erased_struct} {{
     fn tier(&self) -> ::obs_core::__private::Tier {{ <{rust_path} as ::obs_core::EventSchema>::TIER }}
     fn default_sev(&self) -> ::obs_core::__private::Severity {{ <{rust_path} as ::obs_core::EventSchema>::DEFAULT_SEV }}
     fn fields(&self) -> &'static [::obs_core::FieldMeta] {{ <{rust_path} as ::obs_core::EventSchema>::FIELDS }}
+    fn spans_paired_with(&self) -> ::std::option::Option<&'static str> {{
+        <{rust_path} as ::obs_core::EventSchema>::SPANS_PAIRED_WITH
+    }}
 }}
 
 #[::obs_core::__private::linkme::distributed_slice(::obs_core::__private::EVENT_SCHEMAS)]
@@ -191,7 +203,97 @@ static {static_ident}: &'static dyn ::obs_core::__private::EventSchemaErased = &
         fields = fields_lit,
         static_ident = static_ident,
         project_body = project_body,
+        project_metrics_body = project_metrics_body,
+        paired_with = paired_with_lit,
     )
+}
+
+/// Generate the `project_metrics` body. For each `MEASUREMENT`-kind
+/// field with a `MetricSpec`, emit one call to the matching
+/// `MetricEmitter::record_*` method, keyed on `<full_name>.<field>`.
+/// Fields without a MetricSpec default to a counter with unit `1`.
+/// Spec 12 § 3.6 / spec 93 P1-6.
+fn render_project_metrics_body(full_name: &str, fields: &[FieldDecl]) -> String {
+    use obs_types::MetricKind;
+    let mut out = String::new();
+    let mut had_any = false;
+    for f in fields {
+        if !matches!(
+            f.options.kind.unwrap_or(FieldKind::Attribute),
+            FieldKind::Measurement
+        ) {
+            continue;
+        }
+        had_any = true;
+        let instrument_lit = format!("{full_name}.{}", f.name);
+        let (kind, unit, bounds) = match &f.options.metric {
+            Some(spec) => (
+                spec.kind.unwrap_or(MetricKind::Counter),
+                spec.unit.clone(),
+                spec.bounds.clone(),
+            ),
+            None => (MetricKind::Counter, None, Vec::new()),
+        };
+        let unit_expr = match unit.as_deref() {
+            Some(u) if !u.is_empty() => {
+                format!("::std::option::Option::Some({})", rust_str_lit(u))
+            }
+            _ => "::std::option::Option::None".to_string(),
+        };
+        match kind {
+            MetricKind::Counter => {
+                out.push_str(&format!(
+                    "        sink.record_counter({inst}, self.{name} as u64, {unit});\n",
+                    inst = rust_str_lit(&instrument_lit),
+                    name = f.name,
+                    unit = unit_expr,
+                ));
+            }
+            MetricKind::Gauge => {
+                out.push_str(&format!(
+                    "        sink.record_gauge_u64({inst}, self.{name} as u64, {unit});\n",
+                    inst = rust_str_lit(&instrument_lit),
+                    name = f.name,
+                    unit = unit_expr,
+                ));
+            }
+            MetricKind::Histogram => {
+                let bounds_lit = if bounds.is_empty() {
+                    "&[] as &[f64]".to_string()
+                } else {
+                    let parts: Vec<String> = bounds.iter().map(|b| format!("{b:?}")).collect();
+                    format!("&[{}] as &[f64]", parts.join(", "))
+                };
+                let static_ident = format!(
+                    "__OBS_HIST_BOUNDS_{}_{}",
+                    full_name.replace('.', "_").to_uppercase(),
+                    f.name.to_uppercase()
+                );
+                out.push_str(&format!(
+                    "        static {ident}: &[f64] = {bounds};\n        \
+                     sink.record_histogram({inst}, self.{name} as f64, {unit}, {ident});\n",
+                    ident = static_ident,
+                    bounds = bounds_lit,
+                    inst = rust_str_lit(&instrument_lit),
+                    name = f.name,
+                    unit = unit_expr,
+                ));
+            }
+            _ => {
+                // Treat Unspecified as Counter for forward-compat.
+                out.push_str(&format!(
+                    "        sink.record_counter({inst}, self.{name} as u64, {unit});\n",
+                    inst = rust_str_lit(&instrument_lit),
+                    name = f.name,
+                    unit = unit_expr,
+                ));
+            }
+        }
+    }
+    if !had_any {
+        out.push_str("        let _ = sink;\n");
+    }
+    out
 }
 
 fn render_project_body(fields: &[FieldDecl]) -> String {

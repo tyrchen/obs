@@ -123,4 +123,11 @@ pub trait EventSchema: Send + Sync + Sized + 'static {
     fn project_metrics(&self, sink: &mut dyn crate::metric::MetricEmitter) {
         let _ = sink;
     }
+
+    /// When this event participates in a Started/Completed pair, the
+    /// schema's full name of its sibling event. The OTLP trace sink
+    /// matches paired events on this constant rather than suffix
+    /// sniffing. Schemas that are not paired return `None`.
+    /// Spec 20 § 2.5 B / spec 93 P1-7.
+    const SPANS_PAIRED_WITH: Option<&'static str> = None;
 }

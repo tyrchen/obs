@@ -43,10 +43,20 @@ pub mod instrumented;
 pub mod metric;
 pub mod observer;
 pub mod panic_hook;
+pub mod propagator;
 pub mod registry;
 pub mod sampling;
 pub mod scope;
 pub(crate) mod self_events;
+/// Public re-exports for self-event helpers consumed by sinks/middleware
+/// that emit them on behalf of the runtime (e.g. OTLP trace sink emits
+/// `ObsSpanPairOrphaned` after pair_timeout). Spec 93 P1-2 + P1-7.
+pub mod self_events_public {
+    pub use crate::self_events::{
+        emit_callsite_hash_collision_pub as emit_callsite_hash_collision,
+        emit_span_pair_orphaned_pub as emit_span_pair_orphaned,
+    };
+}
 pub mod sink;
 pub mod span_trace;
 #[cfg(feature = "test")]
@@ -76,6 +86,10 @@ pub use observer::{
     with_observer_thread_local, with_test_observer,
 };
 pub use panic_hook::install_panic_hook;
+pub use propagator::{
+    ObsTraceCtx, W3cPropagator, extract_w3c, fresh_span_id, fresh_trace_id, inject_w3c,
+    status_class,
+};
 pub use registry::{
     ArrowEventSchema, ArrowField, ArrowLeafType, ArrowSchemaModel, ArrowStructBuilder,
     CallsiteRecord, CallsiteSource, DecodeError, ENVELOPE_COLUMNS, EVENT_SCHEMAS,

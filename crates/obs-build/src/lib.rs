@@ -101,6 +101,35 @@ pub mod reflect {
         pub fn default_sev(&self) -> Severity {
             self.event.default_sev.unwrap_or(Severity::Info)
         }
+        /// First 8 bytes of BLAKE3 over the canonical descriptor string.
+        /// Mirrors `obs-build::codegen::EventDecl::schema_hash` and the
+        /// proc-macro's `compute_schema_hash` so codegen, runtime, and
+        /// migrate paths agree byte-for-byte. Spec 12 § 3.5 / spec 93
+        /// P1-9 (`obs migrate clickhouse` populates schema_hash).
+        #[must_use]
+        pub fn schema_hash(&self) -> u64 {
+            let mut s = String::new();
+            s.push_str(&self.full_name);
+            s.push('|');
+            s.push_str(self.tier().as_str());
+            s.push('|');
+            s.push_str(self.default_sev().as_str());
+            s.push('|');
+            for f in &self.fields {
+                s.push_str(&f.name);
+                s.push(':');
+                s.push_str(f.kind().as_str());
+                s.push(':');
+                s.push_str(f.cardinality().as_str());
+                s.push(':');
+                s.push_str(f.classification().as_str());
+                s.push(',');
+            }
+            let h = blake3::hash(s.as_bytes());
+            let bytes = h.as_bytes();
+            let arr = <[u8; 8]>::try_from(&bytes[..8]).expect("blake3 always produces 32 bytes");
+            u64::from_le_bytes(arr)
+        }
     }
 
     /// Walk a descriptor pool and collect every annotated `(obs.v1.event)`.

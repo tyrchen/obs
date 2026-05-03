@@ -76,10 +76,15 @@ struct ObsBatchMeasured {
     #[obs(label, cardinality = "low")]
     pipeline: String,
     /// Latency for the batch.
-    #[obs(measurement)]
+    #[obs(
+        measurement,
+        metric = "histogram",
+        unit = "ms",
+        bounds = "10.0,50.0,100.0,500.0,1000.0"
+    )]
     latency_ms: u64,
     /// Bytes ingested as a measurement so analytics can sum / avg.
-    #[obs(measurement)]
+    #[obs(measurement, metric = "counter", unit = "By")]
     bytes_in: u64,
 }
 

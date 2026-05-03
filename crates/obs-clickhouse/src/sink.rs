@@ -117,7 +117,16 @@ impl ClickHouseSink {
                     if attempt + 1 == self.retry_attempts {
                         break;
                     }
-                    std::thread::sleep(backoff);
+                    // Spec 22 § 3 / spec 93 P2-5: prefer the tokio
+                    // sleep when running under a tokio runtime so we
+                    // don't park the worker thread blocking the
+                    // executor. Outside tokio, fall back to the
+                    // blocking sleep so non-async hosts still work.
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.block_on(tokio::time::sleep(backoff));
+                    } else {
+                        std::thread::sleep(backoff);
+                    }
                     backoff = (backoff * 2).min(self.max_backoff);
                 }
             }

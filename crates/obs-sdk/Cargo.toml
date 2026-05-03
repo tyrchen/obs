@@ -13,7 +13,11 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["dev", "panic-hook"]
+# Spec 61 § 2.11 / spec 93 P2-15 + decision D6-4: ship `otel` in the
+# default set so `obs-sdk = "0.1"` brings in the OTLP transport without
+# extra feature flags. Compile-slim consumers can pass
+# `default-features = false` and pick their sinks.
+default = ["dev", "panic-hook", "otel"]
 dev = []
 panic-hook = []
 test = ["obs-core/test"]

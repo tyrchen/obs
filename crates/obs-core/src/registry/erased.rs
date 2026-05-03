@@ -38,6 +38,13 @@ pub trait EventSchemaErased: Sealed + Send + Sync + 'static {
     /// Field metadata table; same memory as `EventSchema::FIELDS`.
     fn fields(&self) -> &'static [FieldMeta];
 
+    /// When this event is the `Started` half of a Started/Completed
+    /// pair, returns the `full_name` of its sibling `Completed` event
+    /// (or vice versa). Spec 20 § 2.5 B / spec 93 P1-7.
+    fn spans_paired_with(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Decode the buffa-encoded payload and emit metric data points
     /// for every `FIELD_KIND_MEASUREMENT` field. Phase-1 default impl
     /// is a no-op so MEASUREMENT-bearing schemas authored in Phase 1
@@ -52,8 +59,7 @@ pub trait EventSchemaErased: Sealed + Send + Sync + 'static {
         payload: &[u8],
         emitter: &mut dyn MetricEmitter,
     ) -> Result<(), DecodeError> {
-        let _ = (payload, emitter);
-        Ok(())
+        super::payload_decode::project_metrics_default(payload, self.fields(), emitter)
     }
 
     /// Decode the payload into a `StructArray` row whose schema matches

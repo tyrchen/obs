@@ -92,7 +92,10 @@ fn build_arrow_model(events: &[obs_build::reflect::AnnotatedEvent]) -> ArrowSche
             full_name: e.full_name.clone(),
             payload_column,
             fields,
-            schema_hash: 0, // hash is not available without codegen path here
+            // Spec 93 P1-9: populate per-event schema_hash so the
+            // ClickHouse / Parquet outputs agree with the runtime
+            // registry — `obs query` joins on this column.
+            schema_hash: e.schema_hash(),
         });
     }
     entries.sort_by(|a, b| a.full_name.cmp(&b.full_name));

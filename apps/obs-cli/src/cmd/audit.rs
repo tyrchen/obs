@@ -86,25 +86,4 @@ fn enumerate_crates(root: &std::path::Path) -> Result<Vec<CrateEntry>> {
     Ok(out)
 }
 
-fn scan_forensic_count(root: &std::path::Path) -> Option<usize> {
-    let mut count = 0usize;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).ok()?;
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            count += content.matches("forensic!(").count();
-        }
-    }
-    Some(count)
-}
+use super::scan::scan_forensic_count;

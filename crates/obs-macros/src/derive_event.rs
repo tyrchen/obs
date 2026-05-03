@@ -39,7 +39,12 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let fields_const = fields_const_array(&fields);
 
     let project_body = project_impl(&fields);
+    let project_metrics_body = project_metrics_impl(&full_name_lit.value(), &fields);
     let encode_body = encode_payload_impl(&fields);
+    let paired_with_expr: TokenStream = match container.paired_with.as_deref() {
+        Some(s) if !s.is_empty() => quote!(::std::option::Option::Some(#s)),
+        _ => quote!(::std::option::Option::None),
+    };
 
     let lints = lint_block(&name, &container, &fields)?;
 
@@ -67,6 +72,7 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             const DEFAULT_SEV: ::obs_core::__private::Severity = #default_sev;
             const FIELDS: &'static [::obs_core::FieldMeta] = &#fields_const;
             const SCHEMA_HASH: u64 = #schema_hash;
+            const SPANS_PAIRED_WITH: ::std::option::Option<&'static str> = #paired_with_expr;
 
             fn encode_payload(&self, buf: &mut ::obs_core::__private::BytesMut) {
                 #encode_body
@@ -74,6 +80,10 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
             fn project(&self, env: &mut ::obs_core::ObsEnvelope) {
                 #project_body
+            }
+
+            fn project_metrics(&self, sink: &mut dyn ::obs_core::MetricEmitter) {
+                #project_metrics_body
             }
         }
 
@@ -98,6 +108,9 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             }
             fn fields(&self) -> &'static [::obs_core::FieldMeta] {
                 <#name as ::obs_core::EventSchema>::FIELDS
+            }
+            fn spans_paired_with(&self) -> ::std::option::Option<&'static str> {
+                <#name as ::obs_core::EventSchema>::SPANS_PAIRED_WITH
             }
         }
 
@@ -180,6 +193,7 @@ struct ContainerAttrs {
     tier: String,
     default_sev: String,
     full_name: Option<String>,
+    paired_with: Option<String>,
 }
 
 impl ContainerAttrs {
@@ -241,6 +255,7 @@ fn parse_container_attrs(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
     let mut tier = String::from("log");
     let mut default_sev = String::from("info");
     let mut full_name: Option<String> = None;
+    let mut paired_with: Option<String> = None;
 
     for attr in attrs {
         if !attr.path().is_ident("event") {
@@ -259,10 +274,13 @@ fn parse_container_attrs(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
                 Meta::NameValue(nv) if nv.path.is_ident("full_name") => {
                     full_name = Some(lit_to_string(&nv.value)?);
                 }
+                Meta::NameValue(nv) if nv.path.is_ident("paired_with") => {
+                    paired_with = Some(lit_to_string(&nv.value)?);
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "#[event(...)] supports tier / default_sev / full_name",
+                        "#[event(...)] supports tier / default_sev / full_name / paired_with",
                     ));
                 }
             }
@@ -273,6 +291,7 @@ fn parse_container_attrs(attrs: &[Attribute]) -> syn::Result<ContainerAttrs> {
         tier,
         default_sev,
         full_name,
+        paired_with,
     })
 }
 
@@ -283,6 +302,12 @@ struct ObsField {
     cardinality: String,
     classification: String,
     proto_number: u32,
+    /// MEASUREMENT-only: `counter` (default), `gauge`, or `histogram`.
+    metric_kind: String,
+    /// MEASUREMENT-only: UCUM unit string (`ms`, `By`, `1`, …).
+    unit: Option<String>,
+    /// Histogram bucket bounds parsed from a comma-separated list.
+    bounds: Vec<f64>,
 }
 
 impl ObsField {
@@ -328,6 +353,9 @@ fn parse_field(field: &Field) -> syn::Result<ObsField> {
     let mut cardinality = String::new();
     let mut classification = String::new();
     let mut number: u32 = 0;
+    let mut metric_kind = String::new();
+    let mut unit: Option<String> = None;
+    let mut bounds: Vec<f64> = Vec::new();
 
     for attr in &field.attrs {
         if !attr.path().is_ident("obs") {
@@ -351,10 +379,23 @@ fn parse_field(field: &Field) -> syn::Result<ObsField> {
                         .parse::<u32>()
                         .map_err(|e| syn::Error::new_spanned(nv, format!("invalid number: {e}")))?;
                 }
+                Meta::NameValue(nv) if nv.path.is_ident("metric") => {
+                    metric_kind = lit_to_string(&nv.value)?;
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("unit") => {
+                    unit = Some(lit_to_string(&nv.value)?);
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("bounds") => {
+                    let raw = lit_to_string(&nv.value)?;
+                    bounds = raw
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<f64>().ok())
+                        .collect();
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "#[obs(...)] supports the role keyword (label|attribute|measurement|trace_id|span_id|parent_span_id|timestamp_ns|duration_ns|forensic) plus cardinality / classification / number",
+                        "#[obs(...)] supports the role keyword (label|attribute|measurement|trace_id|span_id|parent_span_id|timestamp_ns|duration_ns|forensic) plus cardinality / classification / number / metric / unit / bounds",
                     ));
                 }
             }
@@ -368,6 +409,9 @@ fn parse_field(field: &Field) -> syn::Result<ObsField> {
         cardinality,
         classification,
         proto_number: number,
+        metric_kind,
+        unit,
+        bounds,
     })
 }
 
@@ -438,6 +482,52 @@ fn project_impl(fields: &[ObsField]) -> TokenStream {
         }
     }
     quote! { #(#stmts)* }
+}
+
+fn project_metrics_impl(full_name: &str, fields: &[ObsField]) -> TokenStream {
+    // Per spec 12 § 3.6 / spec 93 P1-6: walk MEASUREMENT-tagged fields
+    // and dispatch to the matching `MetricEmitter::record_*` method.
+    // The instrument name follows `<full_name>.<field>` so OTLP metric
+    // names line up with the event taxonomy.
+    let mut stmts: Vec<TokenStream> = Vec::new();
+    for f in fields {
+        if f.role != "measurement" {
+            continue;
+        }
+        let ident = &f.ident;
+        let instrument = format!("{full_name}.{}", ident);
+        let unit_expr: TokenStream = match f.unit.as_deref() {
+            Some(u) if !u.is_empty() => quote!(::std::option::Option::Some(#u)),
+            _ => quote!(::std::option::Option::None),
+        };
+        let kind = f.metric_kind.to_ascii_lowercase();
+        match kind.as_str() {
+            "gauge" => stmts.push(quote! {
+                sink.record_gauge_u64(#instrument, self.#ident as u64, #unit_expr);
+            }),
+            "histogram" => {
+                let bounds = &f.bounds;
+                stmts.push(quote! {
+                    static BOUNDS: &[f64] = &[#(#bounds),*];
+                    sink.record_histogram(
+                        #instrument,
+                        self.#ident as f64,
+                        #unit_expr,
+                        BOUNDS,
+                    );
+                });
+            }
+            // counter | "" | _ — default to counter
+            _ => stmts.push(quote! {
+                sink.record_counter(#instrument, self.#ident as u64, #unit_expr);
+            }),
+        }
+    }
+    if stmts.is_empty() {
+        quote! { let _ = sink; }
+    } else {
+        quote! { #(#stmts)* }
+    }
 }
 
 fn encode_payload_impl(fields: &[ObsField]) -> TokenStream {
@@ -550,7 +640,125 @@ fn lint_block(
         }
     }
 
+    // L004: MEASUREMENT requires a metric kind. Spec 12 § 3.4.
+    for f in fields {
+        if f.role == "measurement" && f.metric_kind.is_empty() {
+            let msg = format!(
+                "obs L004: field `{name}` is MEASUREMENT without a metric kind\nnote: MEASUREMENT \
+                 fields must declare `metric = \"counter|gauge|histogram\"` so the OTLP metric \
+                 sink can dispatch correctly.\nhelp: add e.g. `#[obs(measurement, metric = \
+                 \"counter\", unit = \"1\")]`.",
+                name = f.ident
+            );
+            asserts.push(quote! {
+                const _: () = ::std::panic!(#msg);
+            });
+        }
+    }
+
+    // L006: TIER_AUDIT forbids PII / SECRET on any field. Spec 12 § 3.4.
+    if matches!(tier_lower.as_str(), "audit") {
+        for f in fields {
+            if matches!(f.classification.as_str(), "pii" | "secret") {
+                let msg = format!(
+                    "obs L006: AUDIT-tier event must not carry `{cls}` field `{name}`\nnote: \
+                     AUDIT events ship to long-retained immutable sinks; classified data must be \
+                     redacted at the source.\nhelp: drop the field or move the event to a \
+                     non-AUDIT tier.",
+                    cls = f.classification,
+                    name = f.ident
+                );
+                asserts.push(quote! {
+                    const _: () = ::std::panic!(#msg);
+                });
+            }
+        }
+    }
+
+    // L007: snake_case field names. Spec 12 § 3.4.
+    for f in fields {
+        let n = f.ident.to_string();
+        if !is_snake_case(&n) {
+            let msg = format!(
+                "obs L007: field `{name}` is not snake_case\nnote: every obs field name maps 1:1 \
+                 to a proto field, OTLP attribute, and analytics column; snake_case is required \
+                 so the projection round-trips deterministically.\nhelp: rename to `{suggest}`.",
+                name = n,
+                suggest = to_snake_case(&n),
+            );
+            asserts.push(quote! {
+                const _: () = ::std::panic!(#msg);
+            });
+        }
+    }
+
+    // L009: an event must declare at least one field. Spec 12 § 3.4.
+    if fields.is_empty() {
+        let msg = format!(
+            "obs L009: event `{name}` has no fields\nnote: empty events make analytics joins \
+             meaningless and indicate an unfinished schema.\nhelp: declare at least one field or \
+             rethink whether the event should exist.",
+            name = name
+        );
+        asserts.push(quote! {
+            const _: () = ::std::panic!(#msg);
+        });
+    }
+
+    // L012: field name must not shadow an envelope-reserved name. Spec
+    // 12 § 3.4 / spec 11 § 5.
+    const RESERVED: &[&str] = &[
+        "ts_ns",
+        "service",
+        "instance",
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "schema_hash",
+        "callsite_id",
+        "sev",
+        "tier",
+        "labels",
+        "payload",
+        "sampling_reason",
+    ];
+    for f in fields {
+        let n = f.ident.to_string();
+        // Skip TraceId/SpanId/ParentSpanId roles — those are *meant*
+        // to project onto the envelope slots of the same name.
+        if matches!(f.role.as_str(), "trace_id" | "span_id" | "parent_span_id") {
+            continue;
+        }
+        if RESERVED.contains(&n.as_str()) {
+            let msg = format!(
+                "obs L012: field `{name}` shadows envelope-reserved name\nnote: `{name}` is one \
+                 of the obs envelope's first-class fields. A payload field by the same name would \
+                 clash on the analytics surface.\nhelp: rename the field; if the intent was to \
+                 project onto the envelope slot, set the appropriate role (e.g. \
+                 `#[obs(trace_id)]`).",
+                name = n
+            );
+            asserts.push(quote! {
+                const _: () = ::std::panic!(#msg);
+            });
+        }
+    }
+
     Ok(quote! { #(#asserts)* })
+}
+
+fn is_snake_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && !s.starts_with('_')
+        && !s.ends_with('_')
+        && !s.contains("__")
+}
+
+fn to_snake_case(s: &str) -> String {
+    use heck::ToSnakeCase;
+    s.to_snake_case()
 }
 
 fn compute_schema_hash(full_name: &str, container: &ContainerAttrs, fields: &[ObsField]) -> u64 {

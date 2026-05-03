@@ -181,13 +181,12 @@ impl OtlpExporter for GrpcOtlpExporter {
 // ─── payload → OTLP wire conversion ────────────────────────────────────
 
 fn build_resource(attrs: &crate::logs::ResourceMessage) -> Resource {
-    let mut kvs = vec![
-        kv_str("service.name", &attrs.service_name),
-        kv_str("service.version", &attrs.service_version),
-    ];
-    for (k, v) in &attrs.extra {
-        kvs.push(kv_str(k, v));
-    }
+    // The full semconv map already lifts the first-class fields
+    // (service.name, service.version, service.namespace,
+    // service.instance.id, deployment.environment, host.name,
+    // host.arch) — there is no separate `extra` slice to fold in.
+    // Spec 93 P1-5.
+    let kvs = attrs.attributes.iter().map(|(k, v)| kv_str(k, v)).collect();
     Resource {
         attributes: kvs,
         dropped_attributes_count: 0,

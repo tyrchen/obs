@@ -29,7 +29,7 @@ fn resource() -> OtlpResourceAttrs {
     OtlpResourceAttrs {
         service_name: "obs-test".to_string(),
         service_version: "0.0.1".to_string(),
-        extra: BTreeMap::new(),
+        ..Default::default()
     }
 }
 
@@ -43,12 +43,7 @@ fn test_grpc_exporter_should_round_trip_logs_through_mock_collector() {
     let res = resource();
 
     let payload = obs_otel::logs::OtlpLogPayload {
-        resource: ResourceMessage {
-            service_name: res.service_name.clone(),
-            service_version: res.service_version.clone(),
-            extra: res.extra.clone(),
-            schema_url: "https://opentelemetry.io/schemas/1.27.0".to_string(),
-        },
+        resource: ResourceMessage::from_attrs(&res),
         endpoint: url,
         records: vec![LogRecord {
             time_unix_nano: 1_700_000_000_000_000_000,
@@ -106,12 +101,7 @@ fn test_grpc_exporter_should_carry_metrics_to_collector() {
     let exporter = GrpcOtlpExporter::connect(&endpoint(url.clone())).expect("connect");
 
     let payload = obs_otel::metrics::OtlpMetricPayload {
-        resource: ResourceMessage {
-            service_name: "obs-test".to_string(),
-            service_version: "0.0.1".to_string(),
-            extra: BTreeMap::new(),
-            schema_url: "https://opentelemetry.io/schemas/1.27.0".to_string(),
-        },
+        resource: ResourceMessage::from_attrs(&resource()),
         endpoint: url,
         points: vec![MetricPoint {
             instrument: "obs.test.ObsCounter.count".to_string(),
@@ -147,13 +137,9 @@ fn test_grpc_exporter_should_carry_traces_to_collector() {
     let exporter = GrpcOtlpExporter::connect(&endpoint(url.clone())).expect("connect");
 
     let payload = obs_otel::traces::OtlpTracePayload {
-        resource: ResourceMessage {
-            service_name: "obs-test".to_string(),
-            service_version: "0.0.1".to_string(),
-            extra: BTreeMap::new(),
-            schema_url: "https://opentelemetry.io/schemas/1.27.0".to_string(),
-        },
+        resource: ResourceMessage::from_attrs(&resource()),
         endpoint: url,
+        orphaned: Vec::new(),
         spans: vec![SpanRecord {
             name: "obs.test.ObsRequest".to_string(),
             start_time_unix_nano: 1,

@@ -33,6 +33,9 @@ pub struct EventOptions {
     pub tier: Option<Tier>,
     /// Default severity; default `Severity::Info` if absent.
     pub default_sev: Option<Severity>,
+    /// Sibling full_name when this event participates in a
+    /// Started/Completed pair (spec 93 P1-7).
+    pub paired_with: Option<String>,
 }
 
 /// Decoded `(obs.v1.field)` payload.
@@ -123,6 +126,14 @@ pub fn read_event_options(bytes: &[u8], path: &str) -> Result<Option<EventOption
             (2, WireKind::Varint) => {
                 if let Some(v) = value.varint() {
                     out.default_sev = decode_severity(v as i32);
+                }
+            }
+            // paired_with (3, length-delimited string) — spec 93 P1-7.
+            (3, WireKind::Length) => {
+                if let Some(s) = value.length()
+                    && let Ok(s) = std::str::from_utf8(s)
+                {
+                    out.paired_with = Some(s.to_string());
                 }
             }
             _ => {}

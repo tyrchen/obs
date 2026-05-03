@@ -22,16 +22,33 @@ pub struct OtlpLogPayload {
 /// Embedded resource message — separate from `mapping::ResourceMessage`
 /// because we want a per-payload snapshot that does not bind to the
 /// observer's live `ArcSwap`.
+///
+/// `attributes` is the full semconv-keyed map produced by
+/// [`OtlpResourceAttrs::to_semconv_map`]. Spec 93 P1-5.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceMessage {
-    /// `service.name`.
+    /// `service.name` (kept for backward compatibility with debug
+    /// JSON emitters; also present in `attributes`).
     pub service_name: String,
     /// `service.version`.
     pub service_version: String,
-    /// Other attributes.
-    pub extra: std::collections::BTreeMap<String, String>,
+    /// Full semconv attribute set.
+    pub attributes: std::collections::BTreeMap<String, String>,
     /// OTel semconv URL the sink targets.
     pub schema_url: String,
+}
+
+impl ResourceMessage {
+    /// Build a [`ResourceMessage`] from the live attribute set.
+    #[must_use]
+    pub fn from_attrs(attrs: &OtlpResourceAttrs) -> Self {
+        Self {
+            service_name: attrs.service_name.clone(),
+            service_version: attrs.service_version.clone(),
+            attributes: attrs.to_semconv_map(),
+            schema_url: "https://opentelemetry.io/schemas/1.27.0".to_string(),
+        }
+    }
 }
 
 impl OtlpLogPayload {
@@ -43,12 +60,7 @@ impl OtlpLogPayload {
         endpoint: &OtlpEndpoint,
     ) -> Self {
         Self {
-            resource: ResourceMessage {
-                service_name: resource.service_name.clone(),
-                service_version: resource.service_version.clone(),
-                extra: resource.extra.clone(),
-                schema_url: "https://opentelemetry.io/schemas/1.27.0".to_string(),
-            },
+            resource: ResourceMessage::from_attrs(resource),
             endpoint: endpoint.url.clone(),
             records: envs.iter().map(project_log).collect(),
         }

@@ -78,6 +78,11 @@ pub struct ObsToTracingSink {
     span_emission: SpanEmissionMode,
     rate_limited_no_dispatcher: Arc<RateLimited>,
     interned_misses: Arc<AtomicU64>,
+    /// When true, dispatch envelopes through a per-(full_name, sev)
+    /// synthetic `Metadata` so downstream `tracing_subscriber::fmt`
+    /// output reads `myapp.v1.ObsRequestCompleted INFO ...` instead of
+    /// the generic `obs.bridge`. Spec 30 § 3.7 / spec 93 P1-4.
+    dynamic_target: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -116,7 +121,21 @@ impl ObsToTracingSink {
             span_emission: SpanEmissionMode::default(),
             rate_limited_no_dispatcher: Arc::new(RateLimited::new(60)),
             interned_misses: Arc::new(AtomicU64::new(0)),
+            dynamic_target: false,
         }
+    }
+
+    /// Enable per-(`full_name`, severity) synthetic `Metadata`. With
+    /// this on, `tracing_subscriber::fmt` prints the envelope's
+    /// `full_name` as the target (`myapp.v1.ObsRequestCompleted INFO …`)
+    /// instead of the generic `obs.bridge`. The first dispatch for a
+    /// given pair leaks a small `Metadata`/`Callsite` pair via
+    /// `Box::leak` and caches the pointer in a `DashMap` so subsequent
+    /// dispatches stay allocation-free. Spec 93 P1-4.
+    #[must_use]
+    pub fn with_dynamic_target(mut self, on: bool) -> Self {
+        self.dynamic_target = on;
+        self
     }
 
     /// Override payload decode mode.
@@ -182,7 +201,11 @@ impl ObsToTracingSink {
             emit_callsite_unresolved(env.callsite_id);
         }
         let level = sev_to_level(env.sev);
-        let meta = bridge_metadata(level);
+        let meta = if self.dynamic_target {
+            synthetic_metadata(&env.full_name, level)
+        } else {
+            bridge_metadata(level)
+        };
 
         let mut had_dispatcher = false;
         tracing_core::dispatcher::get_default(|d| {
@@ -367,6 +390,71 @@ fn format_labels(labels: &std::collections::HashMap<String, String>) -> String {
     }
     s.push('}');
     s
+}
+
+/// Per-(`full_name`, level) synthetic Metadata cache. Each unique
+/// pair leaks one `SyntheticCallsite` (and the strings it references)
+/// the first time it is requested; subsequent calls return the cached
+/// pointer. Spec 30 § 3.7 / spec 93 P1-4.
+struct SyntheticCallsite {
+    metadata: Metadata<'static>,
+}
+
+impl Callsite for SyntheticCallsite {
+    fn set_interest(&self, _: Interest) {}
+    fn metadata(&self) -> &Metadata<'_> {
+        &self.metadata
+    }
+}
+
+static SYNTHETIC_CACHE: OnceLock<DashMap<(String, u8), &'static SyntheticCallsite>> =
+    OnceLock::new();
+
+fn synthetic_metadata(full_name: &str, level: Level) -> &'static Metadata<'static> {
+    let cache = SYNTHETIC_CACHE.get_or_init(DashMap::new);
+    let key = (full_name.to_string(), level_index(level));
+    if let Some(cs) = cache.get(&key) {
+        // The value is `&'static SyntheticCallsite` — copying the
+        // reference out yields a `'static` borrow of the metadata.
+        let cs_static: &'static SyntheticCallsite = cs.value();
+        return &cs_static.metadata;
+    }
+
+    // First dispatch for this (full_name, sev) pair. We leak the
+    // target string and a `SyntheticCallsite` so the resulting
+    // `&'static Metadata<'static>` can be handed to the tracing
+    // dispatcher. The Identifier inside FieldSet must point at the
+    // *same* leaked callsite, which is a chicken-and-egg problem we
+    // solve by leaking the callsite first with a placeholder Metadata,
+    // then overwriting that slot with the real Metadata via
+    // `OnceLock`.
+    let target_static: &'static str = Box::leak(full_name.to_string().into_boxed_str());
+    let cs_box: Box<SyntheticCallsite> = Box::new(SyntheticCallsite {
+        metadata: Metadata::new(
+            "obs_bridge_event",
+            target_static,
+            level,
+            None,
+            None,
+            None,
+            FieldSet::new(&FIELDS, Identifier(&BRIDGE_CS_INFO)),
+            tracing_core::Kind::EVENT,
+        ),
+    });
+    let cs_static: &'static SyntheticCallsite = Box::leak(cs_box);
+    tracing_core::callsite::register(cs_static);
+    cache.insert(key.clone(), cs_static);
+    &cs_static.metadata
+}
+
+fn level_index(level: Level) -> u8 {
+    match level {
+        Level::TRACE => 0,
+        Level::DEBUG => 1,
+        Level::INFO => 2,
+        Level::WARN => 3,
+        Level::ERROR => 4,
+    }
 }
 
 /// Bridge static metadata. Always uses target = `"obs.bridge"`. The

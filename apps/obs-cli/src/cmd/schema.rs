@@ -16,6 +16,10 @@ pub enum Sub {
 pub struct ShowArgs {
     /// Fully qualified event name (e.g. `myapp.v1.ObsRequestCompleted`).
     pub full_name: String,
+    /// Render output as JSON instead of the human table. Useful for
+    /// AI consumers / scripts. Spec 93 P3-9.
+    #[arg(long)]
+    pub json: bool,
     #[command(flatten)]
     pub source: SchemaSourceArgs,
 }
@@ -44,9 +48,28 @@ fn show(args: ShowArgs) -> Result<()> {
             )
         })?;
 
+    if args.json {
+        let payload = serde_json::json!({
+            "full_name": event.full_name,
+            "tier": format!("{:?}", event.tier()),
+            "default_sev": format!("{:?}", event.default_sev()),
+            "schema_hash": format!("{:#018x}", event.schema_hash()),
+            "fields": event.fields.iter().map(|f| serde_json::json!({
+                "name": f.name,
+                "number": f.number,
+                "kind": format!("{:?}", f.kind()),
+                "cardinality": format!("{:?}", f.cardinality()),
+                "classification": format!("{:?}", f.classification()),
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
     println!("Event:        {}", event.full_name);
     println!("Tier:         {:?}", event.tier());
     println!("Default sev:  {:?}", event.default_sev());
+    println!("Schema hash:  {:#018x}", event.schema_hash());
     println!();
     println!("Fields:");
     println!(

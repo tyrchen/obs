@@ -184,7 +184,7 @@ fn install_observer_with_sinks() -> Result<()> {
         let resource = OtlpResourceAttrs {
             service_name: "obs-example-http-service".to_string(),
             service_version: env!("CARGO_PKG_VERSION").to_string(),
-            extra: Default::default(),
+            ..Default::default()
         };
         let log_sink: Arc<dyn Sink> = Arc::new(
             OtlpLogSink::builder()

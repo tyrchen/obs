@@ -3,7 +3,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use obs_core::{Sink, registry::ScrubbedEnvelope, sink::SinkFut};
+use obs_core::{SchemaRegistry, Sink, registry::ScrubbedEnvelope, sink::SinkFut};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -265,6 +265,9 @@ pub struct OtlpMetricSink {
     resource: Arc<OtlpResourceAttrs>,
     endpoint: Arc<OtlpEndpoint>,
     retry_policy: OtlpRetry,
+    /// Schema lookup used to call `EventSchema::project_metrics` per
+    /// envelope. Spec 93 P1-6.
+    registry: Arc<SchemaRegistry>,
 }
 
 impl std::fmt::Debug for OtlpMetricSink {
@@ -283,6 +286,7 @@ pub struct OtlpMetricSinkBuilder {
     endpoint: Option<OtlpEndpoint>,
     resource: Option<OtlpResourceAttrs>,
     retry: Option<OtlpRetry>,
+    registry: Option<Arc<SchemaRegistry>>,
 }
 
 impl std::fmt::Debug for OtlpMetricSinkBuilder {
@@ -341,6 +345,16 @@ impl OtlpMetricSinkBuilder {
         self
     }
 
+    /// Inject the schema registry used to project per-event metric
+    /// fields. When unset, the sink falls back to
+    /// `SchemaRegistry::from_link_section()` so apps that don't wire it
+    /// explicitly still get correct dispatch. Spec 93 P1-6.
+    #[must_use]
+    pub fn registry(mut self, registry: Arc<SchemaRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     /// Finalise.
     ///
     /// # Errors
@@ -353,6 +367,9 @@ impl OtlpMetricSinkBuilder {
             .exporter
             .unwrap_or_else(|| Arc::new(StdoutDebugExporter));
         let retry_policy = self.retry.unwrap_or_default();
+        let registry = self
+            .registry
+            .unwrap_or_else(|| Arc::new(SchemaRegistry::from_link_section()));
         Ok(OtlpMetricSink {
             exporter,
             batch: Arc::new(Batch::new(
@@ -363,6 +380,7 @@ impl OtlpMetricSinkBuilder {
             resource: Arc::new(resource),
             endpoint: Arc::new(endpoint),
             retry_policy,
+            registry,
         })
     }
 }
@@ -401,7 +419,12 @@ impl Sink for OtlpMetricSink {
 
 impl OtlpMetricSink {
     fn dispatch(&self, envelopes: Vec<obs_proto::obs::v1::ObsEnvelope>) {
-        let payload = OtlpMetricPayload::from_envelopes(&envelopes, &self.resource, &self.endpoint);
+        let payload = OtlpMetricPayload::from_envelopes(
+            &envelopes,
+            &self.resource,
+            &self.endpoint,
+            &self.registry,
+        );
         match self.exporter.export_metrics(&payload) {
             Ok(()) => {}
             Err(_) => {
@@ -422,6 +445,9 @@ pub struct OtlpTraceSink {
     endpoint: Arc<OtlpEndpoint>,
     retry_policy: OtlpRetry,
     pair_tracker: Arc<SpanPairTracker>,
+    /// Schema lookup driving Started/Completed pair detection via
+    /// `EventSchemaErased::spans_paired_with()`. Spec 93 P1-7.
+    registry: Arc<SchemaRegistry>,
 }
 
 impl std::fmt::Debug for OtlpTraceSink {
@@ -440,6 +466,8 @@ pub struct OtlpTraceSinkBuilder {
     endpoint: Option<OtlpEndpoint>,
     resource: Option<OtlpResourceAttrs>,
     retry: Option<OtlpRetry>,
+    registry: Option<Arc<SchemaRegistry>>,
+    pair_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for OtlpTraceSinkBuilder {
@@ -495,6 +523,21 @@ impl OtlpTraceSinkBuilder {
         self
     }
 
+    /// Inject the schema registry used for Started/Completed pair
+    /// detection (`EventSchema::SPANS_PAIRED_WITH`). Spec 93 P1-7.
+    #[must_use]
+    pub fn registry(mut self, registry: Arc<SchemaRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
+    /// Override the orphan-pair timeout (default 60s). Spec 93 P1-7.
+    #[must_use]
+    pub fn pair_timeout(mut self, timeout: Duration) -> Self {
+        self.pair_timeout = Some(timeout);
+        self
+    }
+
     /// Finalise.
     ///
     /// # Errors
@@ -507,6 +550,12 @@ impl OtlpTraceSinkBuilder {
             .exporter
             .unwrap_or_else(|| Arc::new(StdoutDebugExporter));
         let retry_policy = self.retry.unwrap_or_default();
+        let registry = self
+            .registry
+            .unwrap_or_else(|| Arc::new(SchemaRegistry::from_link_section()));
+        let pair_timeout = self
+            .pair_timeout
+            .unwrap_or(crate::traces::DEFAULT_PAIR_TIMEOUT);
         Ok(OtlpTraceSink {
             exporter,
             batch: Arc::new(Batch::new(
@@ -517,7 +566,8 @@ impl OtlpTraceSinkBuilder {
             resource: Arc::new(resource),
             endpoint: Arc::new(endpoint),
             retry_policy,
-            pair_tracker: Arc::new(SpanPairTracker::default()),
+            pair_tracker: Arc::new(SpanPairTracker::with_timeout(pair_timeout)),
+            registry,
         })
     }
 }
@@ -561,7 +611,13 @@ impl OtlpTraceSink {
             &self.resource,
             &self.endpoint,
             &self.pair_tracker,
+            &self.registry,
         );
+        // Surface orphans to the runtime self-event catalogue.
+        // Spec 93 P1-2 + P1-7.
+        for full_name in &payload.orphaned {
+            obs_core::self_events_public::emit_span_pair_orphaned(full_name);
+        }
         match self.exporter.export_traces(&payload) {
             Ok(()) => {}
             Err(_) => {

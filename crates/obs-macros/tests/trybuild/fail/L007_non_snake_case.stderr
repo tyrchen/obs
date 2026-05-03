@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: obs L007: field `UserId` is not snake_case
+              note: every obs field name maps 1:1 to a proto field, OTLP attribute, and analytics column; snake_case is required so the projection round-trips deterministically.
+              help: rename to `user_id`.
+ --> tests/trybuild/fail/L007_non_snake_case.rs:5:26
+  |
+5 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

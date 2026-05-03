@@ -122,6 +122,7 @@ parquet = { version = "58", default-features = false, features = [
 ] }
 governor = { version = "0.10", default-features = false, features = ["std"] }
 http = "1.4"
+getrandom = "0.3"
 hyper = { version = "1.9", features = ["server", "client", "http1"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = [

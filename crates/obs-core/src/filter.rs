@@ -151,14 +151,15 @@ impl Filter {
     }
 
     fn static_level_for(&self, full_name: &str, module: &str) -> Option<Severity> {
+        // Spec 13 § 7 / spec 93 P2-6: target match must respect
+        // segment boundaries. `my_app::foo=info` should match
+        // `my_app::foo` and `my_app::foo::bar`, but not `my_app::foobar`.
         let mut best: Option<(usize, Severity)> = None;
         for d in &self.statics {
             let Some(t) = d.target.as_deref() else {
                 continue;
             };
-            let matches = full_name.starts_with(t)
-                || (full_name.contains(t) && t.contains('.'))
-                || module.starts_with(t);
+            let matches = matches_segment(full_name, t) || matches_segment(module, t);
             if matches && best.map(|(len, _)| t.len() > len).unwrap_or(true) {
                 best = Some((t.len(), d.level));
             }
@@ -181,6 +182,19 @@ impl Filter {
     pub fn dynamics(&self) -> impl Iterator<Item = &Directive> {
         self.dynamics.values().flat_map(|v| v.iter())
     }
+}
+
+/// `s` matches `target` either by being equal, or by being prefixed
+/// by `target` followed by a segment separator (`.` or `::`). Spec 93
+/// P2-6.
+fn matches_segment(s: &str, target: &str) -> bool {
+    if s == target {
+        return true;
+    }
+    if let Some(rest) = s.strip_prefix(target) {
+        return rest.starts_with('.') || rest.starts_with("::");
+    }
+    false
 }
 
 impl FromStr for Filter {

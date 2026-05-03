@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: obs L004: field `latency_ms` is MEASUREMENT without a metric kind
+              note: MEASUREMENT fields must declare `metric = "counter|gauge|histogram"` so the OTLP metric sink can dispatch correctly.
+              help: add e.g. `#[obs(measurement, metric = "counter", unit = "1")]`.
+ --> tests/trybuild/fail/L004_measurement_without_metric.rs:5:26
+  |
+5 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

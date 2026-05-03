@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: obs L006: AUDIT-tier event must not carry `pii` field `email`
+              note: AUDIT events ship to long-retained immutable sinks; classified data must be redacted at the source.
+              help: drop the field or move the event to a non-AUDIT tier.
+ --> tests/trybuild/fail/L006_audit_pii.rs:5:26
+  |
+5 | #[derive(Debug, Default, Event)]
+  |                          ^^^^^ evaluation of `_` failed here

@@ -82,6 +82,25 @@ where
     TEST_HANDLE_TASK.scope(handle, fut).await
 }
 
+/// Render an envelope's payload as a `serde_json::Map` using the
+/// registered schema's `render_json` projection. Used by
+/// `assert_emitted!` so payload-class fields (`ATTRIBUTE`,
+/// `MEASUREMENT`) participate in matching, not just `LABEL` fields.
+/// Spec 60 § 8 / spec 93 P2-16.
+#[must_use]
+pub fn render_envelope_payload_json(
+    env: &ObsEnvelope,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if env.payload.is_empty() {
+        return None;
+    }
+    let registry = crate::registry::SchemaRegistry::from_link_section();
+    let schema = registry.lookup(env)?;
+    let mut map = serde_json::Map::new();
+    schema.render_json(&env.payload, &mut map).ok()?;
+    Some(map)
+}
+
 /// Snapshot the current task / thread's captured envelopes without
 /// draining. Returns an empty vec when no `#[obs::test]` handle is
 /// installed. Spec 60 § 8.
@@ -192,11 +211,30 @@ macro_rules! assert_emitted {
             if !env.full_name.ends_with(__full_name_suffix) {
                 return false;
             }
+            // Spec 60 § 8 / spec 93 P2-16: match against env.labels
+            // (cheap fast path) AND payload fields (decoded via
+            // `EventSchemaErased::render_json`) so tests that assert on
+            // `ATTRIBUTE`-class fields not promoted to labels still work.
+            let __payload_json: ::std::option::Option<::serde_json::Map<String, ::serde_json::Value>> =
+                $crate::test::render_envelope_payload_json(env);
             for (k, v) in __pairs {
-                match env.labels.get(*k) {
-                    ::std::option::Option::Some(actual) if actual == v => continue,
-                    _ => return false,
+                if let ::std::option::Option::Some(actual) = env.labels.get(*k)
+                    && actual == v
+                {
+                    continue;
                 }
+                if let ::std::option::Option::Some(map) = __payload_json.as_ref()
+                    && let ::std::option::Option::Some(json_val) = map.get(*k)
+                {
+                    let s = match json_val {
+                        ::serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    if s == *v {
+                        continue;
+                    }
+                }
+                return false;
             }
             true
         });

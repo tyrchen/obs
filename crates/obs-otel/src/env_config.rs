@@ -59,14 +59,70 @@ impl Default for OtlpEndpoint {
 }
 
 /// Resolved Resource attributes (spec 20 § 2.1).
+///
+/// Populated from `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES`
+/// per the OTel SDK env-var spec, with semconv keys lifted into
+/// first-class fields. Spec 93 P1-5.
 #[derive(Debug, Clone, Default)]
 pub struct OtlpResourceAttrs {
     /// `service.name`.
     pub service_name: String,
     /// `service.version`.
     pub service_version: String,
-    /// Other resource attributes.
+    /// `service.namespace` — logical service grouping (e.g. `payments`).
+    pub service_namespace: String,
+    /// `service.instance.id` — unique per process/replica.
+    pub service_instance_id: String,
+    /// `deployment.environment` — `production`, `staging`, `dev`, …
+    pub deployment_environment: String,
+    /// `host.name` — typically the OS hostname.
+    pub host_name: String,
+    /// `host.arch` — `amd64`, `arm64`, …
+    pub host_arch: String,
+    /// Any other attributes from `OTEL_RESOURCE_ATTRIBUTES` that did
+    /// not land in a first-class slot.
     pub extra: BTreeMap<String, String>,
+}
+
+impl OtlpResourceAttrs {
+    /// Render this attribute set as a `BTreeMap<String, String>` where
+    /// every populated first-class slot becomes the corresponding
+    /// semconv key. Used to build the OTLP `Resource` projection.
+    #[must_use]
+    pub fn to_semconv_map(&self) -> BTreeMap<String, String> {
+        let mut m = self.extra.clone();
+        if !self.service_name.is_empty() {
+            m.insert("service.name".to_string(), self.service_name.clone());
+        }
+        if !self.service_version.is_empty() {
+            m.insert("service.version".to_string(), self.service_version.clone());
+        }
+        if !self.service_namespace.is_empty() {
+            m.insert(
+                "service.namespace".to_string(),
+                self.service_namespace.clone(),
+            );
+        }
+        if !self.service_instance_id.is_empty() {
+            m.insert(
+                "service.instance.id".to_string(),
+                self.service_instance_id.clone(),
+            );
+        }
+        if !self.deployment_environment.is_empty() {
+            m.insert(
+                "deployment.environment".to_string(),
+                self.deployment_environment.clone(),
+            );
+        }
+        if !self.host_name.is_empty() {
+            m.insert("host.name".to_string(), self.host_name.clone());
+        }
+        if !self.host_arch.is_empty() {
+            m.insert("host.arch".to_string(), self.host_arch.clone());
+        }
+        m
+    }
 }
 
 /// Read OTel env vars into a resolved endpoint config.
@@ -108,6 +164,12 @@ pub fn endpoint_from_env() -> OtlpEndpoint {
 }
 
 /// Read OTel env vars into a resolved resource attribute set.
+///
+/// Honours `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` per the
+/// OTel SDK env-var spec. Lifts the well-known semconv keys
+/// (`service.namespace`, `service.instance.id`, `deployment.environment`,
+/// `host.name`, `host.arch`) into first-class fields on
+/// [`OtlpResourceAttrs`]. Spec 93 P1-5.
 #[must_use]
 pub fn resource_from_env() -> OtlpResourceAttrs {
     let mut r = OtlpResourceAttrs::default();
@@ -121,17 +183,38 @@ pub fn resource_from_env() -> OtlpResourceAttrs {
                 continue;
             }
             if let Some((k, v)) = pair.split_once('=') {
-                let key = k.trim().to_string();
+                let key = k.trim();
                 let val = v.trim().to_string();
-                if key == "service.name" && r.service_name.is_empty() {
-                    r.service_name = val;
-                } else if key == "service.version" && r.service_version.is_empty() {
-                    r.service_version = val;
-                } else {
-                    r.extra.insert(key, val);
+                match key {
+                    "service.name" if r.service_name.is_empty() => r.service_name = val,
+                    "service.version" if r.service_version.is_empty() => r.service_version = val,
+                    "service.namespace" if r.service_namespace.is_empty() => {
+                        r.service_namespace = val;
+                    }
+                    "service.instance.id" if r.service_instance_id.is_empty() => {
+                        r.service_instance_id = val;
+                    }
+                    "deployment.environment" if r.deployment_environment.is_empty() => {
+                        r.deployment_environment = val;
+                    }
+                    "host.name" if r.host_name.is_empty() => r.host_name = val,
+                    "host.arch" if r.host_arch.is_empty() => r.host_arch = val,
+                    _ => {
+                        r.extra.insert(key.to_string(), val);
+                    }
                 }
             }
         }
+    }
+    // Auto-detect `host.arch` if unset — `std::env::consts::ARCH` is a
+    // stable mapping (`x86_64`, `aarch64`, …) that we map to OTel's
+    // semconv values.
+    if r.host_arch.is_empty() {
+        r.host_arch = match std::env::consts::ARCH {
+            "x86_64" => "amd64".to_string(),
+            "aarch64" => "arm64".to_string(),
+            other => other.to_string(),
+        };
     }
     r
 }

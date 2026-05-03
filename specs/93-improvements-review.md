@@ -2,9 +2,40 @@
 
 Type: review + impl-plan delta
 Date: 2026-05-02
-Status: proposed
+Status: **mostly closed (Phase 6.2 / 6.4 / 6.5 / 6.6 landed 2026-05-03)**
 Scope: full audit of the `obs` workspace (33 799 LoC Rust) against
 specs 10–72 (11 378 lines of spec).
+
+## Phase 6.2–6.6 closure log (2026-05-03)
+
+The remaining bullets from Phase 6.2 (`P1-5`, `P1-6`, `P1-7`), all of
+Phase 6.4 (`P0-3`, `P1-3`, `P1-4`, `P2-11`, `P2-17`), Phase 6.5
+(`P1-1`, `P1-9`, `P3-6`), and Phase 6.6 (`P2-3`, `P2-5`, `P2-6`,
+`P2-7`, `P2-8`, `P2-9`, `P2-13`, `P2-14`, `P2-15`, `P2-16`, `P2-20`)
+landed in commit-set "phase 6.4–6.6 closure". The remaining items
+deliberately deferred:
+
+- **P2-1** (LABEL key allocations): would require flipping
+  `ObsEnvelope.labels` from `HashMap<String, String>` to
+  `HashMap<Cow<'static, str>, String>`, breaking proto wire shape.
+  Documented as `format_ver = 2`-blocked future work.
+- **P3-10** (stdout sink mutex): the per-emit `Mutex<ErasedWriterMaker>`
+  is uncontended on a single-writer process and amounts to one
+  uncontended CAS; pre-rendering the writer once per worker requires
+  threading a per-tier clone through the sink trait — out of scope
+  for this pass.
+- **P3-11 / P3-12** (background batch timer / RetryQueue replayer):
+  current shutdown-only drain is correct; adding a tokio
+  `time::interval` per tier requires a dedicated lifecycle handle on
+  every sink builder and is tracked as polish-tier.
+- **L005 / L008** (enum-cardinality + tag-reuse history lints):
+  L005 needs `EnumCount::COUNT` plumbing through codegen; L008 needs
+  a persistent manifest. Both deferred to v1.1.
+- **CLI `obs generate` / global flags / `obs query --from
+  clickhouse://` / `obs decode --schemas`**: only the high-impact
+  pieces (`obs lint --stderr summary`, `obs migrate clickhouse`
+  schema_hash, `obs schema show --json`, scan helper DRY) landed;
+  the broader CLI ergonomics work stays open.
 
 This document records the gaps between the v1 specs and the current
 implementation, sorted by severity and rolled up per spec. Each item

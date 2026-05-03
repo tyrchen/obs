@@ -9,6 +9,7 @@ pub mod init;
 pub mod lint;
 pub mod migrate;
 pub mod query;
+pub mod scan;
 pub mod schema;
 pub mod schema_source;
 pub mod tail;

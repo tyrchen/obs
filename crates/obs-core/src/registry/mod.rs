@@ -65,12 +65,30 @@ impl std::fmt::Debug for SchemaRegistry {
 impl SchemaRegistry {
     /// Walk `EVENT_SCHEMAS` and assemble the runtime registry. Called
     /// once at `StandardObserver::build()`. Spec 14 § 4.
+    ///
+    /// Detects `schema_hash` collisions (two distinct events that
+    /// happen to share the same first-8-byte BLAKE3 prefix) and emits
+    /// `obs.runtime.v1.ObsCallsiteHashCollision` once per collision.
+    /// Spec 14 § 8 row 2 / spec 31 § 10 / spec 93 P2-9.
     #[must_use]
     pub fn from_link_section() -> Self {
         let mut by_name = HashMap::with_capacity(EVENT_SCHEMAS.len());
-        let mut by_hash = HashMap::with_capacity(EVENT_SCHEMAS.len());
+        let mut by_hash: HashMap<u64, &'static dyn EventSchemaErased> =
+            HashMap::with_capacity(EVENT_SCHEMAS.len());
         for &schema in EVENT_SCHEMAS {
             by_name.insert(schema.full_name(), schema);
+            if let Some(existing) = by_hash.get(&schema.schema_hash())
+                && existing.full_name() != schema.full_name()
+            {
+                crate::self_events_public::emit_callsite_hash_collision(
+                    schema.schema_hash(),
+                    existing.full_name(),
+                    schema.full_name(),
+                );
+                // Keep the first-registered entry (deterministic w.r.t.
+                // linkme order on a given build).
+                continue;
+            }
             by_hash.insert(schema.schema_hash(), schema);
         }
         let arrow = Arc::new(ArrowSchemaModel::from_schemas(

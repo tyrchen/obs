@@ -103,7 +103,10 @@ pub fn run(args: LintArgs) -> Result<()> {
         }
     }
 
-    println!(
+    // Spec 50 § 4 / spec 93 P1-9: summary lines go to stderr so
+    // pipelines that consume `obs lint` stdout (e.g. structured JSON
+    // findings) do not collide with the human-readable summary.
+    eprintln!(
         "{} error(s) · {} warning(s) · {} event(s) scanned",
         errors, warnings, scanned
     );
@@ -278,30 +281,9 @@ fn collect_label_conflicts(events: &[AnnotatedEvent]) -> LabelConflictMap {
     LabelConflictMap(by_name)
 }
 
-fn scan_forensic_count(root: &std::path::Path) -> Option<usize> {
-    let mut count = 0usize;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).ok()?;
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            // Conservative: count occurrences of `forensic!(` or
-            // `obs::forensic!(` as a callsite proxy.
-            count += content.matches("forensic!(").count();
-        }
-    }
-    Some(count)
-}
+// `scan_forensic_count` lives in `super::scan` so `obs audit` can
+// share it. Spec 93 P3-6.
+use super::scan::scan_forensic_count;
 
 #[allow(dead_code)]
 fn _ensure_field_used(_f: &AnnotatedField) {}

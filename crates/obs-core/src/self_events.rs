@@ -99,6 +99,33 @@ pub(crate) fn emit_sink_dropped(tier: &str, reason: &str) {
     emit_self(env);
 }
 
+/// Emitted at registry init when two distinct events share the same
+/// `schema_hash` 8-byte prefix. Spec 14 § 8 row 2 / spec 93 P2-9.
+pub fn emit_callsite_hash_collision_pub(hash: u64, first: &str, second: &str) {
+    let mut env = base_envelope(
+        "obs.runtime.v1.ObsCallsiteHashCollision",
+        PSeverity::SEVERITY_WARN,
+    );
+    env.labels
+        .insert("schema_hash".to_string(), format!("{hash:016x}"));
+    env.labels.insert("first".to_string(), first.to_string());
+    env.labels.insert("second".to_string(), second.to_string());
+    emit_self(env);
+}
+
+/// Emitted when a Started event has no matching Completed within the
+/// configured `pair_timeout`. Spec 93 P1-7. Public so the OTLP trace
+/// sink can fire it from outside `obs-core`.
+pub fn emit_span_pair_orphaned_pub(full_name: &str) {
+    let mut env = base_envelope(
+        "obs.runtime.v1.ObsSpanPairOrphaned",
+        PSeverity::SEVERITY_DEBUG,
+    );
+    env.labels
+        .insert("full_name".to_string(), full_name.to_string());
+    emit_self(env);
+}
+
 /// Emitted when an envelope exceeds `limits.max_payload_bytes` at
 /// projection time.
 pub(crate) fn emit_oversized_dropped(full_name: &str, size_bytes: u64) {

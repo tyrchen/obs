@@ -96,16 +96,18 @@ Each enum:
 
 #### `no_std` posture
 
-`obs-types` is `#![no_std]`-clean (no `std`, no `alloc`-only types
-in the public API beyond what `buffa::Enumeration` requires). It is
-the only crate in this workspace that meets that bar. **`obs-core`
-and every downstream crate are `std`-only by design** — they depend
-on `tokio`, `linkme`'s distributed-slice (which works under `std`
-linking only), `arc_swap`, `tracing`'s integration surface, and the
-filesystem. `no_std` library crates that want to be observable
-through `obs` therefore cannot in v1; the library author can either
-gate their instrumentation behind `#[cfg(feature = "obs")]` or wait
-for a future `obs-no_std` shim that synthesises envelopes into a
+**v1 is std-only across every crate** — including `obs-types`. The
+original aspiration for `obs-types` to be `#![no_std]`-clean was
+abandoned in spec 93 P2-14 because the public API needs `String`,
+`thiserror`, and `serde` with default features, all of which require
+`std`. `obs-core` and every downstream crate were never going to
+work without `std` because they depend on `tokio`, `linkme`'s
+distributed-slice (which works under `std` linking only),
+`arc_swap`, `tracing`'s integration surface, and the filesystem.
+`no_std` library crates that want to be observable through `obs`
+therefore cannot in v1; the library author can either gate their
+instrumentation behind `#[cfg(feature = "obs")]` or wait for a
+future `obs-no_std` shim that synthesises envelopes into a
 caller-provided ring buffer. Documented as a non-goal in
 [00-prd.md § 7](./00-prd.md#7-constraints).
 

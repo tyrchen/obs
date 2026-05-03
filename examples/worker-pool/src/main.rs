@@ -80,9 +80,14 @@ struct ObsWorkerTaskCompleted {
     worker_id: String,
     #[obs(label, cardinality = "low")]
     task_kind: String,
-    #[obs(measurement)]
+    #[obs(
+        measurement,
+        metric = "histogram",
+        unit = "ms",
+        bounds = "1.0,5.0,10.0,50.0,100.0,500.0"
+    )]
     latency_ms: u64,
-    #[obs(measurement)]
+    #[obs(measurement, metric = "gauge", unit = "1")]
     queue_depth: u64,
 }
 
@@ -215,7 +220,7 @@ fn install_observer_with_sinks() -> Result<()> {
     let resource = OtlpResourceAttrs {
         service_name: "obs-example-worker-pool".to_string(),
         service_version: env!("CARGO_PKG_VERSION").to_string(),
-        extra: Default::default(),
+        ..Default::default()
     };
     let endpoint = OtlpEndpoint {
         url: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default(),

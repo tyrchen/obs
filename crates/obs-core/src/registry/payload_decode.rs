@@ -20,7 +20,10 @@ use obs_types::Classification;
 use serde_json::{Map, Value};
 
 use super::erased::{DecodeError, OtlpValue};
-use crate::envelope::{FieldMeta, FieldRole};
+use crate::{
+    envelope::{FieldMeta, FieldRole},
+    metric::MetricEmitter,
+};
 
 /// Project a payload into `out` as a JSON object.
 ///
@@ -67,6 +70,55 @@ pub fn render_json_default(
             out.insert(name.to_string(), json);
         }
         // Unknown field number → skip silently (forward-compat).
+    }
+    Ok(())
+}
+
+/// Walk a buffa-encoded payload using the schema's `FieldMeta` table
+/// and emit one metric data point per `FieldRole::Measurement` field.
+/// Spec 12 § 3.6 / spec 93 P1-6.
+///
+/// Default dispatch when the schema has not been augmented with a
+/// `MetricSpec` per field: every measurement is recorded as a counter
+/// with unit `"1"`, and the instrument name is the field's declared
+/// `name`. Schema authors who need histograms or units should override
+/// `EventSchemaErased::project_metrics` per-event (the codegen path
+/// will eventually do this automatically).
+///
+/// # Errors
+///
+/// Returns [`DecodeError::Truncated`] when the payload ends mid-field.
+pub fn project_metrics_default(
+    payload: &[u8],
+    fields: &'static [FieldMeta],
+    sink: &mut dyn MetricEmitter,
+) -> Result<(), DecodeError> {
+    let mut cursor = payload;
+    let mut offset: usize = 0;
+    while cursor.has_remaining() {
+        let before = cursor.remaining();
+        let tag = match Tag::decode(&mut cursor) {
+            Ok(t) => t,
+            Err(_) => return Err(DecodeError::Truncated(offset)),
+        };
+        offset += before - cursor.remaining();
+        let value = decode_field_value(&mut cursor, tag.wire_type(), &mut offset)?;
+        let Some(meta) = fields.iter().find(|m| m.number == tag.field_number()) else {
+            continue;
+        };
+        if !matches!(meta.role, FieldRole::Measurement) {
+            continue;
+        }
+        match value {
+            RawValue::Varint(v) => sink.record_counter(meta.name, v, None),
+            RawValue::Fixed64(v) => {
+                sink.record_gauge_f64(meta.name, f64::from_bits(v), None);
+            }
+            RawValue::Fixed32(v) => {
+                sink.record_gauge_f64(meta.name, f64::from(f32::from_bits(v)), None);
+            }
+            RawValue::Bytes(_) => {}
+        }
     }
     Ok(())
 }

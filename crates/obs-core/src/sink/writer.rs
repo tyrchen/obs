@@ -364,7 +364,14 @@ impl Write for RollingFileHandle {
         Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.inner.with_state(|state| state.file.flush())
+        // Spec 20 § 3.4 / spec 93 P2-3: pair `flush` with `sync_data`
+        // so a kill -9 between batches does not lose recent appends.
+        // The cost is one fsync per logical flush (one per batch),
+        // matching the AUDIT-spool default in P0-7.
+        self.inner.with_state(|state| {
+            state.file.flush()?;
+            state.file.sync_data()
+        })
     }
 }
 
@@ -427,20 +434,50 @@ impl RollingInner {
     }
 
     fn open_new(&self) -> io::Result<RollingState> {
-        let now = now_unix_secs().unwrap_or(0);
-        let counter = ROLL_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let stamp = format!("{now}-{counter}");
+        // Spec 20 § 3.4 / spec 93 P2-3: filename layout follows the
+        // policy. Time-based rolls embed `YYYY-MM-DD[.HH]` so files
+        // sort chronologically; size-based rolls use a six-digit
+        // zero-padded counter so directories stay scannable. Falling
+        // back to `unix-counter` preserves the legacy behaviour for
+        // `Never` and `SizeOrAge` (where neither stamp suffices alone).
+        let stamp = match self.policy {
+            RollingPolicy::Daily => format_date_stamp(now_unix_secs().unwrap_or(0)),
+            RollingPolicy::Hourly => format_hour_stamp(now_unix_secs().unwrap_or(0)),
+            RollingPolicy::SizeBased { .. } => {
+                let counter = ROLL_COUNTER.fetch_add(1, Ordering::Relaxed);
+                format!("{counter:06}")
+            }
+            _ => {
+                let now = now_unix_secs().unwrap_or(0);
+                let counter = ROLL_COUNTER.fetch_add(1, Ordering::Relaxed);
+                format!("{now}-{counter}")
+            }
+        };
         let filename = format!("{}.{stamp}{}", self.prefix, self.suffix);
         let path = self.directory.join(&filename);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
+        // Spec 20 § 3.5: durably commit the directory entry so the new
+        // file survives a host crash that strands the inode in the
+        // page cache.
+        if let Ok(dir) = std::fs::File::open(&self.directory) {
+            let _ = dir.sync_all();
+        }
         Ok(RollingState {
             file,
             bytes: 0,
             opened_at: SystemTime::now(),
         })
+    }
+
+    #[allow(dead_code)]
+    fn _ensure_helpers_used(&self) {
+        // Pin format_date_stamp / format_hour_stamp to silence dead-code
+        // warnings on platforms where the policy is never Daily/Hourly.
+        let _ = format_date_stamp;
+        let _ = format_hour_stamp;
     }
 
     fn maybe_evict_old(&self) {
@@ -477,6 +514,38 @@ fn now_unix_secs() -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .ok()
+}
+
+/// Format `secs_since_epoch` as `YYYY-MM-DD` in UTC. Used by daily
+/// rotation. Spec 20 § 3.4 / spec 93 P2-3.
+fn format_date_stamp(secs: u64) -> String {
+    let (y, m, d) = ymd_from_secs(secs);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Format `secs_since_epoch` as `YYYY-MM-DD.HH` in UTC. Used by hourly
+/// rotation.
+fn format_hour_stamp(secs: u64) -> String {
+    let (y, m, d) = ymd_from_secs(secs);
+    let h = (secs / 3600) % 24;
+    format!("{y:04}-{m:02}-{d:02}.{h:02}")
+}
+
+/// Convert UTC seconds-since-epoch to (year, month, day). Sentinel
+/// algorithm per Howard Hinnant's date library: avoids pulling in
+/// `chrono` for what is otherwise a single function.
+fn ymd_from_secs(secs: u64) -> (u32, u32, u32) {
+    let z = (secs / 86_400) as i64 + 719_468; // days since 0000-03-01
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y_internal = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let y = if m <= 2 { y_internal + 1 } else { y_internal } as u32;
+    (y, m, d)
 }
 
 // ─── NonBlockingWriter ────────────────────────────────────────────────
