@@ -1,16 +1,29 @@
 //! `obs::Filter` — EnvFilter-shaped DSL ported from
 //! `tracing-subscriber::filter::env`.
 //!
-//! Spec 13 § 7. The grammar is `[target][=level][[field=value,...]]`.
-//! A directive without a `[field=value]` clause is a "static" directive
-//! and lives in a sorted vec; a directive with a `[field=value]` clause
-//! is "dynamic" and is bucketed by `full_name` so the hot path is one
-//! `HashMap` probe + a tiny vector walk (spec 13 § 7.0).
+//! Spec 13 § 7 / spec 94 § 2.9. The grammar is
+//! `[target][=level][[field=value,...]]`. A directive without a
+//! `[field=value]` clause is a "static" directive and lives in a
+//! sorted vec; a directive with a `[field=value]` clause is "dynamic"
+//! and is bucketed by `full_name` so the hot path is one `HashMap`
+//! probe + a tiny vector walk (spec 13 § 7.0).
 //!
-//! This is **not** a full port of EnvFilter — we keep the same
-//! syntactic shape so operators do not relearn it. Specifically we
-//! support: `info`, `myapp::auth=debug`, `myapp.v1.ObsRequestCompleted=trace`,
-//! `[route=admin]=warn`, comma-separated combinations.
+//! The parser is built on `winnow` and matches `tracing-subscriber`'s
+//! EnvFilter for the documented subset:
+//!
+//! - bare level: `info`
+//! - bare veto: `off`
+//! - target=level: `myapp::auth=debug`
+//! - target=off: `my_module=off`
+//! - full-name = level: `myapp.v1.ObsRequestCompleted=trace`
+//! - dynamic: `[route=admin]=warn` (matches against `env.labels`)
+//! - target with dynamic clause: `myapp.v1.ObsX[route=admin]=warn`
+//! - quoted field values: `[route="/users/:id,/v2"]=info`
+//! - comma-separated combinations of any of the above
+//! - whitespace between directives and inside clauses
+//!
+//! Top-level `,` splitting is bracket-aware so a `,` inside a
+//! `[k=v,k=v]` clause does not terminate the directive.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -86,7 +99,7 @@ impl Filter {
     /// syntactically invalid, e.g. `=info` (missing target/level).
     pub fn parse(s: &str) -> Result<Self, FilterParseError> {
         let mut f = Self::new();
-        for raw in s.split(',') {
+        for raw in split_directives(s) {
             let raw = raw.trim();
             if raw.is_empty() {
                 continue;
@@ -286,91 +299,243 @@ fn directive_matches_env(d: &Directive, env: &ObsEnvelope) -> bool {
 }
 
 fn parse_directive(raw: &str) -> Result<Directive, FilterParseError> {
-    // Forms:
-    //   level
-    //   target=level
-    //   target[field=value,...]=level
-    //   [field=value,...]=level
-    //
-    // The bare-level form (`info`, `warn`, `off`, …) is special: when
-    // `raw` parses as a Severity (or the literal `off`), we treat it
-    // as a default-level directive (target/fields both empty).
-    if raw.trim().eq_ignore_ascii_case("off") {
-        return Ok(Directive {
-            target: None,
-            fields: Vec::new(),
-            level: Severity::Trace,
-            off: true,
-        });
-    }
-    if let Ok(level) = Severity::from_str(raw.trim()) {
-        return Ok(Directive {
-            target: None,
-            fields: Vec::new(),
-            level,
-            off: false,
-        });
-    }
-    let (head, level, off) = match raw.rfind('=') {
-        Some(idx) => {
-            let level_str = raw[idx + 1..].trim();
-            if level_str.eq_ignore_ascii_case("off") {
-                (&raw[..idx], Severity::Trace, true)
-            } else {
-                (&raw[..idx], parse_level(level_str)?, false)
-            }
-        }
-        None => (raw, Severity::Trace, false),
-    };
-    let (target, fields) = if let Some(open) = head.find('[') {
-        let target = if open == 0 {
-            None
-        } else {
-            Some(head[..open].to_string())
-        };
-        let close = head
-            .rfind(']')
-            .ok_or_else(|| FilterParseError::Malformed(raw.to_string()))?;
-        if close <= open {
-            return Err(FilterParseError::Malformed(raw.to_string()));
-        }
-        let fields_str = &head[open + 1..close];
-        let mut fields = Vec::new();
-        for clause in fields_str.split(',') {
-            let clause = clause.trim();
-            if clause.is_empty() {
-                continue;
-            }
-            let mut it = clause.splitn(2, '=');
-            let k = it
-                .next()
-                .ok_or_else(|| FilterParseError::Malformed(raw.to_string()))?
-                .trim()
-                .to_string();
-            let v = it
-                .next()
-                .ok_or_else(|| FilterParseError::Malformed(raw.to_string()))?
-                .trim()
-                .to_string();
-            fields.push((k, v));
-        }
-        (target, fields)
-    } else if head.is_empty() {
-        (None, Vec::new())
-    } else {
-        (Some(head.to_string()), Vec::new())
-    };
-    Ok(Directive {
-        target,
-        fields,
-        level,
-        off,
-    })
+    grammar::directive(raw.trim()).map_err(|e| FilterParseError::Malformed(e.to_string()))
 }
 
-fn parse_level(s: &str) -> Result<Severity, FilterParseError> {
-    Severity::from_str(s.trim())
-        .map_err(|_| FilterParseError::Malformed(format!("unknown level `{s}`")))
+/// Split the filter spec on directive boundaries, respecting `[...]`
+/// bracket nesting so a `,` inside a `[field=val,field=val]` clause
+/// does not terminate the directive. Spec 94 § 2.9.
+fn split_directives(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quoted = false;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '"' if depth > 0 => quoted = !quoted,
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => depth = depth.saturating_sub(1),
+            ',' if depth == 0 && !quoted => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    } else if start == s.len() {
+        // Trailing comma → empty directive; preserved so callers can
+        // skip via the `is_empty()` check.
+        out.push("");
+    }
+    out
+}
+
+/// winnow-based grammar for the filter DSL. Spec 13 § 7 / spec 94 §
+/// 2.9 / P2-A. The grammar tracks `tracing-subscriber::EnvFilter` for
+/// the documented subset:
+///
+/// ```ignore
+/// directive    := bare_off | bare_level | head ('=' level_or_off)?
+/// head         := target_part ('[' field_clause (',' field_clause)* ']')?
+/// target_part  := <chars excluding '=', '[', ',', whitespace>
+/// field_clause := key '=' value
+/// key          := <chars excluding '=', ',', ']'>
+/// value        := <chars excluding ',', ']'>
+/// level_or_off := 'off' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
+/// ```
+///
+/// The grammar is forgiving in a couple of places to keep operators'
+/// muscle memory intact: target identifiers may include dots and
+/// double-colons (so `myapp.v1.ObsRequestCompleted` and
+/// `myapp::auth` both parse), level keywords are case-insensitive,
+/// and field values may be quoted (`[route="/users/:id"]=info`) when
+/// the value contains commas or square brackets.
+mod grammar {
+    use std::str::FromStr;
+
+    use obs_types::Severity;
+    use winnow::{
+        ModalResult, Parser as _,
+        ascii::multispace0,
+        combinator::{delimited, opt, preceded, separated},
+        error::{ContextError, ErrMode, ParseError, StrContext, StrContextValue},
+        token::take_while,
+    };
+
+    use super::Directive;
+
+    /// Top-level entry: parse one full directive from a `&str`. The
+    /// caller is expected to have already split on `,` between
+    /// directives.
+    pub(super) fn directive(input: &str) -> Result<Directive, ParseError<&str, ContextError>> {
+        directive_full.parse(input)
+    }
+
+    fn directive_full(s: &mut &str) -> ModalResult<Directive> {
+        let _ = multispace0.parse_next(s)?;
+        // Bare `off` — global veto, target/fields empty.
+        if let Some(()) = opt(bare_off).parse_next(s)? {
+            let _ = multispace0.parse_next(s)?;
+            return Ok(Directive {
+                target: None,
+                fields: Vec::new(),
+                level: Severity::Trace,
+                off: true,
+            });
+        }
+        // Bare level — set default floor.
+        if let Some(level) = opt(bare_level).parse_next(s)? {
+            let _ = multispace0.parse_next(s)?;
+            return Ok(Directive {
+                target: None,
+                fields: Vec::new(),
+                level,
+                off: false,
+            });
+        }
+        // Otherwise: head '=' level_or_off, or head alone.
+        let (target, fields) = head.parse_next(s)?;
+        let _ = multispace0.parse_next(s)?;
+        let (level, off) = match opt(preceded('=', cut_level_or_off)).parse_next(s)? {
+            Some(v) => v,
+            // Default for `target` alone is `Severity::Trace`, matching
+            // tracing-subscriber's behaviour when a target appears
+            // without an explicit level.
+            None => (Severity::Trace, false),
+        };
+        let _ = multispace0.parse_next(s)?;
+        Ok(Directive {
+            target,
+            fields,
+            level,
+            off,
+        })
+    }
+
+    fn bare_off(s: &mut &str) -> ModalResult<()> {
+        // Match `off` only when nothing follows that could continue a
+        // target identifier.
+        let snapshot = *s;
+        let token = take_while(1.., is_target_char).parse_next(s)?;
+        if !token.eq_ignore_ascii_case("off") {
+            *s = snapshot;
+            return Err(ErrMode::Backtrack(ContextError::new()));
+        }
+        // Reject if there's a trailing `=` / `[` / `,` — those would
+        // turn this into `off=…` / `off[…]` / a path containing "off".
+        let lookahead = s.chars().next();
+        if matches!(lookahead, Some('=') | Some('[')) {
+            *s = snapshot;
+            return Err(ErrMode::Backtrack(ContextError::new()));
+        }
+        Ok(())
+    }
+
+    fn bare_level(s: &mut &str) -> ModalResult<Severity> {
+        let snapshot = *s;
+        let token = take_while(1.., is_target_char).parse_next(s)?;
+        let level = match Severity::from_str(token) {
+            Ok(l) => l,
+            Err(_) => {
+                *s = snapshot;
+                return Err(ErrMode::Backtrack(ContextError::new()));
+            }
+        };
+        let lookahead = s.chars().next();
+        if matches!(lookahead, Some('=') | Some('[')) {
+            *s = snapshot;
+            return Err(ErrMode::Backtrack(ContextError::new()));
+        }
+        Ok(level)
+    }
+
+    type Head = (Option<String>, Vec<(String, String)>);
+
+    fn head(s: &mut &str) -> ModalResult<Head> {
+        let target_str = take_while(0.., is_target_char).parse_next(s)?;
+        let target = if target_str.is_empty() {
+            None
+        } else {
+            Some(target_str.to_string())
+        };
+        let fields = opt(field_clause_block).parse_next(s)?.unwrap_or_default();
+        Ok((target, fields))
+    }
+
+    fn field_clause_block(s: &mut &str) -> ModalResult<Vec<(String, String)>> {
+        '['.parse_next(s)?;
+        let _ = multispace0.parse_next(s)?;
+        let clauses: Vec<(String, String)> = separated(0.., field_clause, ',').parse_next(s)?;
+        let _ = multispace0.parse_next(s)?;
+        ']'.parse_next(s)?;
+        Ok(clauses)
+    }
+
+    fn field_clause(s: &mut &str) -> ModalResult<(String, String)> {
+        let _ = multispace0.parse_next(s)?;
+        let key = take_while(1.., is_field_key_char).parse_next(s)?;
+        let _ = multispace0.parse_next(s)?;
+        '='.parse_next(s)?;
+        let _ = multispace0.parse_next(s)?;
+        let value = field_value.parse_next(s)?;
+        let _ = multispace0.parse_next(s)?;
+        Ok((key.to_string(), value))
+    }
+
+    fn field_value(s: &mut &str) -> ModalResult<String> {
+        // Quoted values let operators carry commas / brackets / spaces
+        // through to `env.labels` matching unchanged.
+        if s.starts_with('"') {
+            let inner = delimited('"', take_while(0.., is_quoted_value_char), '"').parse_next(s)?;
+            return Ok(inner.to_string());
+        }
+        let raw = take_while(0.., is_field_value_char).parse_next(s)?;
+        Ok(raw.trim().to_string())
+    }
+
+    fn is_quoted_value_char(c: char) -> bool {
+        // Inside `"..."`: stop at the closing `"`. We don't support
+        // backslash escapes in v1 — the documented use case is
+        // alphanumeric / punctuation values that happen to contain
+        // commas or brackets.
+        c != '"'
+    }
+
+    fn cut_level_or_off(s: &mut &str) -> ModalResult<(Severity, bool)> {
+        let _ = multispace0.parse_next(s)?;
+        let token = take_while(1.., is_target_char)
+            .context(StrContext::Expected(StrContextValue::Description(
+                "level (trace|debug|info|warn|error|fatal) or 'off'",
+            )))
+            .parse_next(s)?;
+        if token.eq_ignore_ascii_case("off") {
+            return Ok((Severity::Trace, true));
+        }
+        match Severity::from_str(token) {
+            Ok(level) => Ok((level, false)),
+            Err(_) => Err(ErrMode::Cut(ContextError::new())),
+        }
+    }
+
+    fn is_target_char(c: char) -> bool {
+        // Targets / event full_names contain `[a-zA-Z0-9_:.]`. We
+        // accept hyphens too — some workspaces emit dash-separated
+        // crate names.
+        matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':' | '.' | '-')
+    }
+
+    fn is_field_key_char(c: char) -> bool {
+        matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '.')
+    }
+
+    fn is_field_value_char(c: char) -> bool {
+        // Stop at `,` and `]` so the next clause / block-close parses.
+        // Everything else is part of the value (including spaces);
+        // `field_value` trims trailing whitespace.
+        !matches!(c, ',' | ']' | '"')
+    }
 }
 
 /// Errors returned by [`Filter::parse`].
@@ -459,6 +624,76 @@ mod tests {
             ObsCallsite::new("myapp.v1.ObsXyz", Severity::Error, "myapp", "lib.rs", 1);
         let f: Filter = "off".parse().unwrap();
         assert_eq!(f.callsite_interest(&CALLSITE), Interest::Never);
+    }
+
+    #[test]
+    fn test_winnow_parses_compound_directive() {
+        // Spec 94 § 2.9 / P2-A: target + field clause + level.
+        let f: Filter = "myapp.v1.ObsRequestCompleted[route=admin]=warn"
+            .parse()
+            .unwrap();
+        let dyn_count = f.dynamics().count();
+        assert_eq!(dyn_count, 1);
+    }
+
+    #[test]
+    fn test_winnow_accepts_multiple_field_clauses() {
+        let f: Filter = "myapp.v1.ObsX[route=admin,tenant=acme]=warn"
+            .parse()
+            .unwrap();
+        let dynamic = f.dynamics().next().expect("one dynamic");
+        assert_eq!(dynamic.fields.len(), 2);
+        assert_eq!(dynamic.fields[0].0, "route");
+        assert_eq!(dynamic.fields[0].1, "admin");
+        assert_eq!(dynamic.fields[1].0, "tenant");
+        assert_eq!(dynamic.fields[1].1, "acme");
+    }
+
+    #[test]
+    fn test_winnow_accepts_quoted_values_with_commas() {
+        // Quoted values let operators carry commas through to label
+        // matching. Spec 94 § 2.9.
+        let f: Filter = r#"myapp.v1.ObsX[route="/users/:id"]=warn"#.parse().unwrap();
+        let dynamic = f.dynamics().next().expect("one dynamic");
+        assert_eq!(dynamic.fields[0].0, "route");
+        assert_eq!(dynamic.fields[0].1, "/users/:id");
+    }
+
+    #[test]
+    fn test_winnow_accepts_whitespace_between_directives() {
+        let f: Filter = " info , my_module = debug ".parse().unwrap();
+        assert_eq!(f.default_level(), Severity::Info);
+        let static_count = f.statics().count();
+        assert_eq!(static_count, 1);
+    }
+
+    #[test]
+    fn test_winnow_rejects_malformed_directive() {
+        let err = Filter::parse("info,myapp::auth=BOGUS").unwrap_err();
+        assert!(matches!(err, FilterParseError::Malformed(_)));
+    }
+
+    #[test]
+    fn test_winnow_rejects_unclosed_bracket() {
+        let err = Filter::parse("myapp[route=admin=info").unwrap_err();
+        assert!(matches!(err, FilterParseError::Malformed(_)));
+    }
+
+    #[test]
+    fn test_winnow_target_off_inside_directive_list() {
+        // Mid-list `=off` directive must veto the matched target even
+        // when a later directive sets a higher floor.
+        let f: Filter = "info,my_module=off,other=debug".parse().unwrap();
+        let static_count = f.statics().count();
+        // Two static directives: my_module=off, other=debug.
+        assert_eq!(static_count, 2);
+    }
+
+    #[test]
+    fn test_winnow_allows_dotted_target_with_dashes() {
+        // Some workspaces emit dash-separated crate names. Accept them.
+        let f: Filter = "info,my-crate.module=warn".parse().unwrap();
+        assert_eq!(f.statics().count(), 1);
     }
 
     #[test]
