@@ -63,15 +63,22 @@ request:
 request with `route`, `method`, `status_class`, and `latency_ms`
 labels — these are SDK built-ins, not user-defined.
 
-## Known limitation
+## What this demonstrates
 
-Handler-emitted `ObsCheckoutAttempted` / `ObsCheckoutCompleted`
-envelopes do **not** carry the request's `trace_id` / `span_id` yet
-because `obs-tower` does not open an `obs::scope!` around the
-request future (spec 93 P1-10). The `obs-tower`-emitted
-`ObsHttpRequestCompleted` envelope does carry the correct
-`trace_id` (parsed from inbound `traceparent` when present, else
-synthesised). When P1-10 lands, handler emits will inherit the
-scope and the correlation hole closes automatically — no example
-change required.
+Mapping back to the patterns in `60-developer-experience.md`:
 
+- **§ 4.3.A — request handler**: every handler is wrapped by
+  `ObsHttpLayer::server()`; `obs::scope!` plumbs `trace_id`/`span_id`
+  onto handler emits automatically (spec 95 P0-A).
+- **§ 4.3.E — conditional severity escalation**: 4xx responses emit
+  `ObsCheckoutCompleted` at `WARN` so tail-on-error sampling fires.
+- **§ 4.3.B — outbound HTTP propagation**: the optional OTLP exporter
+  inherits the active scope's `trace_id` (spec 95 P1-AC + P1-AF).
+
+## Out of scope
+
+Patterns deliberately omitted; see siblings under `examples/`:
+
+- `#[obs::instrument]` on async fns → `examples/tracing-migration/`
+- Multi-tenant per-task observer → `examples/multi-tenant/`
+- `obs::forensic!` + `SpanTrace` → `examples/forensic-and-spantrace/`

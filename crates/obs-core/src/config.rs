@@ -288,6 +288,17 @@ pub struct LimitsConfig {
     /// Per-label-value byte cap. Default 1 KiB.
     #[serde(default = "default_1kib_u16")]
     pub max_label_value_bytes: u16,
+    /// Per-string cap for values originating outside the trust
+    /// boundary (HTTP route / method / `User-Agent`, bridge field
+    /// values). Default 256 bytes per CLAUDE.md `## Input Validation`.
+    /// Spec 95 § 3.10 / P2-AH.
+    ///
+    /// Values that exceed this length are truncated with a
+    /// `…<truncated:N>` suffix and the runtime emits one
+    /// `ObsLabelOversized` self-event per `(field, route)` (deduped).
+    /// Aggregate `max_payload_bytes` still applies as a backstop.
+    #[serde(default = "default_256_u16")]
+    pub max_external_string_bytes: u16,
 }
 
 impl Default for LimitsConfig {
@@ -295,8 +306,13 @@ impl Default for LimitsConfig {
         Self {
             max_payload_bytes: default_256kib_u32(),
             max_label_value_bytes: default_1kib_u16(),
+            max_external_string_bytes: default_256_u16(),
         }
     }
+}
+
+const fn default_256_u16() -> u16 {
+    256
 }
 
 /// AUDIT-tier delivery policy. Phase-1 ships only the type shape so

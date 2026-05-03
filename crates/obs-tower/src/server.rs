@@ -179,8 +179,15 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let started = Instant::now();
-        let route = (self.layer.route_extractor)(&req);
-        let method = req.method().as_str().to_string();
+        // Spec 95 § 3.10 / P2-AH: cap externally-supplied strings
+        // (route + method) at `max_external_string_bytes` (default 256
+        // per CLAUDE.md) so a hostile caller cannot blow up
+        // `env.labels` and downstream consumers. The aggregate
+        // `max_payload_bytes` still applies as a backstop.
+        let cap: u16 = 256;
+        let route = obs_core::cap_external_string("route", (self.layer.route_extractor)(&req), cap);
+        let method =
+            obs_core::cap_external_string("method", req.method().as_str().to_string(), cap);
         let propagator = Arc::clone(&self.layer.propagator);
         let status_classifier = Arc::clone(&self.layer.status_classifier);
         let emit_started = self.layer.emit_started;

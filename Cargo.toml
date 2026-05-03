@@ -1,5 +1,10 @@
 [workspace]
 members = ["crates/*", "apps/*", "examples/*"]
+# `cargo-fuzz` harnesses live under `crates/<crate>/fuzz/` and require
+# a nightly toolchain (`-Z sanitizer=address`). Excluding them from
+# the workspace keeps `cargo build/test` on stable working. Spec 95 §
+# 3.9 / P2-AG.
+exclude = ["crates/obs-core/fuzz"]
 resolver = "3"
 
 [workspace.package]

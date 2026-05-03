@@ -46,12 +46,24 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
   Phase-1 placeholder); the typed measurement fields will replace
   this once spec 93 P1-6 lands.
 
-## Known limitations (spec 93 follow-ups)
+## What this demonstrates
 
-- **P1-6**: codegen does not yet emit a typed `project_metrics` impl;
-  the metric sink falls back to a `<full_name>.count = 1` counter per
-  envelope. The latency_ms / queue_depth fields are *captured* in the
-  payload, just not yet projected as OTLP data points.
-- **P1-5**: full OTel Resource attribute set (`service.namespace`,
-  `service.instance.id`, `deployment.environment`, `host.*`) is not
-  yet populated.
+Mapping back to the patterns in `60-developer-experience.md`:
+
+- **§ 4.3.H — metrics-focused emit**: every MEASUREMENT field rides
+  through `project_metrics` and lands as an OTLP `Histogram` /
+  `Counter` (spec 93 P1-6, landed).
+- **§ 4.3.B — outbound OTLP propagation**: traces / metrics / logs
+  exporters carry `traceparent` matching the active scope (spec 95
+  P1-AF, landed).
+- **Resource attrs** (spec 94 P1-E, spec 95 P1-AE): semconv keys
+  (`service.namespace`, `service.instance.id`,
+  `deployment.environment`, `host.*`) populate from
+  `OTEL_RESOURCE_ATTRIBUTES` and ride into both OTLP and analytics
+  sinks.
+
+## Out of scope
+
+- Inbound HTTP middleware → `examples/http-service/`
+- Per-task observer / multi-tenant routing → `examples/multi-tenant/`
+- Forensic + SpanTrace pattern → `examples/forensic-and-spantrace/`

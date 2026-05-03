@@ -1,0 +1,16 @@
+# obs.yaml — example config for the forensic-and-spantrace quickstart.
+
+filter: "info"
+
+sampling:
+  default_rate: 1.0
+
+# Forensic budget — `obs::forensic!` callsites are capped here. Spec 11
+# § 6.3.
+forensic:
+  budget_per_min: 10
+
+resource_attrs:
+  service_name: "obs-example-forensic-and-spantrace"
+  service_namespace: "examples"
+  deployment_environment: "dev"

@@ -1,0 +1,24 @@
+# obs.yaml — example config for the worker-pool metrics quickstart.
+# Spec 60 § 2 + spec 95 D8-5.
+
+filter: "info"
+
+sampling:
+  default_rate: 1.0
+
+limits:
+  max_payload_bytes: 65536
+  max_label_value_bytes: 256
+  max_external_string_bytes: 256
+
+# OTLP endpoint placeholder — set `OTEL_EXPORTER_OTLP_ENDPOINT` to
+# override at runtime. When unset the example falls back to the stdout
+# debug exporter so output is always visible.
+#   otlp:
+#     endpoint: "http://127.0.0.1:4317"
+#     protocol: grpc
+
+resource_attrs:
+  service_name: "obs-example-worker-pool"
+  service_namespace: "examples"
+  deployment_environment: "dev"

@@ -60,3 +60,21 @@ In the stdout output:
 - Both the LOG `ObsBatchProcessed` and the METRIC `ObsBatchMeasured`
   envelopes land in the same Parquet table — the analytics consumer
   can `WHERE tier = 'metric'` to extract just the measurements.
+
+## What this demonstrates
+
+Mapping back to the patterns in `60-developer-experience.md`:
+
+- **§ 4.3.G — analytics sink**: `ParquetSink` writes the unified
+  `obs_events` table sparse-NULL'd per `payload_<full_name>` Struct
+  column (spec 22 § 1.1).
+- **§ 4.3.E — conditional severity**: 1-in-7 batch escalates to WARN.
+- **Resource columns** (spec 95 § 3.3 / P1-AE): rows carry
+  `service_namespace` / `environment` / `host_name` / `host_arch`
+  populated from the observer's `ResourceAttrs`.
+
+## Out of scope
+
+- Realtime trace export → `examples/http-service/`
+- Multi-tenant per-task observer → `examples/multi-tenant/`
+- `obs::forensic!` budget + SpanTrace → `examples/forensic-and-spantrace/`

@@ -1,0 +1,24 @@
+[package]
+name = "obs-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# `cargo-fuzz` requires a nightly toolchain; this crate is excluded
+# from the workspace (`Cargo.toml` `[workspace] exclude`) so stable
+# builds skip it. Spec 95 § 3.9 / P2-AG.
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+obs-core = { path = ".." }
+obs-types = { path = "../../obs-types" }
+bytes = "1"
+
+[[bin]]
+name = "scrub_payload"
+path = "fuzz_targets/scrub_payload.rs"
+test = false
+doc = false
+bench = false

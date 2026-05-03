@@ -56,6 +56,7 @@ pub mod self_events_public {
     pub use crate::self_events::{
         emit_callsite_hash_collision_pub as emit_callsite_hash_collision,
         emit_label_cardinality_high_pub as emit_label_cardinality_high,
+        emit_oversized_label_dropped_pub as emit_label_oversized,
         emit_span_pair_orphaned_pub as emit_span_pair_orphaned,
     };
 }
@@ -69,6 +70,33 @@ pub mod wire;
 #[cfg(feature = "test")]
 pub mod __macro_deps {
     pub use serde_json;
+}
+
+/// Cap an external string at `max_bytes` (UTF-8-safe boundary), append
+/// the `…<truncated:N>` suffix when the input was clipped, and emit
+/// one `ObsLabelOversized` self-event for telemetry. Returns the
+/// (possibly truncated) string. Spec 95 § 3.10 / P2-AH.
+///
+/// Boundary callers (HTTP middleware, bridge field visitor) should
+/// run this on every untrusted string before it lands in
+/// `env.labels` or the typed payload.
+#[must_use]
+pub fn cap_external_string(field: &'static str, raw: String, max_bytes: u16) -> String {
+    let max = max_bytes as usize;
+    if raw.len() <= max {
+        return raw;
+    }
+    let original_size = raw.len() as u64;
+    // Find the largest UTF-8-safe truncation point ≤ max.
+    let mut end = max;
+    while end > 0 && !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + 24);
+    out.push_str(&raw[..end]);
+    out.push_str(&format!("…<truncated:{}>", original_size));
+    self_events::emit_oversized_label_dropped_pub(field, original_size, out.len() as u64);
+    out
 }
 
 pub use aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame};

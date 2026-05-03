@@ -86,4 +86,18 @@ bench-baseline:
 bench-gate:
 	@bash scripts/bench-gate.sh
 
-.PHONY: build test release update-submodule lint-strict audit deny soak soak-24h soak-ceiling check-format-ver bench bench-baseline bench-gate
+# ─── Fuzz harness (spec 95 § 3.9 / P2-AG) ─────────────────────────────
+
+# Run the obs-core scrubber fuzz target for 10 seconds. Local-only —
+# requires a nightly toolchain with the cargo-fuzz subcommand
+# installed (`cargo install cargo-fuzz`). The fuzz crate is excluded
+# from the workspace so stable builds skip it entirely.
+fuzz-quick:
+	@cd crates/obs-core/fuzz && cargo +nightly fuzz run scrub_payload -- -max_total_time=10
+
+# Longer overnight run. Wired into a future `nightly-fuzz` workflow
+# when we land one. Spec 95 § 3.9.
+fuzz-nightly:
+	@cd crates/obs-core/fuzz && cargo +nightly fuzz run scrub_payload -- -max_total_time=3600
+
+.PHONY: build test release update-submodule lint-strict audit deny soak soak-24h soak-ceiling check-format-ver bench bench-baseline bench-gate fuzz-quick fuzz-nightly

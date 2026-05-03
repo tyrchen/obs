@@ -177,6 +177,20 @@ pub(crate) fn emit_oversized_label_dropped(full_name: &str, label_name: &str, si
     emit_self(env);
 }
 
+/// Public form of [`emit_oversized_label_dropped`] used by middleware
+/// (`obs-tower`) and the bridge (`obs-tracing-bridge`) to report
+/// per-string truncation under `max_external_string_bytes`. Spec 95 §
+/// 3.10 / P2-AH.
+pub fn emit_oversized_label_dropped_pub(field: &str, original_size: u64, capped_size: u64) {
+    let mut env = base_envelope("obs.runtime.v1.ObsLabelOversized", PSeverity::SEVERITY_WARN);
+    env.labels.insert("field".to_string(), field.to_string());
+    env.labels
+        .insert("original_size".to_string(), original_size.to_string());
+    env.labels
+        .insert("capped_size".to_string(), capped_size.to_string());
+    emit_self(env);
+}
+
 fn base_envelope(full_name: &str, sev: PSeverity) -> ObsEnvelope {
     ObsEnvelope {
         full_name: full_name.to_string(),

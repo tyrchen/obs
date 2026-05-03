@@ -1,0 +1,32 @@
+# obs.yaml — example config for the http-service quickstart.
+# Spec 60 § 2 + spec 95 D8-5: every example ships its config so users
+# have a reference shape to copy. Loaded by `obs::EventsConfig::from_file`
+# (or via the `OBS_CONFIG` env var, when set).
+
+# Filter directive — same grammar as RUST_LOG. Spec 13 § 7.
+filter: "info,obs_example_http_service::checkout=debug"
+
+# Sampling rates. Spec 13 § 6.
+sampling:
+  default_rate: 1.0
+  per_event:
+    "obs_example_http_service.v1.ObsCheckoutAttempted": 1.0
+    "obs_example_http_service.v1.ObsCheckoutCompleted": 1.0
+
+# Bytes caps (spec 11 § 6.2 / spec 95 § 3.10).
+limits:
+  max_payload_bytes: 262144
+  max_label_value_bytes: 1024
+  max_external_string_bytes: 256
+
+# OTLP endpoint placeholder. The example reads `OTEL_EXPORTER_OTLP_ENDPOINT`
+# from the environment so this stays as a documentation hint:
+#   otlp:
+#     endpoint: "http://127.0.0.1:4317"
+#     protocol: grpc
+
+# ResourceAttrs — overlaid on top of OTEL_RESOURCE_ATTRIBUTES env.
+resource_attrs:
+  service_name: "obs-example-http-service"
+  service_namespace: "examples"
+  deployment_environment: "dev"

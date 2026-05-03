@@ -470,7 +470,12 @@ impl FieldVisitor {
 
 impl Visit for FieldVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.pairs.push((field.name(), value.to_string()));
+        // Spec 95 § 3.10 / P2-AH: cap externally-supplied string
+        // values at the bridge boundary so a 10 MiB `User-Agent` can't
+        // ride into the typed payload. The aggregate
+        // `max_payload_bytes` limit still applies as a backstop.
+        let capped = obs_core::cap_external_string(field.name(), value.to_string(), 256);
+        self.pairs.push((field.name(), capped));
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
         self.pairs.push((field.name(), value.to_string()));
@@ -485,7 +490,9 @@ impl Visit for FieldVisitor {
         self.pairs.push((field.name(), value.to_string()));
     }
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.pairs.push((field.name(), format!("{value:?}")));
+        let raw = format!("{value:?}");
+        let capped = obs_core::cap_external_string(field.name(), raw, 256);
+        self.pairs.push((field.name(), capped));
     }
 }
 
