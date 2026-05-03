@@ -14,6 +14,7 @@ homepage.workspace = true
 
 [dependencies]
 buffa = { workspace = true }
+bytes = { workspace = true }
 http = { workspace = true }
 obs-core = { workspace = true }
 obs-proto = { workspace = true }

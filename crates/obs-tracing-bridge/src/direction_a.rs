@@ -3,18 +3,22 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeMap,
     fmt,
     sync::Arc,
     time::Instant,
 };
 
+use bytes::BytesMut;
 use dashmap::DashMap;
 use obs_core::{
     FieldCapture, ObsCallsiteRegistry, ScopeFrameBuilder, SpanCtx, SpanFrame, fresh_span_id,
     fresh_trace_id,
     scope::{pop_frame_pub, push_frame_pub},
 };
-use obs_proto::obs::v1::ObsEnvelope;
+use obs_proto::obs::v1::{
+    ObsEnvelope, ObsSpanCompleted, ObsSpanEntered, ObsTracingForensicEvent, ObsTracingInternedEvent,
+};
 use obs_types::Severity;
 use tracing::{Subscriber, field::Visit};
 use tracing_core::{Event, Field, Level, callsite::Identifier};
@@ -229,7 +233,7 @@ impl TracingToObsLayer {
     /// Build the envelope for one tracing event. Walks the active span
     /// scope to populate `span_path`, sources `trace_id`/`span_id` from
     /// the innermost bridged span (so sibling `obs::emit!` calls
-    /// correlate). Spec 93 P0-3 + P1-3.
+    /// correlate). Spec 93 P0-3 + P1-3 / spec 94 P1-B.
     fn record_to_envelope<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> ObsEnvelope
     where
         S: Subscriber + for<'a> LookupSpan<'a>,
@@ -240,7 +244,7 @@ impl TracingToObsLayer {
         //   * span_path: dotted path of span names ("outer.inner")
         //   * (trace_id, span_id, parent_span_id) from the innermost bridged span's stored
         //     `BridgedSpanCtx`
-        let (mut span_path, trace_id, span_id, parent_span_id) = collect_span_context(ctx, event);
+        let (span_path, trace_id, span_id, parent_span_id) = collect_span_context(ctx, event);
 
         FIELD_VISITOR_BUF.with(|cell| {
             let mut visitor = cell.borrow_mut();
@@ -259,7 +263,24 @@ impl TracingToObsLayer {
                 return env;
             }
 
-            // Default forensic mapping (spec 30 § 2.3 typed proto).
+            // Default forensic mapping (spec 30 § 2.3 / spec 94 P1-B):
+            // build a typed `ObsTracingForensicEvent`, encode it via
+            // buffa, and put the bytes in `env.payload`. Promoted
+            // high-cardinality fields land *additionally* in
+            // `env.labels` per D7-4. Use BTreeMap so the typed payload
+            // is byte-deterministic across runs (spec 94 § 3.4).
+            let target = metadata.target().to_string();
+            let mut typed = ObsTracingForensicEvent {
+                target: target.clone(),
+                message: String::new(),
+                span_path: span_path.clone(),
+                attrs: ::buffa::__private::HashMap::default(),
+                __buffa_unknown_fields: Default::default(),
+            };
+            // Sort attrs for deterministic encoding before inserting
+            // into the typed map.
+            let mut attrs_sorted: BTreeMap<String, String> = BTreeMap::new();
+
             let mut env = ObsEnvelope {
                 full_name: "obs.v1.ObsTracingForensicEvent".to_string(),
                 tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
@@ -270,17 +291,14 @@ impl TracingToObsLayer {
                 ),
                 ..Default::default()
             };
-            env.labels
-                .insert("target".to_string(), metadata.target().to_string());
+            env.labels.insert("target".to_string(), target.clone());
             if let Some(module) = metadata.module_path() {
                 env.labels.insert("module".to_string(), module.to_string());
             }
             if !span_path.is_empty() {
-                // Take ownership; we don't need it after this point.
                 env.labels
-                    .insert("span_path".to_string(), std::mem::take(&mut span_path));
+                    .insert("span_path".to_string(), span_path.clone());
             }
-            let target = metadata.target().to_string();
             for (name, raw_value) in &visitor.pairs {
                 let mut value = raw_value.clone();
                 match self.redactor.redact(&target, name, &mut value) {
@@ -288,26 +306,31 @@ impl TracingToObsLayer {
                     RedactAction::Keep | RedactAction::Replaced => {}
                 }
                 if *name == "message" {
-                    env.payload = value.into_bytes();
+                    typed.message = value;
                     continue;
                 }
+                // Promoted fields appear in `env.labels` *and* the
+                // typed `attrs` map (D7-4: typed payload is mandatory;
+                // labels are an opt-in promotion).
                 if self.promotions.admit(name, &value).is_some() {
-                    env.labels.insert((*name).to_string(), value);
-                } else {
-                    // Avoid per-attr `format!("attr.{name}")` on the hot
-                    // path by preallocating once. Spec 93 P2-2.
-                    let mut key = String::with_capacity(name.len() + 5);
-                    key.push_str("attr.");
-                    key.push_str(name);
-                    env.labels.insert(key, value);
+                    env.labels.insert((*name).to_string(), value.clone());
                 }
+                attrs_sorted.insert((*name).to_string(), value);
             }
+            // Insert the deterministically-ordered attrs into the
+            // typed map. The buffa encoder iterates HashMap<String,
+            // String> in the iterator's insertion-time order. We
+            // accept the per-event allocation in exchange for a stable
+            // wire shape across runs (spec 94 § 3.4).
+            for (k, v) in attrs_sorted {
+                typed.attrs.insert(k, v);
+            }
+            // Encode typed payload via buffa.
+            encode_into(&typed, &mut env.payload);
 
             // Interning: if non-Off, intern the callsite, switch
             // full_name + adjust the wire shape (spec 31 § 4 / spec 93
-            // P2-11). Hybrid keeps target/module + rendered message in
-            // the typed envelope; Compact drops them in favour of the
-            // length-prefixed field map.
+            // P2-11 / spec 94 P2-B).
             if !matches!(self.interning, InterningMode::Off) {
                 if let Some(observer) = obs_core::observer().callsites() {
                     let level_native = level_to_severity(*metadata.level());
@@ -326,18 +349,42 @@ impl TracingToObsLayer {
                     env.callsite_id = id;
                     match self.interning {
                         InterningMode::Hybrid => {
-                            // Keep typed message + labels but flip
-                            // full_name to the interned schema.
+                            // Hybrid: keep typed forensic payload (with
+                            // typed message + attrs map) but flip
+                            // full_name to the interned forensic schema.
                             env.full_name = "obs.v1.ObsForensicInternedEvent".to_string();
                         }
                         InterningMode::Compact => {
+                            // Compact: emit `ObsTracingInternedEvent`
+                            // with the args map encoded via buffa
+                            // (spec 31 § 4 + spec 94 P2-B). Drop the
+                            // static target/module label set; the
+                            // typed payload carries `callsite_id` +
+                            // sorted args map.
                             env.full_name = "obs.v1.ObsTracingInternedEvent".to_string();
-                            // Compact: drop static target/module +
-                            // payload (rendered message); the
-                            // length-prefixed args travel as labels.
                             env.labels.remove("target");
                             env.labels.remove("module");
+                            env.labels.remove("span_path");
+                            let mut interned = ObsTracingInternedEvent {
+                                callsite_id: id,
+                                values: ::buffa::__private::HashMap::default(),
+                                __buffa_unknown_fields: Default::default(),
+                            };
+                            // Re-derive the deterministically ordered
+                            // args from the typed forensic payload's
+                            // fields map. Spec 94 § 3.3 requires
+                            // callsite_id to live in the typed payload
+                            // so consumers without the envelope can
+                            // still resolve.
+                            let mut sorted: BTreeMap<String, String> = BTreeMap::new();
+                            for (k, v) in typed.attrs.iter() {
+                                sorted.insert(k.clone(), v.clone());
+                            }
+                            for (k, v) in sorted {
+                                interned.values.insert(k, v);
+                            }
                             env.payload.clear();
+                            encode_into(&interned, &mut env.payload);
                         }
                         InterningMode::Off => {}
                     }
@@ -459,6 +506,19 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
+/// Encode a buffa message into a `Vec<u8>` payload. Allocates a
+/// per-call `BytesMut` (the bridge hot path is already an allocation
+/// per event because of the typed payload map; one extra BytesMut here
+/// adds one heap free, dominated by the Vec resize cost). Spec 94 P1-B.
+fn encode_into<M: ::buffa::Message>(msg: &M, out: &mut Vec<u8>) {
+    let mut cache = ::buffa::SizeCache::default();
+    let size = msg.compute_size(&mut cache);
+    let mut buf = BytesMut::with_capacity(size as usize);
+    msg.write_to(&mut cache, &mut buf);
+    out.clear();
+    out.extend_from_slice(&buf);
+}
+
 /// Tiny helper used by the integration tests — checks if pre-warm has
 /// run by counting registered entries.
 #[doc(hidden)]
@@ -546,16 +606,30 @@ where
         if self.span_event_mode != SpanEventMode::Both {
             return;
         }
+        // Spec 94 P1-B: encode the typed `ObsSpanEntered` payload
+        // via buffa rather than overloading `env.labels`.
         let mut env = ObsEnvelope {
             full_name: "obs.v1.ObsSpanEntered".to_string(),
             tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
             sev: ::buffa::EnumValue::Known(obs_proto::obs::v1::Severity::SEVERITY_TRACE),
             ts_ns: now_ns(),
+            trace_id: trace_id.clone(),
+            span_id: span_id.clone(),
+            parent_span_id: parent_span_id.clone(),
+            ..Default::default()
+        };
+        let typed = ObsSpanEntered {
+            name: metadata.name().to_string(),
+            target: metadata.target().to_string(),
             trace_id,
             span_id,
             parent_span_id,
-            ..Default::default()
+            __buffa_unknown_fields: Default::default(),
         };
+        encode_into(&typed, &mut env.payload);
+        // Mirror low-cardinality fields onto `env.labels` for filter
+        // operators that key on `name`/`target` (D7-4: typed payload
+        // is mandatory; labels are an opt-in promotion).
         env.labels
             .insert("name".to_string(), metadata.name().to_string());
         env.labels
@@ -607,23 +681,38 @@ where
             Some(b) => (b.opened_at, b.trace_id, b.span_id, b.parent_span_id),
             None => (Instant::now(), String::new(), String::new(), String::new()),
         };
+        let latency_ns = opened_at.elapsed().as_nanos() as u64;
+        // Spec 94 P1-B + § 3.8: encode `ObsSpanCompleted` with the
+        // typed `latency_ns` MEASUREMENT field (not as a string label),
+        // typed correlation fields, and the typed `fields` map.
         let mut env = ObsEnvelope {
             full_name: "obs.v1.ObsSpanCompleted".to_string(),
             tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
             sev: ::buffa::EnumValue::Known(obs_proto::obs::v1::Severity::SEVERITY_DEBUG),
             ts_ns: now_ns(),
+            trace_id: trace_id.clone(),
+            span_id: span_id.clone(),
+            parent_span_id: parent_span_id.clone(),
+            ..Default::default()
+        };
+        let typed = ObsSpanCompleted {
+            name: metadata.name().to_string(),
+            target: metadata.target().to_string(),
+            latency_ns,
             trace_id,
             span_id,
             parent_span_id,
-            ..Default::default()
+            fields: ::buffa::__private::HashMap::default(),
+            __buffa_unknown_fields: Default::default(),
         };
+        encode_into(&typed, &mut env.payload);
+        // Low-cardinality `name`/`target` mirrored onto labels for
+        // operators (D7-4); `latency_ns` lives only in the typed
+        // payload now (proto declares it as MEASUREMENT).
         env.labels
             .insert("name".to_string(), metadata.name().to_string());
         env.labels
             .insert("target".to_string(), metadata.target().to_string());
-        let latency_ns = opened_at.elapsed().as_nanos() as u64;
-        env.labels
-            .insert("latency_ns".to_string(), latency_ns.to_string());
         let was_in = IN_TRACING_BRIDGE.with(|c| c.replace(true));
         if !was_in {
             obs_core::observer().emit_envelope(env);

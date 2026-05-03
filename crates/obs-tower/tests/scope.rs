@@ -117,4 +117,21 @@ async fn handler_emit_inherits_trace_context_from_request_scope() {
         native.trace_id, completed.trace_id,
         "handler trace_id must match request trace_id"
     );
+
+    // Spec 94 § 3.7 / P1-G: MEASUREMENT fields (`latency_ms`,
+    // `bytes_out`) must live in the typed buffa payload, not as
+    // string labels. Decoding the payload should yield the typed
+    // `ObsHttpRequestCompleted` shape.
+    use buffa::Message as _;
+    use obs_proto::obs::v1::ObsHttpRequestCompleted;
+    let typed = ObsHttpRequestCompleted::decode_from_slice(&completed.payload)
+        .expect("decode completed payload");
+    assert_eq!(typed.method, "GET");
+    assert_eq!(typed.route, "/test");
+    // Server returned 2xx
+    assert_eq!(typed.status_class, "2xx");
+    assert!(
+        !completed.labels.contains_key("latency_ms"),
+        "MEASUREMENT field must not leak into labels (D7-4)"
+    );
 }

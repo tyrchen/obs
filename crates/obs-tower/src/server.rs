@@ -8,9 +8,10 @@ use std::{
     time::Instant,
 };
 
+use bytes::BytesMut;
 use http::Request;
 use obs_core::{Observer, ScopeFrame, ScopeFrameBuilder, with_observer_task_sync};
-use obs_proto::obs::v1::ObsEnvelope;
+use obs_proto::obs::v1::{ObsEnvelope, ObsHttpRequestCompleted, ObsHttpRequestStarted};
 use pin_project_lite::pin_project;
 use tower::Service;
 
@@ -356,6 +357,16 @@ impl Drop for RequestScopeGuard {
     }
 }
 
+/// Encode a buffa message into a `Vec<u8>` payload. Spec 94 P1-B / P1-G.
+fn encode_into<M: ::buffa::Message>(msg: &M, out: &mut Vec<u8>) {
+    let mut cache = ::buffa::SizeCache::default();
+    let size = msg.compute_size(&mut cache);
+    let mut buf = BytesMut::with_capacity(size as usize);
+    msg.write_to(&mut cache, &mut buf);
+    out.clear();
+    out.extend_from_slice(&buf);
+}
+
 fn emit_request_started(
     route: &str,
     method: &str,
@@ -363,6 +374,14 @@ fn emit_request_started(
     parent_span: &str,
     observer: Option<&Arc<dyn Observer>>,
 ) {
+    // Spec 94 P1-G: encode typed `ObsHttpRequestStarted` via buffa
+    // rather than overloading `env.labels`. Mirror `route`/`method`
+    // onto labels for downstream filter operators (D7-4).
+    let typed = ObsHttpRequestStarted {
+        method: method.to_string(),
+        route: route.to_string(),
+        __buffa_unknown_fields: Default::default(),
+    };
     let mut env = ObsEnvelope {
         full_name: "obs.v1.ObsHttpRequestStarted".to_string(),
         tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
@@ -371,6 +390,7 @@ fn emit_request_started(
         parent_span_id: parent_span.to_string(),
         ..Default::default()
     };
+    encode_into(&typed, &mut env.payload);
     env.labels.insert("route".to_string(), route.to_string());
     env.labels.insert("method".to_string(), method.to_string());
     if let Some(o) = observer {
@@ -391,6 +411,19 @@ fn emit_request_completed(
     parent_span: &str,
     observer: Option<&Arc<dyn Observer>>,
 ) {
+    // Spec 94 § 3.7 / P1-G: encode typed `ObsHttpRequestCompleted` so
+    // the MEASUREMENT fields (`latency_ms`, `bytes_out`) live in the
+    // typed payload — `project_metrics` can then dispatch them. The
+    // bytes_out counter is currently unknown at this layer (we'd need
+    // a wrapping body), so it ships as 0 until that plumbing lands.
+    let typed = ObsHttpRequestCompleted {
+        method: method.to_string(),
+        route: route.to_string(),
+        status_class: status_class.to_string(),
+        latency_ms,
+        bytes_out: 0,
+        __buffa_unknown_fields: Default::default(),
+    };
     let mut env = ObsEnvelope {
         full_name: "obs.v1.ObsHttpRequestCompleted".to_string(),
         tier: ::buffa::EnumValue::Known(obs_proto::obs::v1::Tier::TIER_LOG),
@@ -400,12 +433,13 @@ fn emit_request_completed(
         parent_span_id: parent_span.to_string(),
         ..Default::default()
     };
+    encode_into(&typed, &mut env.payload);
+    // Mirror low-cardinality labels for filter operators (D7-4).
+    // `latency_ms` and `bytes_out` live only in the typed payload now.
     env.labels.insert("route".to_string(), route.to_string());
     env.labels.insert("method".to_string(), method.to_string());
     env.labels
         .insert("status_class".to_string(), status_class.to_string());
-    env.labels
-        .insert("latency_ms".to_string(), latency_ms.to_string());
     if let Some(o) = observer {
         o.emit_envelope(env);
     } else {

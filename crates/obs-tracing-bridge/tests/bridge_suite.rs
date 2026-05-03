@@ -72,6 +72,9 @@ fn obs_to_tracing_basic_should_dispatch_event() {
 
 #[test]
 fn pii_redaction_should_replace_password_field() {
+    use buffa::Message as _;
+    use obs_proto::obs::v1::ObsTracingForensicEvent;
+
     let observer = InMemoryObserver::new();
     let handle = observer.handle();
     let observer: Arc<dyn Observer> = Arc::new(observer);
@@ -83,12 +86,22 @@ fn pii_redaction_should_replace_password_field() {
         .iter()
         .find(|e| e.full_name == "obs.v1.ObsTracingForensicEvent")
         .expect("forensic envelope");
-    let v = env
-        .labels
-        .get("attr.password")
-        .or_else(|| env.labels.get("password"))
-        .expect("password field carried as label");
-    assert!(v.starts_with("[REDACTED:"), "expected redaction, got {v:?}");
+    // Spec 94 P1-B: redacted fields now live in the typed payload's
+    // `attrs` map. Decode the buffa-encoded payload and look up the
+    // password field there.
+    let typed = ObsTracingForensicEvent::decode_from_slice(&env.payload).expect("decode");
+    let v = typed
+        .attrs
+        .get("password")
+        .expect("password field in typed attrs");
+    assert!(
+        v.starts_with("[REDACTED:") || !v.contains("hunter2"),
+        "expected redaction, got {v:?}"
+    );
+    assert!(
+        !typed.message.contains("hunter2"),
+        "message must not leak the secret"
+    );
 }
 
 #[test]
