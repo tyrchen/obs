@@ -16,18 +16,40 @@ homepage.workspace = true
 arc-swap = { workspace = true }
 buffa = { workspace = true }
 bytes = { workspace = true }
+http = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
 obs-core = { workspace = true }
 obs-proto = { workspace = true }
 obs-types = { workspace = true }
+opentelemetry-proto = { workspace = true, optional = true }
 parking_lot = { workspace = true }
+prost = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", optional = true, default-features = false, features = ["net"] }
+tonic = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 obs-core = { workspace = true, features = ["test"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+
+[features]
+default = ["grpc"]
+# OTLP/gRPC exporter via tonic + opentelemetry-proto (spec 93 P0-6).
+grpc = [
+  "dep:opentelemetry-proto",
+  "dep:prost",
+  "dep:tonic",
+  "dep:tokio-stream",
+]
 
 [lints]
 workspace = true

@@ -15,18 +15,31 @@
 mod backpressure;
 mod batch;
 mod env_config;
-mod logs;
+#[cfg(feature = "grpc")]
+mod grpc;
+pub mod logs;
 mod mapping;
-mod metrics;
+pub mod metrics;
 mod sink;
-mod traces;
+pub mod traces;
 
 pub use env_config::{OtlpEndpoint, OtlpProtocol, OtlpResourceAttrs, otlp_trio_from_env};
+#[cfg(feature = "grpc")]
+pub use grpc::GrpcOtlpExporter;
 pub use mapping::{LogRecord, MetricPoint, ResourceMessage, SpanRecord};
 pub use sink::{
     OtlpExporter, OtlpLogSink, OtlpLogSinkBuilder, OtlpMetricSink, OtlpMetricSinkBuilder,
     OtlpRetry, OtlpTraceSink, OtlpTraceSinkBuilder, StdoutDebugExporter,
 };
+
+/// Tests-only mock OTLP collector. Spec 72 § 6 / spec 93 P1-12.
+#[cfg(feature = "grpc")]
+pub mod test {
+    pub use crate::mock_collector::*;
+}
+
+#[cfg(feature = "grpc")]
+mod mock_collector;
 
 /// Errors returned by `OtlpExporter::export`.
 #[derive(Debug, thiserror::Error)]

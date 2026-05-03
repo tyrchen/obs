@@ -77,6 +77,35 @@ heck = "0.5"
 # buffa for proto encoding
 buffa = { version = "0.4", default-features = false, features = ["std"] }
 secrecy = { version = "0.10", features = ["serde"] }
+
+# OTLP transport (Phase 6.2 / spec 93 P0-6).
+opentelemetry-proto = { version = "0.31", default-features = false, features = [
+  "gen-tonic",
+  "trace",
+  "logs",
+  "metrics",
+] }
+opentelemetry = { version = "0.31", default-features = false, features = [
+  "trace",
+  "logs",
+  "metrics",
+] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = [
+  "trace",
+  "logs",
+  "metrics",
+] }
+prost = "0.14"
+tonic = { version = "0.14", default-features = false, features = [
+  "channel",
+  "transport",
+  "tls-aws-lc",
+  "tls-native-roots",
+  "tls-webpki-roots",
+  "router",
+  "server",
+] }
+tonic-prost = "0.14"
 buffa-build = "0.4"
 buffa-descriptor = "0.4"
 buffa-reflect = "0.1"
