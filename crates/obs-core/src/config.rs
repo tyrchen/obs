@@ -52,6 +52,14 @@ pub struct EventsConfig {
     /// Service identity (overrides defaults read from env).
     #[serde(default)]
     pub service: ServiceConfig,
+
+    /// Dev-mode toggle (`OBS_DEV=1` or `dev_mode: true`). Enables
+    /// extra diagnostics intended for local iteration: more verbose
+    /// scope-field warnings, source-loc capture, and the
+    /// `dev_ergonomics` test path. Spec 13 § 2.3 / 60 § 7 / spec 94 §
+    /// 3.10 / P3-A.
+    #[serde(default)]
+    pub dev_mode: bool,
 }
 
 impl EventsConfig {

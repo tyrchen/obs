@@ -377,6 +377,26 @@ impl StandardObserver {
             crate::self_events::emit_oversized_dropped(env.full_name.as_str(), payload_size);
             return false;
         }
+        // Step 3.1 (spec 11 § 6.2 / spec 94 § 3.5 / P2-E): enforce
+        // `limits.max_label_value_bytes`. A single oversize label value
+        // is treated as DoS-class input — User-Agent floods and
+        // attacker-controlled headers were the motivation. The
+        // envelope is dropped with `reason = "label"` and the offending
+        // label key is recorded in `size_bytes` so operators can grep
+        // by `(full_name, label_name, size)`.
+        let max_label_bytes = u64::from(cfg_pre.limits.max_label_value_bytes);
+        if max_label_bytes > 0 {
+            for (k, v) in &env.labels {
+                if v.len() as u64 > max_label_bytes {
+                    crate::self_events::emit_oversized_label_dropped(
+                        env.full_name.as_str(),
+                        k,
+                        v.len() as u64,
+                    );
+                    return false;
+                }
+            }
+        }
         // Step 3a: per-emit dynamic filter directive (`[field=value]=level`).
         // Spec 13 § 7.1 / spec 93 P0-5. Skipped only for sampler bypasses
         // — those decisions live in `sample_decide`, which honours
@@ -689,7 +709,19 @@ impl StandardObserverBuilder {
     /// Returns `BuildError` when config validation or filter parsing
     /// fails.
     pub fn build(self) -> Result<StandardObserver, BuildError> {
-        let cfg = self.config.unwrap_or_default();
+        let mut cfg = self.config.unwrap_or_default();
+        // Spec 13 § 2.3 / 60 § 7 / spec 94 § 3.10: `OBS_DEV=1` forces
+        // dev-mode on regardless of what `obs.yaml` says. Recognised
+        // values are `1` / `true` / `yes`.
+        if !cfg.dev_mode
+            && let Ok(v) = std::env::var("OBS_DEV")
+        {
+            let on = matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            );
+            cfg.dev_mode = on;
+        }
         cfg.validate().map_err(BuildError::InvalidConfig)?;
 
         let filter_spec = self
@@ -906,6 +938,33 @@ fn _ensure_noop_compiles() {
 mod tests {
     use super::*;
     use crate::resource::ResourceAttrs;
+
+    #[test]
+    fn test_oversized_label_value_drops_envelope() {
+        // Spec 94 § 3.5 / P2-E: a label value over
+        // `limits.max_label_value_bytes` causes the envelope to be
+        // dropped via `ObsOversizedDropped { reason = "label" }`.
+        use obs_proto::obs::v1::{
+            ObsEnvelope, SamplingReason as PSamplingReason, Severity as PSev, Tier as PTier,
+        };
+        let observer = StandardObserver::builder()
+            .service("test", "1.0.0")
+            .sink_fallback(Arc::new(NoopSink))
+            .spawn_workers(false)
+            .build()
+            .expect("build");
+        // The default cap is 1 KiB; emit a label whose value is 2 KiB.
+        let mut env = ObsEnvelope {
+            full_name: "test.v1.ObsBig".to_string(),
+            tier: ::buffa::EnumValue::Known(PTier::TIER_LOG),
+            sev: ::buffa::EnumValue::Known(PSev::SEVERITY_INFO),
+            sampling_reason: ::buffa::EnumValue::Known(PSamplingReason::SAMPLING_REASON_HEAD_RATE),
+            ..Default::default()
+        };
+        env.labels.insert("ua".to_string(), "x".repeat(2048));
+        let kept = observer.run_emit_pipeline(&mut env, obs_types::Severity::Info);
+        assert!(!kept, "envelope with oversize label value must be dropped");
+    }
 
     #[test]
     fn test_set_resource_attrs_is_visible_to_observer_callers() {

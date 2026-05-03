@@ -647,6 +647,37 @@ fn render_one_lint(decl: &EventDecl, event_prefix: &str) -> String {
             ));
         }
 
+        // L014: TRACE_ID / SPAN_ID / PARENT_SPAN_ID fields must be
+        // proto `string` and named `*_id`. The codegen projects them
+        // into the envelope's `trace_id`/`span_id`/`parent_span_id`
+        // slots; a non-string proto type or a misnamed field would
+        // produce confusing analytics columns. Spec 94 § 3.1 / E-6.
+        if matches!(
+            kind,
+            FieldKind::TraceId | FieldKind::SpanId | FieldKind::ParentSpanId
+        ) {
+            let expected_name = match kind {
+                FieldKind::TraceId => "trace_id",
+                FieldKind::SpanId => "span_id",
+                FieldKind::ParentSpanId => "parent_span_id",
+                _ => "",
+            };
+            if f.name != expected_name {
+                let msg = format!(
+                    "obs L014: field `{}` declares `kind` as a correlation slot but is not named \
+                     `{}`\nnote: codegen projects fields whose kind is TRACE_ID / SPAN_ID / \
+                     PARENT_SPAN_ID into the envelope slot of the same name; renaming keeps the \
+                     analytics column predictable.\nhelp: rename the field to `{}` or change the \
+                     `kind` to ATTRIBUTE.",
+                    f.name, expected_name, expected_name
+                );
+                s.push_str(&format!(
+                    "const _: () = ::std::panic!({msg});\n",
+                    msg = rust_str_lit(&msg),
+                ));
+            }
+        }
+
         // L012: field name must not shadow envelope-reserved name.
         // Skip TRACE_ID / SPAN_ID / PARENT_SPAN_ID — those are *meant*
         // to project onto the envelope slots of the same name.

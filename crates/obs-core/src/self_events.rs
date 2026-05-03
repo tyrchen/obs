@@ -160,6 +160,23 @@ pub(crate) fn emit_oversized_dropped(full_name: &str, size_bytes: u64) {
     emit_self(env);
 }
 
+/// Emitted when a single label value exceeds
+/// `limits.max_label_value_bytes`. Spec 11 § 6.2 / spec 94 § 3.5.
+pub(crate) fn emit_oversized_label_dropped(full_name: &str, label_name: &str, size_bytes: u64) {
+    let mut env = base_envelope(
+        "obs.runtime.v1.ObsOversizedDropped",
+        PSeverity::SEVERITY_WARN,
+    );
+    env.labels
+        .insert("full_name".to_string(), full_name.to_string());
+    env.labels
+        .insert("label_name".to_string(), label_name.to_string());
+    env.labels
+        .insert("size_bytes".to_string(), size_bytes.to_string());
+    env.labels.insert("reason".to_string(), "label".to_string());
+    emit_self(env);
+}
+
 fn base_envelope(full_name: &str, sev: PSeverity) -> ObsEnvelope {
     ObsEnvelope {
         full_name: full_name.to_string(),
