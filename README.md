@@ -2,6 +2,8 @@
 
 Status: pre-1.0 (Phase 5 hardening, [spec 91](./specs/91-impl-plan.md))
 
+> 中文版本：[README.zh-CN.md](./README.zh-CN.md)
+
 `obs` is a Rust SDK for **wide structured events**: emits, sampling,
 filtering, scope auto-fill, OTLP / Parquet / ClickHouse sinks, and a
 two-way bridge to the `tracing` crate — all driven by schemas you
@@ -11,8 +13,9 @@ messages (`obs-build`).
 The full design lives under [`./specs/`](./specs); start with
 [00-prd.md](./specs/00-prd.md) for the charter and
 [91-impl-plan.md](./specs/91-impl-plan.md) for the dependency-ordered
-build. This README walks the **install + emit + tail** flow on a
-2024-class laptop with a cold cache.
+build. **For day-to-day usage, jump to the
+[User Guide](./docs/user-guide.md).** For internals and contributing,
+see the [Developer Guide](./docs/dev-guide.md).
 
 ## 60-second tour
 
@@ -39,7 +42,7 @@ The exact command surface is documented in
 | Concern | What `obs` ships |
 | --- | --- |
 | **Schema authoring** | `#[derive(Event)]` (Rust-first) or `obs-build` (proto-first). Both produce byte-identical generated artefacts (spec 12 § 1.2). |
-| **Hot-path emit** | Atomic-`Interest` cache on every callsite; ~50 ns when filtered out, ~1.5 µs when delivered. Spec 11 § 2 / 71 § 4. |
+| **Hot-path emit** | Atomic-`Interest` cache on every callsite; ~25 ns when filtered out, ~110 ns noop, ~1 µs when delivered. Spec 11 § 2 / 71 § 4. |
 | **Three-tier observer resolution** | Per-task → per-thread → global. Multi-tenant servers install a per-task observer; tests install per-thread; production wires the global. Spec 11 § 3. |
 | **Sinks** | `StdoutSink`, `NdjsonFileSink` (with `RollingFileWriter` + `NonBlockingWriter`), `OtlpLogSink` / `OtlpMetricSink` / `OtlpTraceSink`, `ParquetSink`, `ClickHouseSink`. Spec 20 / 22. |
 | **Sampling + filter** | `obs::Filter` (EnvFilter-shaped), head sampler, tail-on-error ring buffer per `obs::scope!` frame. Spec 13. |
@@ -68,8 +71,9 @@ apps/
   server             # demo: hello-world emit
   server-proto       # demo: proto-first authoring path
   soak               # 50k-events/sec soak harness (spec 90 § M4)
+examples/            # four runnable example services (todomvc, interop pair, sinks-showcase)
 specs/               # design specs (read 00-prd.md → 99-key-decisions.md)
-docs/                # internal notes (spike memos, migration guide)
+docs/                # guides, migration, research notes
 ```
 
 ## Build, test, lint
@@ -92,10 +96,20 @@ make check-format-ver  # spec 90 § 3.3 envelope wire-shape lock
 
 ## Documentation
 
+### Guides (start here)
+
+| Guide | Audience | English | 中文 |
+| --- | --- | --- | --- |
+| **User Guide** | App engineers + SREs adopting obs in a service. Install, schema authoring, emit/scope/filter, sinks, OTLP, multi-tenant, CLI, ops. | [user-guide.md](./docs/user-guide.md) | [user-guide.zh-CN.md](./docs/user-guide.zh-CN.md) |
+| **Developer Guide** | Contributors and sink/bridge implementers. Architecture, observer model, callsite cache, sink contract, registry, codegen, perf, testing, contributing. | [dev-guide.md](./docs/dev-guide.md) | [dev-guide.zh-CN.md](./docs/dev-guide.zh-CN.md) |
+| **Migration from `tracing`** | Crates currently on `tracing-subscriber` who want typed events / sampling / OTel mapping. | [migration-from-tracing.md](./docs/migration-from-tracing.md) | — |
+
+### Authoritative references
+
 | Where | What |
 | --- | --- |
 | [`./specs`](./specs) | Authoritative design — read in numeric order or follow `index.md`. |
-| [`./docs/migration-from-tracing.md`](./docs/migration-from-tracing.md) | How to move an existing `tracing` codebase onto obs. |
+| [`./examples`](./examples) | Four runnable example services covering todomvc, two interop modes, and a sinks-fan-out showcase. |
 | [`./docs/research/`](./docs/research/) | Phase-0 spike memos. |
 | `cargo doc --workspace --no-deps --open` | Generated rustdoc for every public item. |
 

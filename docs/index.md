@@ -1,12 +1,14 @@
 # Docs Index
 
-Internal engineering notes that aren't user-facing specs.
+User-facing guides, internal engineering notes, and design research.
 
-## Migration
+## Guides
 
-| File | Purpose |
-| --- | --- |
-| [migration-from-tracing.md](./migration-from-tracing.md) | Moving an existing `tracing` codebase onto obs (Phase 5 / impl-plan 5.7). |
+| Guide | Audience | English | 中文 |
+| --- | --- | --- | --- |
+| **User Guide** | App engineers + SREs adopting obs in a service. | [user-guide.md](./user-guide.md) | [user-guide.zh-CN.md](./user-guide.zh-CN.md) |
+| **Developer Guide** | Contributors and sink/bridge implementers. | [dev-guide.md](./dev-guide.md) | [dev-guide.zh-CN.md](./dev-guide.zh-CN.md) |
+| **Migration from `tracing`** | Crates moving an existing `tracing` codebase onto obs. | [migration-from-tracing.md](./migration-from-tracing.md) | — |
 
 ## Research
 
