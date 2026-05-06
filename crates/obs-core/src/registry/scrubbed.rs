@@ -18,6 +18,13 @@ use super::{
 /// Read-only view of an envelope whose payload has already been run
 /// through the per-tier scrubber. Constructed by the worker; consumed
 /// by sinks.
+///
+/// `Clone` + `Copy` are derived because every field is a borrow
+/// (`&ObsEnvelope`, `&[u8]`, or a `'static` trait-object pointer),
+/// so copying the value is a pointer-wide memcpy. Fan-out sinks rely
+/// on this to multiplex one worker envelope across multiple child
+/// sinks without re-running the scrubber. See `obs/tok` design § 4.5.
+#[derive(Clone, Copy)]
 pub struct ScrubbedEnvelope<'a> {
     inner: &'a ObsEnvelope,
     payload: &'a [u8],
