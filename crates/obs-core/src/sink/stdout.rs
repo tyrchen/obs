@@ -180,16 +180,153 @@ fn native_sev(env: &ObsEnvelope) -> Severity {
 }
 
 fn render_compact<W: Write>(w: &mut W, env: &ObsEnvelope) {
-    let _ = writeln!(
-        w,
-        "{ts}.{ns:09} {sev} {full_name} {labels}",
-        ts = env.ts_ns / 1_000_000_000,
-        ns = env.ts_ns % 1_000_000_000,
-        sev = sev_str(env),
-        full_name = env.full_name,
-        labels = compact_labels(env),
-    );
+    // Match tracing-subscriber's compact format:
+    //
+    //   2026-05-07T15:31:00.123456Z  INFO scope{k=v ...}: target: message
+    //
+    // Mapping from the obs envelope:
+    //   - timestamp     → RFC3339 UTC from `ts_ns`
+    //   - LEVEL         → `sev_str(env)` upper-cased, right-padded to 5
+    //   - scope{fields} → envelope `labels` when present (sorted)
+    //   - target        → `env.full_name`
+    //   - message       → trailing trace_id/span_id when present, empty otherwise (obs envelopes
+    //     are schema-driven; the schema name IS the message).
+    let iso = iso8601_utc(env.ts_ns);
+    let lvl = sev_upper(env);
+
+    // Scope is the labels block in tracing style: `name{k=v k=v}`.
+    // There's no separate "span name" on the envelope, so use the
+    // leaf of `full_name` — matches how `tracing::instrument` prints
+    // the function name.
+    let scope_leaf = env
+        .full_name
+        .rsplit_once('.')
+        .map(|(_, leaf)| leaf)
+        .unwrap_or(env.full_name.as_str());
+
+    let fields = tracing_style_fields(env);
+    let scope = if fields.is_empty() {
+        String::new()
+    } else {
+        format!("{scope_leaf}{{{fields}}}: ")
+    };
+
+    // Target: the full schema name. tracing-subscriber prints the
+    // crate::module path; the envelope's `full_name` is the analogue
+    // for schema-driven emits.
+    let target = &env.full_name;
+
+    // Message tail: trace correlation when present. Keeps noise off
+    // the common line while still surfacing the linkage for any emit
+    // inside an active scope.
+    let tail = if !env.trace_id.is_empty() || !env.span_id.is_empty() {
+        format!(
+            "trace_id={} span_id={}",
+            dash_or(&env.trace_id),
+            dash_or(&env.span_id),
+        )
+    } else {
+        String::new()
+    };
+
+    let _ = writeln!(w, "{iso} {lvl:>5} {scope}{target}: {tail}");
     let _ = w.flush();
+}
+
+/// Render `env.labels` as tracing-style `k=v k=v` — space-separated,
+/// keys sorted, string values quoted iff they contain spaces or
+/// `=`/`"` characters so trivial values stay unquoted.
+fn tracing_style_fields(env: &ObsEnvelope) -> String {
+    if env.labels.is_empty() {
+        return String::new();
+    }
+    let mut keys: Vec<_> = env.labels.keys().collect();
+    keys.sort();
+    let mut s = String::with_capacity(env.labels.len() * 16);
+    for (i, k) in keys.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        if let Some(v) = env.labels.get(*k) {
+            s.push_str(k);
+            s.push('=');
+            if needs_quoting(v) {
+                s.push('"');
+                // Escape embedded quotes + backslashes so the output
+                // stays parseable.
+                for ch in v.chars() {
+                    if ch == '"' || ch == '\\' {
+                        s.push('\\');
+                    }
+                    s.push(ch);
+                }
+                s.push('"');
+            } else {
+                s.push_str(v);
+            }
+        }
+    }
+    s
+}
+
+fn needs_quoting(v: &str) -> bool {
+    v.is_empty()
+        || v.chars()
+            .any(|c| c.is_whitespace() || c == '=' || c == '"' || c == '{' || c == '}')
+}
+
+fn sev_upper(env: &ObsEnvelope) -> &'static str {
+    match env.sev {
+        ::buffa::EnumValue::Known(s) => match proto_sev_to_native(s) {
+            Severity::Trace => "TRACE",
+            Severity::Debug => "DEBUG",
+            Severity::Info => "INFO",
+            Severity::Warn => "WARN",
+            Severity::Error => "ERROR",
+            Severity::Fatal => "FATAL",
+            _ => "?",
+        },
+        ::buffa::EnumValue::Unknown(_) => "?",
+    }
+}
+
+/// Render `ts_ns` (Unix epoch nanoseconds) as RFC3339 UTC with
+/// microsecond resolution: `YYYY-MM-DDTHH:MM:SS.ffffffZ`. Matches
+/// tracing-subscriber's default timestamp format.
+fn iso8601_utc(ts_ns: u64) -> String {
+    // Unix day 0 is 1970-01-01 (Thursday). Use the civil-date algorithm
+    // from Howard Hinnant — division-only, no lookup tables. Valid for
+    // the entire range ts_ns can represent (through AD 2554).
+    let secs = (ts_ns / 1_000_000_000) as i64;
+    let nanos = (ts_ns % 1_000_000_000) as u32;
+    let micros = nanos / 1_000;
+
+    let days = secs.div_euclid(86_400);
+    let sec_of_day = secs.rem_euclid(86_400);
+    let hour = (sec_of_day / 3600) as u32;
+    let minute = ((sec_of_day / 60) % 60) as u32;
+    let second = (sec_of_day % 60) as u32;
+
+    let (year, month, day) = civil_from_days(days);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z")
+}
+
+/// Convert days-since-1970 to `(year, month, day)`. Howard Hinnant's
+/// [date algorithm](https://howardhinnant.github.io/date_algorithms.html)
+/// — integer-only, no lookup tables.
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m, d)
 }
 
 fn render_full<W: Write>(w: &mut W, env: &ObsEnvelope, payload_len: usize) {
@@ -322,6 +459,7 @@ fn dash_or(s: &str) -> &str {
     if s.is_empty() { "-" } else { s }
 }
 
+#[allow(dead_code)]
 fn compact_labels(env: &ObsEnvelope) -> String {
     if env.labels.is_empty() {
         return "{}".to_string();
@@ -403,5 +541,87 @@ fn proto_reason_to_native(r: obs_proto::obs::v1::SamplingReason) -> SamplingReas
         P::SAMPLING_REASON_AUDIT => SamplingReason::Audit,
         P::SAMPLING_REASON_RUNTIME => SamplingReason::Runtime,
         P::SAMPLING_REASON_OVERRIDE => SamplingReason::Override,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use obs_proto::obs::v1::Severity as PSev;
+
+    use super::*;
+
+    fn env(full_name: &str, sev: PSev, ts_ns: u64) -> ObsEnvelope {
+        ObsEnvelope {
+            full_name: full_name.to_string(),
+            sev: ::buffa::EnumValue::Known(sev),
+            ts_ns,
+            ..Default::default()
+        }
+    }
+
+    // 2026-05-07T15:31:00 UTC = 1778167860 seconds since epoch.
+    // Add 123_456 µs = 123_456_000 ns to get the exact timestamp
+    // from the tracing-fmt reference line.
+    const REF_TS_NS: u64 = 1_778_167_860_000_000_000 + 123_456_000;
+
+    #[test]
+    fn test_iso8601_utc_matches_tracing_fmt_shape() {
+        let s = iso8601_utc(REF_TS_NS);
+        assert_eq!(s, "2026-05-07T15:31:00.123456Z");
+    }
+
+    #[test]
+    fn test_render_compact_mirrors_tracing_fmt_compact() {
+        // Matches the shape:
+        //   2026-05-07T15:31:00.123456Z  INFO scope{k=v}: target: ...
+        // Scope leaf is the last `.`-separated segment of `full_name`.
+        let mut e = env("my_crate.process_order", PSev::SEVERITY_INFO, REF_TS_NS);
+        e.labels.insert("id".to_string(), "42".to_string());
+        e.labels.insert("item".to_string(), "Rust Book".to_string());
+        let mut buf: Vec<u8> = Vec::new();
+        render_compact(&mut buf, &e);
+        let line = String::from_utf8(buf).expect("utf-8");
+        assert!(
+            line.starts_with(
+                "2026-05-07T15:31:00.123456Z  INFO process_order{id=42 item=\"Rust Book\"}: \
+                 my_crate.process_order:"
+            ),
+            "unexpected line: {line}"
+        );
+        assert!(line.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_render_compact_pads_severity_to_five() {
+        let e = env("x.y", PSev::SEVERITY_WARN, 0);
+        let mut buf: Vec<u8> = Vec::new();
+        render_compact(&mut buf, &e);
+        let line = String::from_utf8(buf).expect("utf-8");
+        // `  WARN` — two-space lead (from the format right-pad), then
+        // "WARN" (4 chars, padded to 5 = 1 trailing space).
+        assert!(line.contains(" WARN "), "line: {line}");
+    }
+
+    #[test]
+    fn test_tracing_style_fields_quotes_when_needed() {
+        let mut e = env("x.y", PSev::SEVERITY_INFO, 0);
+        e.labels.insert("a".to_string(), "simple".to_string());
+        e.labels.insert("b".to_string(), "with space".to_string());
+        e.labels
+            .insert("c".to_string(), "with \"quote\"".to_string());
+        let s = tracing_style_fields(&e);
+        assert!(s.contains("a=simple"));
+        assert!(s.contains("b=\"with space\""));
+        assert!(s.contains(r#"c="with \"quote\"""#));
+    }
+
+    #[test]
+    fn test_civil_from_days_round_trip_recent_dates() {
+        // Unix day 0 = 1970-01-01.
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 2026-05-07 — 20,580 days since epoch.
+        assert_eq!(civil_from_days(20_580), (2026, 5, 7));
+        // Leap day: 2024-02-29 — 19,782 days since epoch.
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
     }
 }
