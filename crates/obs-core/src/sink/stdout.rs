@@ -218,18 +218,19 @@ fn render_compact<W: Write>(w: &mut W, env: &ObsEnvelope) {
 
     // Message tail: trace correlation when present. Keeps noise off
     // the common line while still surfacing the linkage for any emit
-    // inside an active scope.
-    let tail = if !env.trace_id.is_empty() || !env.span_id.is_empty() {
-        format!(
-            "trace_id={} span_id={}",
+    // inside an active scope. When both are empty (the common case for
+    // schema-only emits) the `: <tail>` suffix disappears entirely so
+    // the line ends at the target name — no trailing `: ` dangler.
+    if !env.trace_id.is_empty() || !env.span_id.is_empty() {
+        let _ = writeln!(
+            w,
+            "{iso} {lvl:>5} {scope}{target}: trace_id={} span_id={}",
             dash_or(&env.trace_id),
             dash_or(&env.span_id),
-        )
+        );
     } else {
-        String::new()
-    };
-
-    let _ = writeln!(w, "{iso} {lvl:>5} {scope}{target}: {tail}");
+        let _ = writeln!(w, "{iso} {lvl:>5} {scope}{target}");
+    }
     let _ = w.flush();
 }
 
@@ -573,22 +574,44 @@ mod tests {
     #[test]
     fn test_render_compact_mirrors_tracing_fmt_compact() {
         // Matches the shape:
-        //   2026-05-07T15:31:00.123456Z  INFO scope{k=v}: target: ...
-        // Scope leaf is the last `.`-separated segment of `full_name`.
+        //   2026-05-07T15:31:00.123456Z  INFO scope{k=v}: target
+        // No trailing `: ` when there's no trace context / message.
         let mut e = env("my_crate.process_order", PSev::SEVERITY_INFO, REF_TS_NS);
         e.labels.insert("id".to_string(), "42".to_string());
         e.labels.insert("item".to_string(), "Rust Book".to_string());
         let mut buf: Vec<u8> = Vec::new();
         render_compact(&mut buf, &e);
         let line = String::from_utf8(buf).expect("utf-8");
-        assert!(
-            line.starts_with(
-                "2026-05-07T15:31:00.123456Z  INFO process_order{id=42 item=\"Rust Book\"}: \
-                 my_crate.process_order:"
-            ),
-            "unexpected line: {line}"
+        assert_eq!(
+            line,
+            "2026-05-07T15:31:00.123456Z  INFO process_order{id=42 item=\"Rust Book\"}: \
+             my_crate.process_order\n"
         );
-        assert!(line.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_render_compact_appends_trace_context_when_present() {
+        let mut e = env("x.y", PSev::SEVERITY_INFO, REF_TS_NS);
+        e.trace_id = "0123456789abcdef0123456789abcdef".to_string();
+        e.span_id = "0123456789abcdef".to_string();
+        let mut buf: Vec<u8> = Vec::new();
+        render_compact(&mut buf, &e);
+        let line = String::from_utf8(buf).expect("utf-8");
+        assert_eq!(
+            line,
+            "2026-05-07T15:31:00.123456Z  INFO x.y: trace_id=0123456789abcdef0123456789abcdef \
+             span_id=0123456789abcdef\n"
+        );
+    }
+
+    #[test]
+    fn test_render_compact_drops_scope_block_when_no_labels() {
+        // Empty labels → no `scope{...}` prefix, no trailing `: `.
+        let e = env("x.y.Z", PSev::SEVERITY_INFO, REF_TS_NS);
+        let mut buf: Vec<u8> = Vec::new();
+        render_compact(&mut buf, &e);
+        let line = String::from_utf8(buf).expect("utf-8");
+        assert_eq!(line, "2026-05-07T15:31:00.123456Z  INFO x.y.Z\n");
     }
 
     #[test]
