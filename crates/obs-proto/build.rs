@@ -10,20 +10,27 @@
 
 //! Build script for `obs-proto`.
 //!
-//! Generates Rust types into `src/pb/` (checked-in style, per
-//! `buffa-build`'s `out_dir` + `include_file = "mod.rs"` pattern).
-//! The `FileDescriptorSet` is written to `$OUT_DIR/obs_proto.fds`
-//! and embedded via `include_bytes!` so `obs-core::registry` can
-//! load the built-in schemas at runtime regardless of how the
-//! binary was linked.
+//! Generates Rust types into `$OUT_DIR` (the idiomatic Cargo pattern)
+//! and wires them into the crate via `include!(concat!(env!("OUT_DIR"),
+//! "/mod.rs"))` in `lib.rs`. Keeping generated code out of the source
+//! tree is what lets Cargo's fingerprint logic skip the build script
+//! when nothing under `proto/` has changed — emitting into `src/pb/`
+//! would re-touch source files on every build and force perpetual
+//! rebuilds of every downstream crate.
+//!
+//! The `FileDescriptorSet` is written to `$OUT_DIR/obs_proto.fds` and
+//! embedded via `include_bytes!` so `obs-core::registry` can load the
+//! built-in schemas at runtime regardless of how the binary was linked.
 
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
-    let pb_dir = manifest.join("src").join("pb");
     let fds_path = out_dir.join("obs_proto.fds");
+    let fds_tmp = out_dir.join("obs_proto.fds.tmp");
 
     println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-changed=build.rs");
@@ -38,20 +45,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/obs/runtime/v1/self_events.proto",
     ];
 
+    // Write the FDS to a temp path, then move it over the real file only
+    // when bytes differ. buffa-build emits
+    // `cargo:rerun-if-changed=<fds_path>`, and if we unconditionally
+    // rewrote the file its mtime would advance on every build — cargo
+    // would then see the FDS as "newer than the build-script output
+    // marker" and rerun the script on the next invocation, looping
+    // forever. Preserving mtime on no-op runs breaks that cycle.
     let status = Command::new(&protoc)
         .arg("--proto_path=proto")
         .arg("--include_imports")
-        .arg(format!("--descriptor_set_out={}", fds_path.display()))
+        .arg(format!("--descriptor_set_out={}", fds_tmp.display()))
         .args(proto_files)
         .status()?;
     if !status.success() {
         return Err(format!("protoc failed (status {status})").into());
     }
+    write_if_changed(&fds_tmp, &fds_path)?;
 
-    // Run buffa-build with `out_dir = src/pb` and `include_file = "mod.rs"`
-    // so the checked-in module tree lives under src/pb/. The user does
-    // `mod pb;` at lib.rs to wire it in.
-    std::fs::create_dir_all(&pb_dir)?;
+    // Leave `out_dir` unset so buffa-build reads `OUT_DIR` from the
+    // environment and emits the entry file with
+    // `include!(concat!(env!("OUT_DIR"), "/foo.rs"))` paths — the form
+    // that resolves from any `include!` site in `src/`.
     buffa_build::Config::new()
         .files(
             proto_files
@@ -63,13 +78,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect::<Vec<_>>()
                 .as_slice(),
         )
-        .out_dir(&pb_dir)
         .descriptor_set(&fds_path)
         .include_file("mod.rs")
         .compile()?;
 
-    // Embed the FDS path so the crate can include it as bytes at compile
-    // time — see lib.rs `BUILTIN_FDS`.
     println!("cargo:rustc-env=OBS_PROTO_FDS={}", fds_path.display());
+    Ok(())
+}
+
+fn write_if_changed(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let new = std::fs::read(src)?;
+    let changed = match std::fs::read(dst) {
+        Ok(existing) => existing != new,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => return Err(e),
+    };
+    if changed {
+        std::fs::rename(src, dst)?;
+    } else {
+        std::fs::remove_file(src)?;
+    }
     Ok(())
 }

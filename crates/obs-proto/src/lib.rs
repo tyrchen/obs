@@ -9,14 +9,11 @@
 //! - [`BUILTIN_FDS`] — the `FileDescriptorSet` bytes for everything in this crate, embedded at
 //!   compile time.
 //!
-//! The generated buffa code lives under `src/pb/` (checked in, regenerated
-//! by `build.rs` on every build).
+//! The generated buffa code lives under `$OUT_DIR` (idiomatic Cargo) and is
+//! wired in via `include!(concat!(env!("OUT_DIR"), "/mod.rs"))` below.
 
 #![forbid(unsafe_code)]
 #![warn(rust_2024_compatibility)]
-// The generated `pb/` module is large and machine-emitted; we accept that
-// it does not satisfy our usual lint set. Restrict the relaxation to that
-// module (see the inner `#[allow(...)] mod pb` below).
 #![allow(missing_docs, missing_debug_implementations)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -30,7 +27,9 @@
     clippy::panic,
     missing_docs
 )]
-mod pb;
+mod pb {
+    include!(concat!(env!("OUT_DIR"), "/mod.rs"));
+}
 
 pub use pb::*;
 
