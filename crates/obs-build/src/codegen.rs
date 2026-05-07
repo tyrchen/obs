@@ -48,6 +48,14 @@ pub(crate) struct FieldDecl {
     /// builder setter to emit width-correct parameters — without this
     /// a `uint32` field would get a `u64` setter and refuse to assign.
     pub wire_rust_type: Option<&'static str>,
+    /// Fully-qualified Rust path of the enum type when the field's
+    /// kind is `Kind::Enum(_)`. Nested-enum parents are already
+    /// snake_case'd so a field like `GatewayUpstreamFailed.category`
+    /// whose proto enum is nested under `GatewayUpstreamFailed` gets
+    /// `tok::v1::events::…::gateway::gateway_upstream_failed::ErrorCategory`
+    /// rather than the raw proto path. `None` when the field is not
+    /// enum-typed.
+    pub enum_rust_path: Option<String>,
 }
 
 impl EventDecl {
@@ -450,12 +458,48 @@ fn render_setter(field: &FieldDecl, rust_path: &str) -> String {
     // would compile-fail because `bool` does not implement
     // `Into<String>`.
     let proto_type = field.proto_type.as_ref();
+
+    // Enum-typed fields: the struct field is `EnumValue<EnumTy>`, so
+    // the setter accepts anything convertible into that. Emit an
+    // `Into<EnumValue<…>>` bound — buffa ships `From<EnumTy>` and
+    // `From<i32>` impls that cover the common cases. The Rust path
+    // has been pre-built in config.rs with parent-message segments
+    // already snake_case'd per buffa's nested-type convention.
+    if let Some(enum_path) = field.enum_rust_path.as_deref() {
+        let setter_param = format!(
+            "impl ::std::convert::Into<::buffa::EnumValue<{}>>",
+            enum_path
+        );
+        let assign = format!("self.inner.{} = value.into();", field.name);
+        return format!(
+            "    /// Setter for `{name}` (proto field {num}); generated for `{rust_path}`.\n    \
+             #[allow(clippy::needless_pass_by_value, clippy::missing_const_for_fn)]\n    pub fn \
+             {name}(mut self, value: {param}) -> Self {{ {assign} self }}\n",
+            name = field.name,
+            num = field.number,
+            rust_path = rust_path,
+            param = setter_param,
+            assign = assign,
+        );
+    }
+
     // Prefer the precise wire Rust type when buffa exposed one — that
     // way `uint32` gets a `u32` setter, `int64` gets `i64`, `double`
     // gets `f64`, etc. Falling back to the coarse LintProtoType keeps
     // older callers working when the precise type wasn't recorded.
+    //
+    // MEASUREMENT / TIMESTAMP_NS / DURATION_NS semantics *usually*
+    // map to `u64`, but the proto author gets to pick (`uint32 delta`
+    // is a common cardinality-bounded counter). Respect the precise
+    // wire type so the setter signature matches the struct field
+    // rather than always widening to u64.
     let typed_setter = match (kind, proto_type, field.wire_rust_type) {
-        (FieldKind::Measurement | FieldKind::TimestampNs | FieldKind::DurationNs, _, _) => {
+        (
+            FieldKind::Measurement | FieldKind::TimestampNs | FieldKind::DurationNs,
+            _,
+            Some(rust_ty),
+        ) => Some(rust_ty),
+        (FieldKind::Measurement | FieldKind::TimestampNs | FieldKind::DurationNs, _, None) => {
             Some("u64")
         }
         (

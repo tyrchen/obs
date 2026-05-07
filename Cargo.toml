@@ -80,7 +80,7 @@ syn = { version = "2.0", features = ["full"] }
 heck = "0.5"
 
 # buffa for proto encoding
-buffa = { version = "0.4", default-features = false, features = ["std"] }
+buffa = { version = "0.5", default-features = false, features = ["std"] }
 notify = "8"
 secrecy = { version = "0.10", features = ["serde"] }
 
@@ -112,9 +112,9 @@ tonic = { version = "0.14", default-features = false, features = [
   "server",
 ] }
 tonic-prost = "0.14"
-buffa-build = "0.4"
-buffa-descriptor = "0.4"
-buffa-reflect = "0.1"
+buffa-build = "0.5"
+buffa-descriptor = "0.5"
+buffa-reflect = "0.2"
 
 # Phase-4 analytics + middleware deps.
 arrow-array = "58"
@@ -128,7 +128,7 @@ parquet = { version = "58", default-features = false, features = [
 ] }
 governor = { version = "0.10", default-features = false, features = ["std"] }
 http = "1.4"
-getrandom = "0.3"
+getrandom = "0.4"
 hyper = { version = "1.9", features = ["server", "client", "http1"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = [
