@@ -47,7 +47,7 @@ pub use options::{CodegenError, EventOptions, FieldOptions, MetricSpec};
 /// share the parser with `Config::compile`.
 pub mod reflect {
     use buffa_reflect::DescriptorPool;
-    use obs_types::{Cardinality, Classification, FieldKind, Severity, Tier};
+    use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, Severity, Tier};
 
     use crate::options::{
         CodegenError, EventOptions, FieldOptions, read_event_options, read_field_options,

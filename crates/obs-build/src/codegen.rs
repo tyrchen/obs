@@ -18,7 +18,7 @@
 )]
 
 use heck::ToShoutySnakeCase;
-use obs_types::{Cardinality, Classification, FieldKind, Severity, Tier};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, Severity, Tier};
 
 use crate::{
     lints::{self, LintField, LintInput, LintProtoType},
@@ -234,7 +234,7 @@ static {static_ident}: &'static dyn ::obs_core::__private::EventSchemaErased = &
 /// Fields without a MetricSpec default to a counter with unit `1`.
 /// Spec 12 § 3.6 / spec 93 P1-6.
 fn render_project_metrics_body(full_name: &str, fields: &[FieldDecl]) -> String {
-    use obs_types::MetricKind;
+    use obs_proto::obs::v1::MetricKind;
     let mut out = String::new();
     let mut had_any = false;
     for f in fields {

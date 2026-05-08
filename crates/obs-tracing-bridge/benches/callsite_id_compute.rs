@@ -6,7 +6,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use obs_core::{CallsiteSource, callsite_id};
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 fn bench_callsite_id_compute(c: &mut Criterion) {
     let field_names: &[&str] = &["user_id", "tenant", "route"];

@@ -209,7 +209,7 @@ fn push_to_top(top: Option<&mut ScopeFrame>, env: &ObsEnvelope) {
 
 #[cfg(test)]
 mod tests {
-    use obs_types::Severity;
+    use obs_proto::obs::v1::Severity;
 
     use super::*;
 

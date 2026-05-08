@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
-use obs_types::{Cardinality, Severity};
+use obs_proto::obs::v1::{Cardinality, Severity};
 use tracing_core::Level;
 
 /// Allowlist of field names that may be promoted from

@@ -100,12 +100,12 @@ fn filter_allows(filter: Option<&obs_core::Filter>, line: &str) -> bool {
     };
     let sev_str = parsed.get("sev").and_then(|v| v.as_str()).unwrap_or("INFO");
     let sev = match sev_str {
-        "TRACE" => obs_types::Severity::Trace,
-        "DEBUG" => obs_types::Severity::Debug,
-        "WARN" => obs_types::Severity::Warn,
-        "ERROR" => obs_types::Severity::Error,
-        "FATAL" => obs_types::Severity::Fatal,
-        _ => obs_types::Severity::Info,
+        "TRACE" => obs_proto::obs::v1::Severity::Trace,
+        "DEBUG" => obs_proto::obs::v1::Severity::Debug,
+        "WARN" => obs_proto::obs::v1::Severity::Warn,
+        "ERROR" => obs_proto::obs::v1::Severity::Error,
+        "FATAL" => obs_proto::obs::v1::Severity::Fatal,
+        _ => obs_proto::obs::v1::Severity::Info,
     };
     filter.event_allowed(&env, sev)
 }

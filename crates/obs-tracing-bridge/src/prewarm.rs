@@ -3,7 +3,7 @@
 //!
 //! Spec 31 § 3.3.
 
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 /// One pre-warm record.
 #[derive(Debug, Clone, Copy)]

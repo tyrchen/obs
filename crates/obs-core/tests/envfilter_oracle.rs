@@ -20,7 +20,7 @@
 )]
 
 use obs_core::{Filter as ObsFilter, ObsCallsite};
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 use tracing::Level;
 use tracing_core::Subscriber;
 use tracing_subscriber::EnvFilter;

@@ -16,7 +16,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 /// Callsite source — drives both human display and the BLAKE3 input.
 /// Spec 31 § 3.4 enum.

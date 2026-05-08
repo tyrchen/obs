@@ -7,8 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::Severity;
+use obs_proto::obs::v1::{ObsEnvelope, Severity};
 use serde::{Deserialize, Serialize};
 
 /// Severity number per OTLP `logs.proto` (spec 20 § 2.2).

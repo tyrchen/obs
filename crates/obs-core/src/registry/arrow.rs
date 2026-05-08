@@ -12,7 +12,7 @@
 //! sinks can translate into their respective target representations
 //! without having to re-parse descriptors.
 
-use obs_types::{Cardinality, Classification, FieldKind};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind};
 
 use super::erased::EventSchemaErased;
 use crate::envelope::{FieldMeta, FieldRole};

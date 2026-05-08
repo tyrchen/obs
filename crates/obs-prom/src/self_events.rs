@@ -1,18 +1,18 @@
 //! Runtime self-events emitted by [`PromRegistry`](crate::PromRegistry).
+//!
+//! Envelopes are built via [`obs_core::self_event`] so the shared
+//! `tier` / `sev` / `sampling_reason` / `ts_ns` path applies.
 
-use buffa::EnumValue;
-use obs_core::observer;
-use obs_proto::obs::v1::{ObsEnvelope, Severity as PSeverity, Tier as PTier};
+use obs_core::{observer, self_event};
+use obs_proto::obs::v1::{Severity, Tier};
 
 /// Emitted when a series cap breach drops a new series.
 pub(crate) fn emit_series_cap_exceeded(metric_name: &str, sample_labels: &str, cap: u32) {
-    let mut env = ObsEnvelope {
-        full_name: "obs.runtime.v1.ObsPromSeriesCapExceeded".to_string(),
-        tier: EnumValue::Known(PTier::TIER_METRIC),
-        sev: EnumValue::Known(PSeverity::SEVERITY_WARN),
-        ts_ns: now_ns(),
-        ..Default::default()
-    };
+    let mut env = self_event(
+        "obs.runtime.v1.ObsPromSeriesCapExceeded",
+        Tier::Metric,
+        Severity::Warn,
+    );
     env.labels
         .insert("metric_name".into(), truncate(metric_name, 256));
     env.labels
@@ -33,11 +33,4 @@ fn truncate(s: &str, max: usize) -> String {
     out.push_str(&s[..end]);
     out.push('…');
     out
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }

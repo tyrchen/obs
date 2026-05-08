@@ -21,7 +21,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 use parking_lot::Mutex;
 
 /// A factory that yields one `io::Write` per batch. Cheap to call.

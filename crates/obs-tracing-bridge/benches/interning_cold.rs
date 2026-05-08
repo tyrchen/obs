@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use obs_core::ObsCallsiteRegistry;
+use obs_proto::obs::v1::Severity;
 use obs_tracing_bridge::{PrewarmEntry, run_prewarm};
-use obs_types::Severity;
 
 fn bench_interning_cold(c: &mut Criterion) {
     let entries: &[PrewarmEntry] = &[PrewarmEntry {

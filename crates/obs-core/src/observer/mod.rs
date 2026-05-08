@@ -219,13 +219,7 @@ pub fn enter_emit_envelope(observer: &Arc<dyn Observer>, env: ObsEnvelope) {
         // emit-on-emit path itself is still suppressed by the
         // `was_in == false` branch above; we only fire the metric.
         let tier = match env.tier {
-            ::buffa::EnumValue::Known(t) => match t {
-                obs_proto::obs::v1::Tier::TIER_LOG => "log",
-                obs_proto::obs::v1::Tier::TIER_METRIC => "metric",
-                obs_proto::obs::v1::Tier::TIER_TRACE => "trace",
-                obs_proto::obs::v1::Tier::TIER_AUDIT => "audit",
-                _ => "unspecified",
-            },
+            ::buffa::EnumValue::Known(t) => t.as_str(),
             _ => "unknown",
         };
         crate::self_events::emit_sink_dropped(tier, "reentry");

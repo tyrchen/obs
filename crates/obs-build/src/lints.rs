@@ -13,7 +13,7 @@
 //! path) and a proc-macro crate (obs-macros's derive path) without
 //! pulling each other's heavy transitive deps.
 
-use obs_types::{Cardinality, Classification, FieldKind, Severity, Tier};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, Severity, Tier};
 
 /// Proto wire type a field declares. The proto-first path fills this
 /// from `FieldDescriptorProto::r#type`; the derive path fills it from
@@ -394,7 +394,7 @@ pub fn _ensure_severity_link(_: Severity) {}
 
 #[cfg(test)]
 mod tests {
-    use obs_types::{Cardinality, Classification, FieldKind, Tier};
+    use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, Tier};
 
     use super::*;
 

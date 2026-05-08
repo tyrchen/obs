@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 use serde::{Deserialize, Serialize};
 
 /// The complete config tree. Every field is optional so a config file

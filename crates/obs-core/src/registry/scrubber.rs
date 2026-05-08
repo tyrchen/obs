@@ -22,7 +22,7 @@ use buffa::{
     types,
 };
 use bytes::{Buf, BufMut, BytesMut};
-use obs_types::Classification;
+use obs_proto::obs::v1::Classification;
 
 use super::erased::ScrubError;
 use crate::envelope::FieldMeta;
@@ -154,7 +154,7 @@ fn encode_raw_varint(mut value: u64, buf: &mut BytesMut) {
 
 #[cfg(test)]
 mod tests {
-    use obs_types::Cardinality;
+    use obs_proto::obs::v1::Cardinality;
 
     use super::*;
     use crate::envelope::FieldRole;

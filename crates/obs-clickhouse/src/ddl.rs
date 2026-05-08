@@ -6,7 +6,7 @@
 //! `obs migrate clickhouse`.
 
 use obs_core::{ArrowEventSchema, ArrowField, ArrowLeafType, ArrowSchemaModel};
-use obs_types::FieldKind;
+use obs_proto::obs::v1::FieldKind;
 
 /// Render the full `CREATE TABLE IF NOT EXISTS obs_events ...` for the
 /// supplied schema model. Spec 22 § 3.

@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::{SamplingReason, Severity, Tier};
+use obs_proto::obs::v1::{ObsEnvelope, SamplingReason, Severity, Tier};
 use parking_lot::Mutex;
 
 use super::{
@@ -175,7 +174,7 @@ impl Sink for StdoutSink {
 
 fn native_sev(env: &ObsEnvelope) -> Severity {
     match env.sev {
-        ::buffa::EnumValue::Known(s) => proto_sev_to_native(s),
+        ::buffa::EnumValue::Known(s) => s,
         ::buffa::EnumValue::Unknown(_) => Severity::Unspecified,
     }
 }
@@ -279,7 +278,7 @@ fn needs_quoting(v: &str) -> bool {
 
 fn sev_upper(env: &ObsEnvelope) -> &'static str {
     match env.sev {
-        ::buffa::EnumValue::Known(s) => match proto_sev_to_native(s) {
+        ::buffa::EnumValue::Known(s) => match s {
             Severity::Trace => "TRACE",
             Severity::Debug => "DEBUG",
             Severity::Info => "INFO",
@@ -486,63 +485,22 @@ fn compact_labels(env: &ObsEnvelope) -> String {
 
 fn sev_str(env: &ObsEnvelope) -> &'static str {
     match env.sev {
-        ::buffa::EnumValue::Known(s) => proto_sev_to_native(s).as_str(),
+        ::buffa::EnumValue::Known(s) => s.as_str(),
         ::buffa::EnumValue::Unknown(_) => Severity::Unspecified.as_str(),
     }
 }
 
 fn tier_str(env: &ObsEnvelope) -> &'static str {
     match env.tier {
-        ::buffa::EnumValue::Known(t) => proto_tier_to_native(t).as_str(),
+        ::buffa::EnumValue::Known(t) => t.as_str(),
         ::buffa::EnumValue::Unknown(_) => Tier::Unspecified.as_str(),
     }
 }
 
 fn sampling_reason_str(env: &ObsEnvelope) -> &'static str {
     match env.sampling_reason {
-        ::buffa::EnumValue::Known(r) => proto_reason_to_native(r).as_str(),
+        ::buffa::EnumValue::Known(r) => r.as_str(),
         ::buffa::EnumValue::Unknown(_) => SamplingReason::Unspecified.as_str(),
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn proto_sev_to_native(s: obs_proto::obs::v1::Severity) -> Severity {
-    use obs_proto::obs::v1::Severity as P;
-    match s {
-        P::SEVERITY_UNSPECIFIED => Severity::Unspecified,
-        P::SEVERITY_TRACE => Severity::Trace,
-        P::SEVERITY_DEBUG => Severity::Debug,
-        P::SEVERITY_INFO => Severity::Info,
-        P::SEVERITY_WARN => Severity::Warn,
-        P::SEVERITY_ERROR => Severity::Error,
-        P::SEVERITY_FATAL => Severity::Fatal,
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn proto_tier_to_native(t: obs_proto::obs::v1::Tier) -> Tier {
-    use obs_proto::obs::v1::Tier as P;
-    match t {
-        P::TIER_UNSPECIFIED => Tier::Unspecified,
-        P::TIER_LOG => Tier::Log,
-        P::TIER_METRIC => Tier::Metric,
-        P::TIER_TRACE => Tier::Trace,
-        P::TIER_AUDIT => Tier::Audit,
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn proto_reason_to_native(r: obs_proto::obs::v1::SamplingReason) -> SamplingReason {
-    use obs_proto::obs::v1::SamplingReason as P;
-    match r {
-        P::SAMPLING_REASON_UNSPECIFIED => SamplingReason::Unspecified,
-        P::SAMPLING_REASON_HEAD_RATE => SamplingReason::HeadRate,
-        P::SAMPLING_REASON_TAIL_ERROR => SamplingReason::TailError,
-        P::SAMPLING_REASON_SLOW => SamplingReason::Slow,
-        P::SAMPLING_REASON_FORENSIC => SamplingReason::Forensic,
-        P::SAMPLING_REASON_AUDIT => SamplingReason::Audit,
-        P::SAMPLING_REASON_RUNTIME => SamplingReason::Runtime,
-        P::SAMPLING_REASON_OVERRIDE => SamplingReason::Override,
     }
 }
 

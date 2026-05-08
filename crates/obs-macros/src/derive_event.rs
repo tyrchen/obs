@@ -2,7 +2,7 @@
 
 use heck::ToShoutySnakeCase;
 use obs_build::{LintField, LintInput, LintProtoType};
-use obs_types::{Cardinality, Classification, FieldKind, Tier};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, Tier};
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
 use syn::{

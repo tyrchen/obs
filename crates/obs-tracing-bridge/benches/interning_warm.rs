@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use obs_core::ObsCallsiteRegistry;
+use obs_proto::obs::v1::Severity;
 use obs_tracing_bridge::intern_or_lookup;
-use obs_types::Severity;
 
 fn bench_interning_warm(c: &mut Criterion) {
     let registry = Arc::new(ObsCallsiteRegistry::new());

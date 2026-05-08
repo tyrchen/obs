@@ -17,7 +17,6 @@ buffa = { workspace = true }
 dashmap = { workspace = true }
 obs-core = { workspace = true }
 obs-proto = { workspace = true }
-obs-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

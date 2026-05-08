@@ -7,8 +7,7 @@ use std::{
 };
 
 use obs_core::{CallsiteRecord, CallsiteSource, ObsCallsiteRegistry};
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::Severity;
+use obs_proto::obs::v1::{ObsEnvelope, Severity};
 
 use crate::prewarm::PrewarmEntry;
 

@@ -22,7 +22,9 @@ quote = { workspace = true }
 syn = { workspace = true }
 heck = { workspace = true }
 obs-build = { workspace = true }
-obs-types = { workspace = true }
+# obs-types retired in Phase 3b; the proc-macro reasons about enum
+# vocabulary at derive time.
+obs-proto = { workspace = true }
 
 [dev-dependencies]
 obs-core = { workspace = true }

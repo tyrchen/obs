@@ -33,7 +33,11 @@ buffa-build = { workspace = true }
 buffa-descriptor = { workspace = true }
 buffa-reflect = { workspace = true }
 heck = { workspace = true }
-obs-types = { workspace = true }
+# obs-types retired in Phase 3b; the seven enums now live on obs-proto.
+# obs-build reasons about them at lint time and authors them as field
+# types — adding obs-proto as a direct dep is safe because obs-proto's
+# own build.rs uses buffa-build directly, not obs-build (no cycle).
+obs-proto = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

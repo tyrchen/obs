@@ -160,19 +160,28 @@ pub fn run(args: DiffArgs) -> Result<()> {
     Ok(())
 }
 
-fn is_breaking_card(b: obs_types::Cardinality, h: obs_types::Cardinality) -> bool {
-    use obs_types::Cardinality::*;
+fn is_breaking_card(
+    b: obs_proto::obs::v1::Cardinality,
+    h: obs_proto::obs::v1::Cardinality,
+) -> bool {
+    use obs_proto::obs::v1::Cardinality::{HIGH, LOW, MEDIUM, UNBOUNDED};
     matches!(
         (b, h),
-        (Low, Medium | High | Unbounded) | (Medium, High | Unbounded) | (High, Unbounded)
+        (LOW, MEDIUM | HIGH | UNBOUNDED) | (MEDIUM, HIGH | UNBOUNDED) | (HIGH, UNBOUNDED)
     )
 }
 
-fn is_breaking_class(b: obs_types::Classification, h: obs_types::Classification) -> bool {
+fn is_breaking_class(
+    b: obs_proto::obs::v1::Classification,
+    h: obs_proto::obs::v1::Classification,
+) -> bool {
     // Demoting PII → Internal or removing Secret protection is
     // breaking because it changes the redaction contract.
-    use obs_types::Classification::*;
-    matches!((b, h), (Pii, Internal | Unspecified) | (Secret, _))
+    use obs_proto::obs::v1::Classification::{CLASSIFICATION_UNSPECIFIED, INTERNAL, PII, SECRET};
+    matches!(
+        (b, h),
+        (PII, INTERNAL | CLASSIFICATION_UNSPECIFIED) | (SECRET, _),
+    )
 }
 
 #[allow(dead_code)]

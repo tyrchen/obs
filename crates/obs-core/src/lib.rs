@@ -52,7 +52,9 @@ pub mod registry;
 pub mod resource;
 pub mod sampling;
 pub mod scope;
+mod self_event;
 pub(crate) mod self_events;
+pub use self_event::{now_ns, self_event};
 /// Public re-exports for self-event helpers consumed by sinks/middleware
 /// that emit them on behalf of the runtime (e.g. OTLP trace sink emits
 /// `ObsSpanPairOrphaned` after pair_timeout). Spec 93 P1-2 + P1-7.
@@ -118,10 +120,10 @@ pub use instrumented::{Instrument, Instrumented, WithObserver};
 pub use metric::{MetricEmitter, NoopMetricEmitter};
 pub use obs_proto::{
     ENVELOPE_FORMAT_VER,
-    obs::v1::{ObsBatch, ObsEnvelope},
-};
-pub use obs_types::{
-    Cardinality, Classification, FieldKind, MetricKind, SamplingReason, Severity, Tier,
+    obs::v1::{
+        Cardinality, Classification, FieldKind, MetricKind, ObsBatch, ObsEnvelope, SamplingReason,
+        Severity, Tier,
+    },
 };
 pub use observer::{
     BuildError, InMemoryHandle, InMemoryObserver, NoopObserver, Observer, StandardObserver,
@@ -159,15 +161,17 @@ pub mod __private {
     pub use buffa;
     pub use bytes::BytesMut;
     pub use linkme;
-    /// Proto Tier enum re-export so macros can reach it through the
+    /// Enum re-exports so macros can reach these through the
     /// `__private` namespace without forcing user code to depend on
-    /// `obs-proto` directly.
-    pub use obs_proto::obs::v1::Severity as ProtoSeverity;
-    pub use obs_proto::{
-        __private::*,
-        obs::v1::{SamplingReason as ProtoSamplingReason, Tier as ProtoTier},
+    /// `obs-proto` directly. The `Proto*` aliases survive as back-compat
+    /// symbols; after Phase 3b (obs-types retirement) they point at
+    /// the same types the short-name re-exports do.
+    pub use obs_proto::obs::v1::{
+        Cardinality, Classification, FieldKind, MetricKind, SamplingReason,
+        SamplingReason as ProtoSamplingReason, Severity, Severity as ProtoSeverity, Tier,
+        Tier as ProtoTier,
     };
-    pub use obs_types::*;
+    pub use obs_proto::{__private::*, UnknownVariant};
     pub use secrecy;
     pub use serde_json;
 

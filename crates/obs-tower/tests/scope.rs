@@ -18,9 +18,8 @@ use obs_core::{
     emit::emit_with_callsite,
     observer::{InMemoryObserver, with_test_observer},
 };
-use obs_proto::obs::v1::ObsEnvelope;
+use obs_proto::obs::v1::{ObsEnvelope, Severity};
 use obs_tower::ObsHttpLayer;
-use obs_types::Severity;
 use tower::{Layer, Service, ServiceExt};
 
 #[derive(Default)]
@@ -28,7 +27,7 @@ struct NativeEvent;
 
 impl obs_core::EventSchema for NativeEvent {
     const FULL_NAME: &'static str = "test.v1.ObsHandlerNative";
-    const TIER: obs_types::Tier = obs_types::Tier::Log;
+    const TIER: obs_proto::obs::v1::Tier = obs_proto::obs::v1::Tier::Log;
     const DEFAULT_SEV: Severity = Severity::Info;
     const FIELDS: &'static [obs_core::FieldMeta] = &[];
     const SCHEMA_HASH: u64 = 0xCAFE_BABE;

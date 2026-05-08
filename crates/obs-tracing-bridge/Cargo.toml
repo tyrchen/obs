@@ -19,7 +19,6 @@ bytes = { workspace = true }
 dashmap = { workspace = true }
 obs-core = { workspace = true }
 obs-proto = { workspace = true }
-obs-types = { workspace = true }
 parking_lot = { workspace = true }
 regex = { workspace = true }
 serde_json = { workspace = true }

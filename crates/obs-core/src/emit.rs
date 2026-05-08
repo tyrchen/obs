@@ -4,7 +4,7 @@
 //! Spec 61 § 2.4. The macro path emits straight calls to these
 //! methods. Hand-rolled tests can call them directly.
 
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 use crate::{
     callsite::ObsCallsite,

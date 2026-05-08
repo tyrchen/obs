@@ -23,7 +23,6 @@ governor = { workspace = true }
 http = { workspace = true }
 linkme = { workspace = true }
 obs-proto = { workspace = true }
-obs-types = { workspace = true }
 once_cell = { workspace = true }
 notify = { workspace = true }
 parking_lot = { workspace = true }

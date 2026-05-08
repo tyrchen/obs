@@ -10,8 +10,7 @@ use std::sync::{
 };
 
 use bytes::BytesMut;
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::Tier;
+use obs_proto::obs::v1::{ObsEnvelope, Tier};
 use tokio::{
     runtime::Handle,
     sync::{Mutex as AsyncMutex, mpsc},

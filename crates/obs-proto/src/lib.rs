@@ -33,6 +33,13 @@ mod pb {
 
 pub use pb::*;
 
+mod ext;
+
+/// Error type returned by the [`FromStr`](std::str::FromStr) impls on
+/// every enum in this crate. Mirrors the shape obs-types used to
+/// provide; re-exported here so consumers have a single import path.
+pub use ext::UnknownVariant;
+
 /// Bytes of the `FileDescriptorSet` covering every `.proto` file in this
 /// crate, captured at build time.
 ///

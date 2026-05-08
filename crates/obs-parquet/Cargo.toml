@@ -22,7 +22,6 @@ buffa = { workspace = true }
 bytes = { workspace = true }
 obs-core = { workspace = true }
 obs-proto = { workspace = true }
-obs-types = { workspace = true }
 parking_lot = { workspace = true }
 parquet = { workspace = true }
 serde = { workspace = true }

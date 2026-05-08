@@ -9,8 +9,7 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 use bytes;
-use obs_proto::obs::v1::{ObsEnvelope, SamplingReason as PSamplingReason};
-use obs_types::Tier;
+use obs_proto::obs::v1::{ObsEnvelope, SamplingReason as PSamplingReason, Tier};
 use parking_lot::Mutex;
 
 use super::{
@@ -363,7 +362,7 @@ impl StandardObserver {
     /// `env`. Returns `true` when the envelope should continue down
     /// the per-tier worker; `false` when it was dropped or counted as
     /// a buffer push.
-    fn run_emit_pipeline(&self, env: &mut ObsEnvelope, sev: obs_types::Severity) -> bool {
+    fn run_emit_pipeline(&self, env: &mut ObsEnvelope, sev: obs_proto::obs::v1::Severity) -> bool {
         // Step 3 (post-project): auto-fill from scope frame stack.
         auto_fill_envelope(env);
         // Step 3.0: enforce `limits.max_payload_bytes` (spec 11 § 6.2 /
@@ -434,9 +433,12 @@ impl StandardObserver {
             }
         }
         // Step 5: tail-on-error push (TRACE/DEBUG only).
-        if matches!(sev, obs_types::Severity::Trace | obs_types::Severity::Debug) {
+        if matches!(
+            sev,
+            obs_proto::obs::v1::Severity::Trace | obs_proto::obs::v1::Severity::Debug
+        ) {
             push_tail_buffer(env);
-        } else if sev >= obs_types::Severity::Error {
+        } else if sev >= obs_proto::obs::v1::Severity::Error {
             crate::scope::mark_error_on_active_scopes();
         }
         true
@@ -447,14 +449,14 @@ impl Observer for StandardObserver {
     fn emit_envelope(&self, mut env: ObsEnvelope) {
         self.fill_identity(&mut env);
         let sev = match env.sev {
-            ::buffa::EnumValue::Known(s) => proto_sev_to_native(s),
-            ::buffa::EnumValue::Unknown(_) => obs_types::Severity::Unspecified,
+            ::buffa::EnumValue::Known(s) => s,
+            ::buffa::EnumValue::Unknown(_) => obs_proto::obs::v1::Severity::Unspecified,
         };
         if !self.run_emit_pipeline(&mut env, sev) {
             return;
         }
         let tier = match env.tier {
-            ::buffa::EnumValue::Known(t) => proto_tier_to_native(t),
+            ::buffa::EnumValue::Known(t) => t,
             ::buffa::EnumValue::Unknown(_) => Tier::Unspecified,
         };
         if let Ok(_h) = tokio::runtime::Handle::try_current() {
@@ -569,32 +571,6 @@ impl Observer for StandardObserver {
 
     fn resource_attrs(&self) -> Arc<ResourceAttrs> {
         self.resource.load_full()
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn proto_tier_to_native(t: obs_proto::obs::v1::Tier) -> Tier {
-    use obs_proto::obs::v1::Tier as P;
-    match t {
-        P::TIER_UNSPECIFIED => Tier::Unspecified,
-        P::TIER_LOG => Tier::Log,
-        P::TIER_METRIC => Tier::Metric,
-        P::TIER_TRACE => Tier::Trace,
-        P::TIER_AUDIT => Tier::Audit,
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn proto_sev_to_native(s: obs_proto::obs::v1::Severity) -> obs_types::Severity {
-    use obs_proto::obs::v1::Severity as P;
-    match s {
-        P::SEVERITY_UNSPECIFIED => obs_types::Severity::Unspecified,
-        P::SEVERITY_TRACE => obs_types::Severity::Trace,
-        P::SEVERITY_DEBUG => obs_types::Severity::Debug,
-        P::SEVERITY_INFO => obs_types::Severity::Info,
-        P::SEVERITY_WARN => obs_types::Severity::Warn,
-        P::SEVERITY_ERROR => obs_types::Severity::Error,
-        P::SEVERITY_FATAL => obs_types::Severity::Fatal,
     }
 }
 
@@ -962,7 +938,7 @@ mod tests {
             ..Default::default()
         };
         env.labels.insert("ua".to_string(), "x".repeat(2048));
-        let kept = observer.run_emit_pipeline(&mut env, obs_types::Severity::Info);
+        let kept = observer.run_emit_pipeline(&mut env, obs_proto::obs::v1::Severity::Info);
         assert!(!kept, "envelope with oversize label value must be dropped");
     }
 

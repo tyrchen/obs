@@ -11,7 +11,7 @@ use obs_core::{
     callsite::{EnabledOutcome, Interest},
     observer,
 };
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 fn bench_emit_filtered(c: &mut Criterion) {
     static CALLSITE: ObsCallsite = ObsCallsite::new(

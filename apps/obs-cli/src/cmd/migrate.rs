@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use obs_build::reflect::scan_pool;
 use obs_clickhouse::render_create_table_ddl;
 use obs_core::{ArrowField, ArrowLeafType, ArrowSchemaModel};
-use obs_types::FieldKind;
+use obs_proto::obs::v1::FieldKind;
 
 use super::schema_source::SchemaSourceArgs;
 
@@ -102,10 +102,12 @@ fn build_arrow_model(events: &[obs_build::reflect::AnnotatedEvent]) -> ArrowSche
     ArrowSchemaModel { events: entries }
 }
 
-fn leaf_for(kind: FieldKind, name: &str, card: obs_types::Cardinality) -> ArrowLeafType {
+fn leaf_for(kind: FieldKind, name: &str, card: obs_proto::obs::v1::Cardinality) -> ArrowLeafType {
     match kind {
         FieldKind::Label => match card {
-            obs_types::Cardinality::Low | obs_types::Cardinality::Medium => ArrowLeafType::DictUtf8,
+            obs_proto::obs::v1::Cardinality::Low | obs_proto::obs::v1::Cardinality::Medium => {
+                ArrowLeafType::DictUtf8
+            }
             _ => ArrowLeafType::Utf8,
         },
         FieldKind::Measurement => {

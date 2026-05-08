@@ -18,7 +18,6 @@ buffa = { workspace = true }
 bytes = { workspace = true }
 obs-core = { workspace = true }
 obs-proto = { workspace = true }
-obs-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "sync", "time", "rt", "macros", "io-util"] }
 uuid = { version = "1.12", features = ["v4"] }

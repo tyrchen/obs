@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 use crate::config::SamplingConfig;
 

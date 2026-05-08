@@ -15,12 +15,14 @@ homepage.workspace = true
 [dependencies]
 buffa = { workspace = true }
 buffa-descriptor = { workspace = true }
-obs-types = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
 buffa-build = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

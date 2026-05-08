@@ -15,19 +15,19 @@
 //! The runtime helpers are package-internal — call them from the
 //! observer / audit_spool / sink code that knows when the event
 //! should fire, never from user code.
+//!
+//! All envelopes are built via [`crate::self_event`] so the
+//! `tier` / `sev` / `sampling_reason` / `ts_ns` wiring lives in one
+//! place.
 
-use buffa::EnumValue;
-use obs_proto::obs::v1::{ObsEnvelope, Severity as PSeverity, Tier as PTier};
+use obs_proto::obs::v1::{ObsEnvelope, Severity, Tier};
 
-use crate::observer::observer;
+use crate::{observer::observer, self_event::self_event};
 
 /// Best-effort emit of `obs.runtime.v1.ObsRegistryInitialized` at
 /// observer init time. Spec 11 § 10.
 pub(crate) fn emit_registry_initialized(schema_count: u64, arrow_assembly_ns: u64) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsRegistryInitialized",
-        PSeverity::SEVERITY_DEBUG,
-    );
+    let mut env = base("obs.runtime.v1.ObsRegistryInitialized", Severity::Debug);
     env.labels
         .insert("schema_count".to_string(), schema_count.to_string());
     env.labels.insert(
@@ -39,7 +39,7 @@ pub(crate) fn emit_registry_initialized(schema_count: u64, arrow_assembly_ns: u6
 
 /// Emitted when `EventsConfig::reload_config` succeeds.
 pub(crate) fn emit_config_reloaded(config_hash: u64) {
-    let mut env = base_envelope("obs.runtime.v1.ObsConfigReloaded", PSeverity::SEVERITY_INFO);
+    let mut env = base("obs.runtime.v1.ObsConfigReloaded", Severity::Info);
     env.labels
         .insert("config_hash".to_string(), format!("{config_hash:016x}"));
     emit_self(env);
@@ -47,10 +47,7 @@ pub(crate) fn emit_config_reloaded(config_hash: u64) {
 
 /// Emitted when reload validation fails or the loader errors.
 pub(crate) fn emit_config_reload_failed(reason: &str) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsConfigReloadFailed",
-        PSeverity::SEVERITY_WARN,
-    );
+    let mut env = base("obs.runtime.v1.ObsConfigReloadFailed", Severity::Warn);
     env.labels
         .insert("reason".to_string(), truncate(reason, 512));
     emit_self(env);
@@ -61,7 +58,7 @@ pub(crate) fn emit_config_reload_failed(reason: &str) {
 /// during dev / migration.
 #[allow(dead_code)]
 pub(crate) fn emit_schema_unknown(sink: &str, full_name: &str) {
-    let mut env = base_envelope("obs.runtime.v1.ObsSchemaUnknown", PSeverity::SEVERITY_DEBUG);
+    let mut env = base("obs.runtime.v1.ObsSchemaUnknown", Severity::Debug);
     env.labels.insert("sink".to_string(), sink.to_string());
     env.labels
         .insert("full_name".to_string(), full_name.to_string());
@@ -71,7 +68,7 @@ pub(crate) fn emit_schema_unknown(sink: &str, full_name: &str) {
 /// Emitted when the AUDIT path falls back to disk spool because the
 /// in-memory channel was full longer than `audit.block_ms_max`.
 pub(crate) fn emit_audit_spooled(full_name: &str) {
-    let mut env = base_envelope("obs.runtime.v1.ObsAuditSpooled", PSeverity::SEVERITY_WARN);
+    let mut env = base("obs.runtime.v1.ObsAuditSpooled", Severity::Warn);
     env.labels
         .insert("full_name".to_string(), full_name.to_string());
     emit_self(env);
@@ -81,10 +78,7 @@ pub(crate) fn emit_audit_spooled(full_name: &str) {
 /// permission, etc). Severity FATAL because AUDIT must not silently
 /// drop.
 pub(crate) fn emit_audit_spool_failed(reason: &str) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsAuditSpoolFailed",
-        PSeverity::SEVERITY_FATAL,
-    );
+    let mut env = base("obs.runtime.v1.ObsAuditSpoolFailed", Severity::Fatal);
     env.labels
         .insert("reason".to_string(), truncate(reason, 512));
     emit_self(env);
@@ -93,7 +87,7 @@ pub(crate) fn emit_audit_spool_failed(reason: &str) {
 /// Emitted when the same envelope is dropped at the worker because
 /// it would re-enter an active emit (cycle protection).
 pub(crate) fn emit_sink_dropped(tier: &str, reason: &str) {
-    let mut env = base_envelope("obs.runtime.v1.ObsSinkDropped", PSeverity::SEVERITY_WARN);
+    let mut env = base("obs.runtime.v1.ObsSinkDropped", Severity::Warn);
     env.labels.insert("tier".to_string(), tier.to_string());
     env.labels.insert("reason".to_string(), reason.to_string());
     emit_self(env);
@@ -102,10 +96,7 @@ pub(crate) fn emit_sink_dropped(tier: &str, reason: &str) {
 /// Emitted at registry init when two distinct events share the same
 /// `schema_hash` 8-byte prefix. Spec 14 § 8 row 2 / spec 93 P2-9.
 pub fn emit_callsite_hash_collision_pub(hash: u64, first: &str, second: &str) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsCallsiteHashCollision",
-        PSeverity::SEVERITY_WARN,
-    );
+    let mut env = base("obs.runtime.v1.ObsCallsiteHashCollision", Severity::Warn);
     env.labels
         .insert("schema_hash".to_string(), format!("{hash:016x}"));
     env.labels.insert("first".to_string(), first.to_string());
@@ -117,10 +108,7 @@ pub fn emit_callsite_hash_collision_pub(hash: u64, first: &str, second: &str) {
 /// configured `pair_timeout`. Spec 93 P1-7. Public so the OTLP trace
 /// sink can fire it from outside `obs-core`.
 pub fn emit_span_pair_orphaned_pub(full_name: &str) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsSpanPairOrphaned",
-        PSeverity::SEVERITY_DEBUG,
-    );
+    let mut env = base("obs.runtime.v1.ObsSpanPairOrphaned", Severity::Debug);
     env.labels
         .insert("full_name".to_string(), full_name.to_string());
     emit_self(env);
@@ -131,10 +119,7 @@ pub fn emit_span_pair_orphaned_pub(full_name: &str) {
 /// `obs-tracing-bridge` field-promoter can fire it. Spec 30 § 2.4 /
 /// spec 94 § 2.6 / P1-D.
 pub fn emit_label_cardinality_high_pub(full_name: &str, label_key: &str, estimated_distinct: u64) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsLabelCardinalityHigh",
-        PSeverity::SEVERITY_WARN,
-    );
+    let mut env = base("obs.runtime.v1.ObsLabelCardinalityHigh", Severity::Warn);
     env.labels
         .insert("full_name".to_string(), full_name.to_string());
     env.labels
@@ -149,10 +134,7 @@ pub fn emit_label_cardinality_high_pub(full_name: &str, label_key: &str, estimat
 /// Emitted when an envelope exceeds `limits.max_payload_bytes` at
 /// projection time.
 pub(crate) fn emit_oversized_dropped(full_name: &str, size_bytes: u64) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsOversizedDropped",
-        PSeverity::SEVERITY_WARN,
-    );
+    let mut env = base("obs.runtime.v1.ObsOversizedDropped", Severity::Warn);
     env.labels
         .insert("full_name".to_string(), full_name.to_string());
     env.labels
@@ -163,10 +145,7 @@ pub(crate) fn emit_oversized_dropped(full_name: &str, size_bytes: u64) {
 /// Emitted when a single label value exceeds
 /// `limits.max_label_value_bytes`. Spec 11 § 6.2 / spec 94 § 3.5.
 pub(crate) fn emit_oversized_label_dropped(full_name: &str, label_name: &str, size_bytes: u64) {
-    let mut env = base_envelope(
-        "obs.runtime.v1.ObsOversizedDropped",
-        PSeverity::SEVERITY_WARN,
-    );
+    let mut env = base("obs.runtime.v1.ObsOversizedDropped", Severity::Warn);
     env.labels
         .insert("full_name".to_string(), full_name.to_string());
     env.labels
@@ -182,7 +161,7 @@ pub(crate) fn emit_oversized_label_dropped(full_name: &str, label_name: &str, si
 /// per-string truncation under `max_external_string_bytes`. Spec 95 §
 /// 3.10 / P2-AH.
 pub fn emit_oversized_label_dropped_pub(field: &str, original_size: u64, capped_size: u64) {
-    let mut env = base_envelope("obs.runtime.v1.ObsLabelOversized", PSeverity::SEVERITY_WARN);
+    let mut env = base("obs.runtime.v1.ObsLabelOversized", Severity::Warn);
     env.labels.insert("field".to_string(), field.to_string());
     env.labels
         .insert("original_size".to_string(), original_size.to_string());
@@ -191,13 +170,10 @@ pub fn emit_oversized_label_dropped_pub(field: &str, original_size: u64, capped_
     emit_self(env);
 }
 
-fn base_envelope(full_name: &str, sev: PSeverity) -> ObsEnvelope {
-    ObsEnvelope {
-        full_name: full_name.to_string(),
-        tier: EnumValue::Known(PTier::TIER_LOG),
-        sev: EnumValue::Known(sev),
-        ..Default::default()
-    }
+/// All obs-core self-events fire at `Tier::Log`; thin wrapper around
+/// [`crate::self_event`] so each callsite stays one line.
+fn base(full_name: &str, sev: Severity) -> ObsEnvelope {
+    self_event(full_name, Tier::Log, sev)
 }
 
 fn truncate(s: &str, max: usize) -> String {

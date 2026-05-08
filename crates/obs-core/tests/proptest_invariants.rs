@@ -17,7 +17,7 @@ use obs_core::{
     Filter, ObsCallsite,
     registry::{CallsiteSource, callsite_id},
 };
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 use proptest::prelude::*;
 
 // ─── 1. callsite_id non-zero invariant ─────────────────────────────
@@ -220,7 +220,7 @@ proptest! {
         use bytes::BytesMut;
         use obs_core::registry::scrub_payload;
         use obs_core::FieldMeta;
-        use obs_types::{Cardinality, Classification};
+        use obs_proto::obs::v1::{Cardinality, Classification};
         use obs_core::FieldRole;
 
         // Build a manual buffa payload with one Internal string,

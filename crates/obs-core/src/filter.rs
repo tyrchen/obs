@@ -30,8 +30,7 @@ use std::{
     str::FromStr,
 };
 
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::Severity;
+use obs_proto::obs::v1::{ObsEnvelope, Severity};
 
 use crate::callsite::{Interest, ObsCallsite};
 
@@ -355,7 +354,7 @@ fn split_directives(s: &str) -> Vec<&str> {
 mod grammar {
     use std::str::FromStr;
 
-    use obs_types::Severity;
+    use obs_proto::obs::v1::Severity;
     use winnow::{
         ModalResult, Parser as _,
         ascii::multispace0,

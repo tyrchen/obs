@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
-use obs_types::Severity;
+use obs_proto::obs::v1::Severity;
 
 /// Cached interest decision for a callsite. Mirrors `tracing::Interest`.
 ///

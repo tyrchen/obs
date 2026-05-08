@@ -182,13 +182,13 @@ fn span_scope_should_propagate_trace_id_to_native_emit() {
     // span's trace_id via the obs scope frame. This verifies the
     // on_enter / on_exit scope plumbing.
     use obs_core::emit::emit_with_callsite;
-    use obs_types::Severity as Sev;
+    use obs_proto::obs::v1::Severity as Sev;
 
     #[derive(Default)]
     struct NativeEvent;
     impl obs_core::EventSchema for NativeEvent {
         const FULL_NAME: &'static str = "test.v1.ObsNative";
-        const TIER: obs_types::Tier = obs_types::Tier::Log;
+        const TIER: obs_proto::obs::v1::Tier = obs_proto::obs::v1::Tier::Log;
         const DEFAULT_SEV: Sev = Sev::Info;
         const FIELDS: &'static [obs_core::FieldMeta] = &[];
         const SCHEMA_HASH: u64 = 0xDEAD_BEEF;

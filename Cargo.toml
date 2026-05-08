@@ -8,7 +8,13 @@ exclude = ["crates/obs-core/fuzz"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+# Phase 3b (obs-migration § 4 + D9): major bump for the obs-types
+# retirement + obs-kit façade completion. Breaking for any consumer
+# that imported `obs_types::*` directly; non-breaking for consumers
+# that went through `obs_kit::*` (the façade keeps `Severity`, `Tier`,
+# etc. resolvable at the same path — the source crate moves to
+# obs-proto).
+version = "0.2.0"
 authors = ["Your Name <YourName@yourdomain.com>"]
 edition = "2024"
 rust-version = "1.95"
@@ -151,17 +157,16 @@ tempfile = "3.27"
 trybuild = "1.0"
 
 # workspace crates
-obs-build = { path = "crates/obs-build", version = "0.1.0" }
-obs-clickhouse = { path = "crates/obs-clickhouse", version = "0.1.0" }
-obs-core = { path = "crates/obs-core", version = "0.1.0" }
-obs-live-tail = { path = "crates/obs-live-tail", version = "0.1.0" }
-obs-macros = { path = "crates/obs-macros", version = "0.1.0" }
-obs-otel = { path = "crates/obs-otel", version = "0.1.0" }
-obs-parquet = { path = "crates/obs-parquet", version = "0.1.0" }
-obs-prom = { path = "crates/obs-prom", version = "0.1.0" }
-obs-proto = { path = "crates/obs-proto", version = "0.1.0" }
-obs-kit = { path = "crates/obs-kit", version = "0.1.0" }
-obs-sink-batch = { path = "crates/obs-sink-batch", version = "0.1.0" }
-obs-tower = { path = "crates/obs-tower", version = "0.1.0" }
-obs-tracing-bridge = { path = "crates/obs-tracing-bridge", version = "0.1.0" }
-obs-types = { path = "crates/obs-types", version = "0.1.0" }
+obs-build = { path = "crates/obs-build", version = "0.2.0" }
+obs-clickhouse = { path = "crates/obs-clickhouse", version = "0.2.0" }
+obs-core = { path = "crates/obs-core", version = "0.2.0" }
+obs-live-tail = { path = "crates/obs-live-tail", version = "0.2.0" }
+obs-macros = { path = "crates/obs-macros", version = "0.2.0" }
+obs-otel = { path = "crates/obs-otel", version = "0.2.0" }
+obs-parquet = { path = "crates/obs-parquet", version = "0.2.0" }
+obs-prom = { path = "crates/obs-prom", version = "0.2.0" }
+obs-proto = { path = "crates/obs-proto", version = "0.2.0" }
+obs-kit = { path = "crates/obs-kit", version = "0.2.0" }
+obs-sink-batch = { path = "crates/obs-sink-batch", version = "0.2.0" }
+obs-tower = { path = "crates/obs-tower", version = "0.2.0" }
+obs-tracing-bridge = { path = "crates/obs-tracing-bridge", version = "0.2.0" }

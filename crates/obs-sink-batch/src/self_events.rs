@@ -4,10 +4,12 @@
 //! consumer renders them uniformly. Each event is a labels-only
 //! [`ObsEnvelope`] — no obs-proto schema, no codegen. The framework
 //! reaches the process-global observer via [`obs_core::observer`].
+//!
+//! Envelopes are built via [`obs_core::self_event`] so the shared
+//! `tier` / `sev` / `sampling_reason` / `ts_ns` path applies.
 
-use buffa::EnumValue;
-use obs_core::observer;
-use obs_proto::obs::v1::{ObsEnvelope, Severity as PSeverity, Tier as PTier};
+use obs_core::{observer, self_event};
+use obs_proto::obs::v1::{ObsEnvelope, Severity, Tier};
 
 /// Emitted after a batch successfully ships.
 pub(crate) fn emit_uploaded(
@@ -19,10 +21,10 @@ pub(crate) fn emit_uploaded(
     duration_ms: u64,
     attempts: u32,
 ) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkUploaded",
-        PTier::TIER_METRIC,
-        PSeverity::SEVERITY_INFO,
+        Tier::Metric,
+        Severity::Info,
     );
     insert_common(&mut env, backend, backend_key, partition);
     env.labels.insert("events".into(), events.to_string());
@@ -42,10 +44,10 @@ pub(crate) fn emit_retry(
     attempt: u32,
     error: &str,
 ) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkRetry",
-        PTier::TIER_LOG,
-        PSeverity::SEVERITY_WARN,
+        Tier::Log,
+        Severity::Warn,
     );
     insert_common(&mut env, backend, backend_key, partition);
     env.labels.insert("attempt".into(), attempt.to_string());
@@ -61,10 +63,10 @@ pub(crate) fn emit_failed(
     attempts: u32,
     error: &str,
 ) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkFailed",
-        PTier::TIER_LOG,
-        PSeverity::SEVERITY_ERROR,
+        Tier::Log,
+        Severity::Error,
     );
     insert_common(&mut env, backend, backend_key, partition);
     env.labels.insert("attempts".into(), attempts.to_string());
@@ -80,10 +82,10 @@ pub(crate) fn emit_spooled(
     events: u32,
     attempts: u32,
 ) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkSpooled",
-        PTier::TIER_METRIC,
-        PSeverity::SEVERITY_WARN,
+        Tier::Metric,
+        Severity::Warn,
     );
     insert_common(&mut env, backend, backend_key, partition);
     env.labels.insert("events".into(), events.to_string());
@@ -94,10 +96,10 @@ pub(crate) fn emit_spooled(
 /// Emitted after a spooled batch successfully re-ships on startup or
 /// from the background retry task.
 pub(crate) fn emit_recovered(backend: &'static str, partition: &str, envelopes: u64) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkRecovered",
-        PTier::TIER_LOG,
-        PSeverity::SEVERITY_INFO,
+        Tier::Log,
+        Severity::Info,
     );
     insert_common(&mut env, backend, "", partition);
     env.labels.insert("envelopes".into(), envelopes.to_string());
@@ -113,10 +115,10 @@ pub(crate) fn emit_escalated(
     age_minutes: u32,
     last_error: &str,
 ) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkEscalatedToFailed",
-        PTier::TIER_LOG,
-        PSeverity::SEVERITY_ERROR,
+        Tier::Log,
+        Severity::Error,
     );
     insert_common(&mut env, backend, "", partition);
     env.labels.insert("path".into(), truncate(path, 512));
@@ -135,10 +137,10 @@ pub(crate) fn emit_partition_overflow(
     evicted: u64,
     capacity: u32,
 ) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkPartitionOverflow",
-        PTier::TIER_METRIC,
-        PSeverity::SEVERITY_WARN,
+        Tier::Metric,
+        Severity::Warn,
     );
     insert_common(&mut env, backend, "", partition);
     env.labels.insert("evicted".into(), evicted.to_string());
@@ -151,10 +153,10 @@ pub(crate) fn emit_partition_overflow(
 /// this should be rare — new envelopes win at the ring, not the
 /// channel — so a non-zero count usually means the worker is wedged.
 pub(crate) fn emit_ingress_dropped(backend: &'static str, count: u64) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkIngressDropped",
-        PTier::TIER_METRIC,
-        PSeverity::SEVERITY_WARN,
+        Tier::Metric,
+        Severity::Warn,
     );
     insert_common(&mut env, backend, "", "");
     env.labels.insert("dropped".into(), count.to_string());
@@ -164,26 +166,16 @@ pub(crate) fn emit_ingress_dropped(backend: &'static str, count: u64) {
 /// Emitted when a single envelope exceeds the `u32::MAX` frame cap.
 /// The envelope is dropped before it reaches the encoder.
 pub(crate) fn emit_envelope_too_large(backend: &'static str, full_name: &str, size: u64) {
-    let mut env = base_envelope(
+    let mut env = self_event(
         "obs.runtime.v1.ObsBatchSinkEnvelopeTooLarge",
-        PTier::TIER_METRIC,
-        PSeverity::SEVERITY_WARN,
+        Tier::Metric,
+        Severity::Warn,
     );
     insert_common(&mut env, backend, "", "");
     env.labels
         .insert("full_name".into(), truncate(full_name, 256));
     env.labels.insert("size".into(), size.to_string());
     emit_self(env);
-}
-
-fn base_envelope(full_name: &str, tier: PTier, sev: PSeverity) -> ObsEnvelope {
-    ObsEnvelope {
-        full_name: full_name.to_string(),
-        tier: EnumValue::Known(tier),
-        sev: EnumValue::Known(sev),
-        ts_ns: now_ns(),
-        ..Default::default()
-    }
 }
 
 fn insert_common(env: &mut ObsEnvelope, backend: &'static str, backend_key: &str, partition: &str) {
@@ -210,13 +202,6 @@ fn truncate(s: &str, max: usize) -> String {
     out.push_str(&s[..end]);
     out.push('…');
     out
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }
 
 fn emit_self(env: ObsEnvelope) {

@@ -18,7 +18,7 @@
 //! shape is fixed (spec 12 § 2). See `docs/research/spike-buffa-reflect.md`
 //! for the validation memo.
 
-use obs_types::{Cardinality, Classification, FieldKind, MetricKind, Severity, Tier};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, MetricKind, Severity, Tier};
 
 /// Tag prefix for `(obs.v1.event)` (field 80001, wire type 2).
 const EVENT_TAG_BYTES: [u8; 3] = [0x8A, 0x88, 0x27];

@@ -18,7 +18,7 @@ use obs_build::{
     LintField, LintInput, LintProtoType,
     reflect::{AnnotatedEvent, AnnotatedField, scan_pool},
 };
-use obs_types::{Cardinality, Classification, FieldKind};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind};
 
 use super::schema_source::SchemaSourceArgs;
 

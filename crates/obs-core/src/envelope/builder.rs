@@ -3,8 +3,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::BytesMut;
-use obs_proto::{__private::Message, obs::v1::ObsEnvelope};
-use obs_types::{SamplingReason, Severity};
+use obs_proto::{
+    __private::Message,
+    obs::v1::{ObsEnvelope, SamplingReason, Severity},
+};
 
 use crate::{callsite::ObsCallsite, envelope::projection::EventSchema};
 
@@ -75,55 +77,12 @@ pub fn build_envelope_at<E: EventSchema>(
     ObsEnvelope {
         full_name: E::FULL_NAME.to_string(),
         schema_hash: E::SCHEMA_HASH,
-        tier: ::buffa::EnumValue::Known(tier_to_proto(E::TIER)),
-        sev: ::buffa::EnumValue::Known(sev_to_proto(sev)),
+        tier: ::buffa::EnumValue::Known(E::TIER),
+        sev: ::buffa::EnumValue::Known(sev),
         ts_ns,
         payload,
-        sampling_reason: ::buffa::EnumValue::Known(sampling_reason_to_proto(
-            SamplingReason::HeadRate,
-        )),
+        sampling_reason: ::buffa::EnumValue::Known(SamplingReason::HeadRate),
         ..Default::default()
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn tier_to_proto(t: obs_types::Tier) -> obs_proto::obs::v1::Tier {
-    use obs_proto::obs::v1::Tier as P;
-    match t {
-        obs_types::Tier::Log => P::TIER_LOG,
-        obs_types::Tier::Metric => P::TIER_METRIC,
-        obs_types::Tier::Trace => P::TIER_TRACE,
-        obs_types::Tier::Audit => P::TIER_AUDIT,
-        _ => P::TIER_UNSPECIFIED,
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn sev_to_proto(s: obs_types::Severity) -> obs_proto::obs::v1::Severity {
-    use obs_proto::obs::v1::Severity as P;
-    match s {
-        obs_types::Severity::Trace => P::SEVERITY_TRACE,
-        obs_types::Severity::Debug => P::SEVERITY_DEBUG,
-        obs_types::Severity::Info => P::SEVERITY_INFO,
-        obs_types::Severity::Warn => P::SEVERITY_WARN,
-        obs_types::Severity::Error => P::SEVERITY_ERROR,
-        obs_types::Severity::Fatal => P::SEVERITY_FATAL,
-        _ => P::SEVERITY_UNSPECIFIED,
-    }
-}
-
-#[allow(non_snake_case, non_upper_case_globals)]
-fn sampling_reason_to_proto(r: SamplingReason) -> obs_proto::obs::v1::SamplingReason {
-    use obs_proto::obs::v1::SamplingReason as P;
-    match r {
-        SamplingReason::HeadRate => P::SAMPLING_REASON_HEAD_RATE,
-        SamplingReason::TailError => P::SAMPLING_REASON_TAIL_ERROR,
-        SamplingReason::Slow => P::SAMPLING_REASON_SLOW,
-        SamplingReason::Forensic => P::SAMPLING_REASON_FORENSIC,
-        SamplingReason::Audit => P::SAMPLING_REASON_AUDIT,
-        SamplingReason::Runtime => P::SAMPLING_REASON_RUNTIME,
-        SamplingReason::Override => P::SAMPLING_REASON_OVERRIDE,
-        _ => P::SAMPLING_REASON_UNSPECIFIED,
     }
 }
 

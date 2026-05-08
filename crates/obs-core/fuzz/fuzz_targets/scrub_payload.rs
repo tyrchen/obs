@@ -20,7 +20,7 @@ use bytes::BytesMut;
 use libfuzzer_sys::fuzz_target;
 use obs_core::registry::scrub_payload;
 use obs_core::FieldMeta;
-use obs_types::{Cardinality, Classification, FieldKind};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind};
 
 // One synthetic schema with a mix of plain / PII / SECRET fields so
 // the scrubber exercises every redaction branch. The field metadata

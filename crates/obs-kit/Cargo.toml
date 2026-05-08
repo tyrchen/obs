@@ -32,6 +32,9 @@ batch-sink = ["dep:obs-sink-batch"]
 prom = ["dep:obs-prom"]
 
 [dependencies]
+# Direct dep so `obs_kit::proto::EnumValue` lives on the façade without
+# forcing consumers to add `buffa` to their own Cargo.toml. Spec § 5.1.
+buffa = { workspace = true }
 obs-clickhouse = { workspace = true, optional = true }
 obs-core = { workspace = true }
 obs-live-tail = { workspace = true, optional = true }
@@ -43,7 +46,6 @@ obs-proto = { workspace = true }
 obs-sink-batch = { workspace = true, optional = true }
 obs-tower = { workspace = true, optional = true }
 obs-tracing-bridge = { workspace = true, optional = true }
-obs-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "signal"] }
 

@@ -1,7 +1,7 @@
 //! `EventSchemaErased` — object-safe complement to `EventSchema`.
 
 use bytes::BytesMut;
-use obs_types::{Severity, Tier};
+use obs_proto::obs::v1::{Severity, Tier};
 
 use crate::{envelope::FieldMeta, metric::MetricEmitter};
 

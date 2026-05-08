@@ -24,10 +24,14 @@ cd "$(dirname "$0")/.."
 
 # Dependency-order list. Keep it in sync with
 #   cargo metadata --no-deps | jq ...
+#
+# Phase 3b (obs-migration § 4): `obs-types` is retired. Its enums live
+# on obs-proto now; no new version of obs-types will be published.
+# obs-proto must precede obs-build (obs-build now depends on obs-proto
+# for the enum vocabulary) — flipped from the 0.1.x order.
 CRATES=(
-    obs-types
-    obs-build
     obs-proto
+    obs-build
     obs-core
     obs-macros
     obs-clickhouse

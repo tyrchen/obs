@@ -46,7 +46,7 @@ pub fn run(args: AuditArgs) -> Result<()> {
     println!("Audit-tier coverage:");
     let audit_events = events
         .iter()
-        .filter(|e| matches!(e.tier(), obs_types::Tier::Audit))
+        .filter(|e| matches!(e.tier(), obs_proto::obs::v1::Tier::Audit))
         .count();
     println!("  {} AUDIT-tier events declared", audit_events);
     println!();

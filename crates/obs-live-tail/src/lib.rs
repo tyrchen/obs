@@ -63,8 +63,7 @@ use std::{
 
 use dashmap::DashMap;
 use obs_core::{ScrubbedEnvelope, sink::SinkFut};
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::Severity;
+use obs_proto::obs::v1::{ObsEnvelope, Severity};
 use thiserror::Error;
 use tokio::sync::mpsc;
 

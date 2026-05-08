@@ -17,9 +17,9 @@ use obs_core::{
     scope::{pop_frame_pub, push_frame_pub},
 };
 use obs_proto::obs::v1::{
-    ObsEnvelope, ObsSpanCompleted, ObsSpanEntered, ObsTracingForensicEvent, ObsTracingInternedEvent,
+    ObsEnvelope, ObsSpanCompleted, ObsSpanEntered, ObsTracingForensicEvent,
+    ObsTracingInternedEvent, Severity,
 };
-use obs_types::Severity;
 use tracing::{Subscriber, field::Visit};
 use tracing_core::{Event, Field, Level, callsite::Identifier};
 use tracing_subscriber::{EnvFilter, Layer, layer::Context, registry::LookupSpan};

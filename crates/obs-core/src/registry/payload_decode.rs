@@ -16,7 +16,7 @@
 
 use buffa::encoding::{Tag, WireType};
 use bytes::Buf;
-use obs_types::Classification;
+use obs_proto::obs::v1::Classification;
 use serde_json::{Map, Value};
 
 use super::erased::{ArrowStructBuilder, DecodeError, OtlpValue};
@@ -138,7 +138,7 @@ pub fn decode_to_arrow_struct_default(
     fields: &'static [FieldMeta],
     builder: &mut dyn ArrowStructBuilder,
 ) -> Result<(), DecodeError> {
-    use obs_types::Classification;
+    use obs_proto::obs::v1::Classification;
 
     let mut cursor = payload;
     let mut offset: usize = 0;
@@ -361,7 +361,7 @@ fn varint_len(mut v: u64) -> usize {
 mod tests {
     use buffa::types;
     use bytes::BytesMut;
-    use obs_types::Cardinality;
+    use obs_proto::obs::v1::Cardinality;
 
     use super::*;
 

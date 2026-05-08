@@ -15,7 +15,7 @@ use obs_core::{
     observer::{StandardObserver, with_test_observer},
     sink::{RollingFileWriter, RollingPolicy},
 };
-use obs_types::Tier as TierKind;
+use obs_proto::obs::v1::Tier as TierKind;
 
 #[derive(Default)]
 struct BenchEvent {

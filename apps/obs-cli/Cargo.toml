@@ -39,7 +39,6 @@ obs-clickhouse = { workspace = true }
 obs-core = { workspace = true }
 obs-parquet = { workspace = true }
 obs-proto = { workspace = true }
-obs-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

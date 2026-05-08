@@ -5,8 +5,7 @@
 //! [`crate::registry::EventSchemaErased`].
 
 use bytes::BytesMut;
-use obs_proto::obs::v1::ObsEnvelope;
-use obs_types::{Cardinality, Classification, FieldKind, Severity, Tier};
+use obs_proto::obs::v1::{Cardinality, Classification, FieldKind, ObsEnvelope, Severity, Tier};
 
 /// Compile-time field metadata emitted by codegen alongside each
 /// `EventSchema` impl. Mirrors the proto-side `obs.v1.FieldMeta`.

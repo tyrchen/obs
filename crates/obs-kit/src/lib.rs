@@ -14,8 +14,20 @@
 //!
 //! Most downstream apps depend only on `obs-kit`. Spec 61 § 2.11 +
 //! boundary-review § 3.6 (`init_for_service`).
+//!
+//! Phase 3 (obs-migration spec § 5):
+//!
+//! - Re-exports `obs-core`'s `sink` and `wire` sub-modules by path so consumers implementing custom
+//!   `Sink`s or walking the envelope codec don't need a direct `obs-core` dep.
+//! - Module aliases for every feature-gated sub-crate: `obs_kit::{live_tail, prom, sink_batch,
+//!   otel, tracing_bridge}`.
+//! - [`self_event`] / [`SelfEventBuilder`] collapse the hand-built `ObsEnvelope { tier, sev,
+//!   sampling_reason, ts_ns, .. }` pattern into one helper.
+//! - [`proto`] is the explicit "here be dragons" escape hatch for the rare call sites (partitioner,
+//!   live-tail serializer) that need typed direct-field access on the wire envelope.
 
 mod init;
+mod self_event_builder;
 
 pub use init::{InitBuilder, InitError, InitGuard, ServicePreset, init_for_service};
 /// Typed wrappers for `Classification::Secret` fields. Decision D6-2:
@@ -33,18 +45,27 @@ pub use obs_core::{
     MakeWriter, MetricEmitter, MetricKind, NdjsonFileSink, NonBlockingWriter, NoopObserver,
     NoopSink, ObsBatch, ObsCallsite, ObsEnvelope, ObsTraceCtx, Observer, RollingFileWriter,
     RollingFileWriterBuilder, RollingPolicy, SamplingConfig, SamplingReason, ScopeField,
-    ScopeFrame, ScopeFrameBuilder, ScopeGuard, ScopeKind, Severity, Sink, SpanCtx, SpanFrame,
-    SpanTrace, StandardObserver, StandardObserverBuilder, StderrWriter, StdoutSink, StdoutWriter,
-    TeeWriter, Tier, W3cPropagator, WithObserver, WorkerCounters, WorkerGuard, extract_w3c,
-    fresh_span_id, fresh_trace_id, inject_w3c, install_observer, install_panic_hook, observer,
-    observer_weak, status_class, with_observer_task, with_observer_task_sync,
-    with_observer_thread_local, with_test_observer,
+    ScopeFrame, ScopeFrameBuilder, ScopeGuard, ScopeKind, ScrubbedEnvelope, Severity, Sink,
+    SpanCtx, SpanFrame, SpanTrace, StandardObserver, StandardObserverBuilder, StderrWriter,
+    StdoutSink, StdoutWriter, TeeWriter, Tier, W3cPropagator, WithObserver, WorkerCounters,
+    WorkerGuard, extract_w3c, fresh_span_id, fresh_trace_id, inject_w3c, install_observer,
+    install_panic_hook, now_ns, observer, observer_weak, self_event, status_class,
+    with_observer_task, with_observer_task_sync, with_observer_thread_local, with_test_observer,
 };
+/// Wire codec and sink trait sub-modules. Consumers implementing a
+/// custom [`Sink`] or reading/writing envelopes on the wire previously
+/// had to depend on `obs-core` directly; obs-kit re-exports these so
+/// `obs-kit = "0.2"` is the only runtime dep needed. Spec § 5.1.
+pub use obs_core::{sink, wire};
 /// In-process live-tail subscriber registry + Sink. Enable via the
 /// `live-tail` feature. Boundary-review § 3.1.
 #[cfg(feature = "live-tail")]
 pub use obs_live_tail as live_tail;
 pub use obs_macros::{Event, context, emit, forensic, include_schemas, instrument, scope};
+/// OTLP log/metric/trace exporters. Enable via the `otel` feature.
+/// Phase 3 spec § 5.1.
+#[cfg(feature = "otel")]
+pub use obs_otel as otel;
 /// Prometheus scrape exporter. Enable via the `prom` feature.
 /// Phase 2 boundary-review § 3.2.
 #[cfg(feature = "prom")]
@@ -55,6 +76,11 @@ pub use obs_proto::obs::v1::{ObsFnEntered, ObsFnExecuted, ObsForensicEvent};
 /// `batch-sink` feature. Phase 2 boundary-review § 3.1.
 #[cfg(feature = "batch-sink")]
 pub use obs_sink_batch as sink_batch;
+/// Bridge from third-party `tracing`-crate events/spans into the obs
+/// runtime. Enable via the `tracing-bridge` feature. Phase 3 spec § 5.1.
+#[cfg(feature = "tracing-bridge")]
+pub use obs_tracing_bridge as tracing_bridge;
+pub use self_event_builder::SelfEventBuilder;
 
 /// Test ergonomics — `assert_emitted!`, `#[obs::test]`. Spec 60 § 8.
 #[cfg(feature = "test")]
@@ -69,6 +95,37 @@ pub mod test {
 pub use obs_core::__private;
 /// Severity ident shortcuts for use with `obs::emit!`. The macro form
 /// accepts either `Severity::Warn` or the bare `WARN` ident.
-pub use obs_core::Severity::{
-    Debug as DEBUG, Error as ERROR, Fatal as FATAL, Info as INFO, Trace as TRACE, Warn as WARN,
-};
+///
+/// Post Phase 3b (obs-types retirement) these are module-level
+/// constants rather than re-exported variants — associated
+/// constants can't ride through `pub use` in Rust, so the aliasing
+/// lives at module scope.
+/// `TRACE` severity shortcut for `obs::emit!`.
+pub const TRACE: Severity = Severity::SEVERITY_TRACE;
+/// `DEBUG` severity shortcut for `obs::emit!`.
+pub const DEBUG: Severity = Severity::SEVERITY_DEBUG;
+/// `INFO` severity shortcut for `obs::emit!`.
+pub const INFO: Severity = Severity::SEVERITY_INFO;
+/// `WARN` severity shortcut for `obs::emit!`.
+pub const WARN: Severity = Severity::SEVERITY_WARN;
+/// `ERROR` severity shortcut for `obs::emit!`.
+pub const ERROR: Severity = Severity::SEVERITY_ERROR;
+/// `FATAL` severity shortcut for `obs::emit!`.
+pub const FATAL: Severity = Severity::SEVERITY_FATAL;
+
+/// Proto-type escape hatch for the rare call sites that need direct
+/// access to the wire envelope's typed enum fields — partitioners
+/// dispatching on [`proto::Severity`] / [`proto::SamplingReason`],
+/// live-tail serializers that render the proto name, sink framework
+/// tests that assert on [`proto::EnumValue`] variants. Phase 3 spec
+/// § 5.1 + § 6.4.
+///
+/// 99 % of consumers don't need this module — they use [`self_event`]
+/// / [`SelfEventBuilder`] for envelope construction and the façade
+/// [`Severity`] / [`Tier`] for enum dispatch. Reach in here when the
+/// façade surface doesn't cover your case; prefer contributing a
+/// helper back to the façade over normalising direct usage.
+pub mod proto {
+    pub use buffa::{EnumValue, Enumeration, SizeCache};
+    pub use obs_proto::obs::v1::{ObsBatch, ObsEnvelope, SamplingReason, Severity, Tier};
+}
