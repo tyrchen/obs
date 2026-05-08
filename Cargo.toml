@@ -158,8 +158,10 @@ obs-live-tail = { path = "crates/obs-live-tail", version = "0.1.0" }
 obs-macros = { path = "crates/obs-macros", version = "0.1.0" }
 obs-otel = { path = "crates/obs-otel", version = "0.1.0" }
 obs-parquet = { path = "crates/obs-parquet", version = "0.1.0" }
+obs-prom = { path = "crates/obs-prom", version = "0.1.0" }
 obs-proto = { path = "crates/obs-proto", version = "0.1.0" }
 obs-sdk = { path = "crates/obs-sdk", version = "0.1.0" }
+obs-sink-batch = { path = "crates/obs-sink-batch", version = "0.1.0" }
 obs-tower = { path = "crates/obs-tower", version = "0.1.0" }
 obs-tracing-bridge = { path = "crates/obs-tracing-bridge", version = "0.1.0" }
 obs-types = { path = "crates/obs-types", version = "0.1.0" }

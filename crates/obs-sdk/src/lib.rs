@@ -45,7 +45,16 @@ pub use obs_core::{
 #[cfg(feature = "live-tail")]
 pub use obs_live_tail as live_tail;
 pub use obs_macros::{Event, context, emit, forensic, include_schemas, instrument, scope};
+/// Prometheus scrape exporter. Enable via the `prom` feature.
+/// Phase 2 boundary-review § 3.2.
+#[cfg(feature = "prom")]
+pub use obs_prom as prom;
 pub use obs_proto::obs::v1::{ObsFnEntered, ObsFnExecuted, ObsForensicEvent};
+/// Generic batching sink framework (triggers + retry + spool +
+/// escalation with a pluggable `BatchBackend` trait). Enable via the
+/// `batch-sink` feature. Phase 2 boundary-review § 3.1.
+#[cfg(feature = "batch-sink")]
+pub use obs_sink_batch as sink_batch;
 
 /// Test ergonomics — `assert_emitted!`, `#[obs::test]`. Spec 60 § 8.
 #[cfg(feature = "test")]
