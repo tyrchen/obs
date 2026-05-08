@@ -44,8 +44,10 @@ jobs:
       - name: install nextest
         uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
-      # - name: Install Protoc
-      #   uses: arduino/setup-protoc@v2
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check code format
         run: cargo fmt --all -- --check
       - name: Check the package for errors
