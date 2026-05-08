@@ -5,18 +5,25 @@
 #   scripts/publish-all.sh              # publish anything crates.io doesn't already have
 #   scripts/publish-all.sh --dry-run    # dry-run each crate, skipping already-published
 #
-# crates.io serves from a CDN, so there's a short indexing lag after
-# `cargo publish` before the new version appears in the index. This
-# script polls the registry between publishes rather than sleeping a
-# fixed interval, so fast networks don't pay for slow ones and vice
-# versa.
+# Handles two operational hazards:
+#
+# 1. crates.io's new-crate rate limit (HTTP 429 with a body of the form
+#    `...try again after Fri, 08 May 2026 04:30:26 GMT...`). We parse
+#    the timestamp out of the error body and sleep exactly that long
+#    (plus a small jitter) so we come back at the first legal moment
+#    instead of burning 60s/120s of retry budget before the window
+#    closes.
+#
+# 2. Registry indexing lag — each publish takes several seconds to
+#    become visible on the index CDN, blocking the next publish in
+#    the chain. We poll the registry (up to 60s) between publishes.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 # Dependency-order list. Keep it in sync with
-#   cargo metadata --no-deps | jq ... (see scripts/dep-order.py).
+#   cargo metadata --no-deps | jq ...
 CRATES=(
     obs-types
     obs-build
@@ -73,6 +80,38 @@ wait_for_index() {
     return 1
 }
 
+# Parse the retry-after deadline out of cargo's stderr. crates.io's
+# 429 body reads:
+#   ... Please try again after Fri, 08 May 2026 04:30:26 GMT and see ...
+# Returns the number of seconds to sleep (at least 1, capped implicitly
+# by the timestamp). Emits 0 when no such timestamp is present.
+seconds_until_retry() {
+    local log_file="$1"
+    python3 - "$log_file" <<'PY'
+import re
+import sys
+import time
+from email.utils import parsedate_to_datetime
+
+log = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+# Accept "Please try again after <RFC-1123>" (documented shape) and
+# the bare "try again after <date>" fallback.
+m = re.search(r"try again after\s+([A-Z][a-z]{2},\s+\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT)", log)
+if not m:
+    print(0)
+    sys.exit(0)
+try:
+    dt = parsedate_to_datetime(m.group(1))
+except (TypeError, ValueError):
+    print(0)
+    sys.exit(0)
+now = time.time()
+# Sleep until the deadline + 10s jitter so we don't race the clock.
+delta = max(1, int(dt.timestamp() - now) + 10)
+print(delta)
+PY
+}
+
 publish_one() {
     local crate="$1"
     local version
@@ -89,27 +128,46 @@ publish_one() {
 
     echo "== publishing $crate@$version $DRY_RUN"
 
-    # Retry with backoff on rate-limit / transient upload failures.
-    # crates.io rate-limits new crate creation per account; 3 attempts
-    # with 60s/120s backoff is enough to ride out a minute-window cap.
+    # Retry on 429. The server tells us *when* to come back via the
+    # "try again after <RFC-1123>" message in the 429 body; we parse
+    # it out and sleep exactly that long. On non-429 failures fall
+    # back to a small fixed delay (these are rare — usually network
+    # hiccups).
     local attempt=1
-    local max_attempts=3
-    local delay=60
+    local max_attempts=6
+    local log_file
+    log_file=$(mktemp -t obs-publish.XXXXXX)
+    trap 'rm -f "$log_file"' RETURN
+
+    local published=0
     while (( attempt <= max_attempts )); do
-        if cargo publish -p "$crate" $DRY_RUN; then
+        # Tee stderr so the operator sees progress, but also capture
+        # it so we can parse the retry-after timestamp.
+        if cargo publish -p "$crate" $DRY_RUN 2> >(tee "$log_file" >&2); then
+            published=1
             break
         fi
+
         if (( attempt == max_attempts )); then
             echo "   ✗ $crate failed after $max_attempts attempts" >&2
             exit 1
         fi
-        echo "   attempt $attempt failed; sleeping ${delay}s before retry..." >&2
-        sleep "$delay"
-        delay=$(( delay * 2 ))
+
+        local sleep_for
+        sleep_for=$(seconds_until_retry "$log_file")
+        if (( sleep_for > 0 )); then
+            local mins=$(( sleep_for / 60 ))
+            local secs=$(( sleep_for % 60 ))
+            echo "   429 rate-limit; sleeping ${mins}m${secs}s until server's retry-after..." >&2
+        else
+            sleep_for=30
+            echo "   attempt $attempt failed (no retry-after hint); sleeping ${sleep_for}s..." >&2
+        fi
+        sleep "$sleep_for"
         attempt=$(( attempt + 1 ))
     done
 
-    if [[ -z "$DRY_RUN" ]]; then
+    if (( published == 1 )) && [[ -z "$DRY_RUN" ]]; then
         echo "   waiting for crates.io to index $crate@$version..."
         wait_for_index "$crate" "$version"
         echo "   ✓ indexed"
