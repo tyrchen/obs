@@ -1,0 +1,69 @@
+syntax = "proto3";
+package obs.v1;
+
+// Mirrors of obs_types enums in proto form so the wire shape and the Rust
+// vocabulary stay in lock-step. See specs/10-data-model.md.
+
+enum Tier {
+  TIER_UNSPECIFIED = 0;
+  TIER_LOG = 1;
+  TIER_METRIC = 2;
+  TIER_TRACE = 3;
+  TIER_AUDIT = 4;
+}
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_TRACE = 1;
+  SEVERITY_DEBUG = 2;
+  SEVERITY_INFO = 3;
+  SEVERITY_WARN = 4;
+  SEVERITY_ERROR = 5;
+  SEVERITY_FATAL = 6;
+}
+
+enum FieldKind {
+  FIELD_KIND_UNSPECIFIED = 0;
+  LABEL = 1;
+  ATTRIBUTE = 2;
+  MEASUREMENT = 3;
+  TRACE_ID = 4;
+  SPAN_ID = 5;
+  PARENT_SPAN_ID = 6;
+  TIMESTAMP_NS = 7;
+  DURATION_NS = 8;
+  FORENSIC = 9;
+}
+
+enum Cardinality {
+  CARDINALITY_UNSPECIFIED = 0;
+  LOW = 1;
+  MEDIUM = 2;
+  HIGH = 3;
+  UNBOUNDED = 4;
+}
+
+enum Classification {
+  CLASSIFICATION_UNSPECIFIED = 0;
+  INTERNAL = 1;
+  PII = 2;
+  SECRET = 3;
+}
+
+enum MetricKind {
+  METRIC_KIND_UNSPECIFIED = 0;
+  METRIC_KIND_COUNTER = 1;
+  METRIC_KIND_GAUGE = 2;
+  METRIC_KIND_HISTOGRAM = 3;
+}
+
+enum SamplingReason {
+  SAMPLING_REASON_UNSPECIFIED = 0;
+  SAMPLING_REASON_HEAD_RATE = 1;
+  SAMPLING_REASON_TAIL_ERROR = 2;
+  SAMPLING_REASON_SLOW = 3;
+  SAMPLING_REASON_FORENSIC = 4;
+  SAMPLING_REASON_AUDIT = 5;
+  SAMPLING_REASON_RUNTIME = 6;
+  SAMPLING_REASON_OVERRIDE = 7;
+}

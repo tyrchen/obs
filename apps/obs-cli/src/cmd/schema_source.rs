@@ -137,10 +137,16 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-const EMBEDDED_OPTIONS_PROTO: &str =
-    include_str!("../../../../crates/obs-proto/proto/obs/v1/options.proto");
-const EMBEDDED_ENUMS_PROTO: &str =
-    include_str!("../../../../crates/obs-proto/proto/obs/v1/enums.proto");
+// Vendored copies of the canonical protos in
+// `obs-proto/proto/obs/v1/`. `include_str!` paths have to resolve
+// inside this crate's packaged tarball; a sibling-relative path
+// (e.g. `../../../../crates/obs-proto/proto/...`) breaks
+// `cargo publish --dry-run` and any consumer pulling `obs-cli` from
+// crates.io. The `build.rs` sibling script validates these two
+// copies against the canonical ones at build time so they cannot
+// drift silently in-repo.
+const EMBEDDED_OPTIONS_PROTO: &str = include_str!("../../proto/obs/v1/options.proto");
+const EMBEDDED_ENUMS_PROTO: &str = include_str!("../../proto/obs/v1/enums.proto");
 
 pub(crate) fn write_bundled_options(target: &Path) -> Result<()> {
     let dir = target.join("obs").join("v1");

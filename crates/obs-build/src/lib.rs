@@ -32,7 +32,10 @@ mod config;
 pub mod lints;
 mod options;
 
-pub use config::{Config, DescriptorSource};
+pub use config::{
+    Config, DescriptorSource, EMBEDDED_ENUMS_PROTO, EMBEDDED_OPTIONS_PROTO,
+    materialise_embedded_options,
+};
 pub use lints::{
     LintError, LintField, LintInput, LintProtoType, emit_cross_event_lints, emit_lints,
 };

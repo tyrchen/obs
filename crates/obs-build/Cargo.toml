@@ -11,6 +11,18 @@ license.workspace = true
 documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Vendored protos under `proto/obs/v1/{options,enums}.proto` must
+# end up in the published tarball — `config.rs` pulls them in via
+# `include_str!`. The `build.rs` keeps them in sync with the
+# canonical copies in `obs-proto/proto/obs/v1/`.
+build = "build.rs"
+include = [
+    "src/**/*",
+    "build.rs",
+    "proto/**/*.proto",
+    "README.md",
+    "LICENSE*",
+]
 
 [dependencies]
 anyhow = { workspace = true }

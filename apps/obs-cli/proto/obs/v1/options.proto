@@ -1,0 +1,34 @@
+syntax = "proto2";
+package obs.v1;
+
+import "google/protobuf/descriptor.proto";
+import "obs/v1/enums.proto";
+
+// Custom options live in obs.v1.* to avoid colliding with third-party
+// extensions; field numbers 80001..89999 are reserved (specs/12 § 2).
+
+extend google.protobuf.MessageOptions {
+  optional EventMeta event = 80001;
+}
+
+extend google.protobuf.FieldOptions {
+  optional FieldMeta field = 80002;
+}
+
+message EventMeta {
+  optional Tier tier = 1;
+  optional Severity default_sev = 2;
+}
+
+message FieldMeta {
+  optional FieldKind kind = 1;
+  optional Cardinality cardinality = 2;
+  optional Classification classification = 3;
+  optional MetricSpec metric = 4;
+}
+
+message MetricSpec {
+  optional MetricKind kind = 1;
+  optional string unit = 2;
+  repeated double bounds = 3;
+}

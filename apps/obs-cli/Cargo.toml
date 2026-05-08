@@ -9,6 +9,18 @@ license.workspace = true
 documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Vendored protos at `proto/obs/v1/{options,enums}.proto` have to
+# ship in the published tarball because `schema_source.rs` pulls
+# them in via `include_str!`. The `build.rs` validates they stay in
+# sync with the canonical `obs-proto/proto/obs/v1/` copies.
+build = "build.rs"
+include = [
+    "src/**/*",
+    "build.rs",
+    "proto/**/*.proto",
+    "README.md",
+    "LICENSE*",
+]
 
 [[bin]]
 name = "obs"

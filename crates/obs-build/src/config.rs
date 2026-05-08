@@ -444,10 +444,32 @@ fn map_kind_to_lint_type(k: &Kind) -> LintProtoType {
     }
 }
 
-const EMBEDDED_OPTIONS_PROTO: &str = include_str!("../../obs-proto/proto/obs/v1/options.proto");
-const EMBEDDED_ENUMS_PROTO: &str = include_str!("../../obs-proto/proto/obs/v1/enums.proto");
+// Vendored copies of the canonical protos in `obs-proto/proto/obs/v1/`.
+// `include_str!` paths must resolve inside the crate's packaged
+// tarball — `cargo publish` verifies each crate in isolation, so a
+// sibling-relative path like `../../obs-proto/proto/...` would break
+// on `cargo publish --dry-run` and on any consumer that pulls
+// `obs-build` from crates.io. The `build.rs` keeps these two copies
+// in sync with `obs-proto/proto/obs/v1/{options,enums}.proto` and
+// fails the build if they diverge.
+/// Embedded canonical text of `obs/v1/options.proto`, re-exported so
+/// downstream consumers (e.g. `obs-cli`'s `schema_source`) can reuse
+/// it without re-vendoring.
+pub const EMBEDDED_OPTIONS_PROTO: &str = include_str!("../proto/obs/v1/options.proto");
+/// Embedded canonical text of `obs/v1/enums.proto`, re-exported for
+/// the same reason as [`EMBEDDED_OPTIONS_PROTO`].
+pub const EMBEDDED_ENUMS_PROTO: &str = include_str!("../proto/obs/v1/enums.proto");
 
-fn materialise_embedded_options(dir: &Path) -> std::io::Result<()> {
+/// Write the embedded `obs/v1/{options,enums}.proto` pair into
+/// `{dir}/obs/v1/` so a downstream protoc invocation can include
+/// them. Used by both `Config::compile` above and `obs-cli`'s
+/// schema-source helper.
+///
+/// # Errors
+///
+/// Returns any IO error encountered while creating the directory
+/// tree or writing the proto files.
+pub fn materialise_embedded_options(dir: &Path) -> std::io::Result<()> {
     let target = dir.join("obs").join("v1");
     std::fs::create_dir_all(&target)?;
     std::fs::write(target.join("options.proto"), EMBEDDED_OPTIONS_PROTO)?;
