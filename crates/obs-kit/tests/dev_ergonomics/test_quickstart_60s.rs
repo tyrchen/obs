@@ -8,7 +8,7 @@
 //! against the workspace `apps/server-proto` binary which lives in
 //! the same workspace and runs in CI via `cargo build`.
 
-use obs_sdk::Event;
+use obs_kit::Event;
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]
@@ -17,27 +17,27 @@ pub struct ObsHelloEmitted {
     pub who: String,
 }
 
-#[obs_sdk::test::test]
+#[obs_kit::test::test]
 fn test_quickstart_should_emit_via_builder() -> anyhow::Result<()> {
     ObsHelloEmitted::builder().who("world").emit();
-    obs_sdk::test::assert_emitted!(ObsHelloEmitted { who: "world", .. });
+    obs_kit::test::assert_emitted!(ObsHelloEmitted { who: "world", .. });
     Ok(())
 }
 
-#[obs_sdk::test::test]
+#[obs_kit::test::test]
 fn test_quickstart_should_emit_via_struct_literal_macro() -> anyhow::Result<()> {
-    obs_sdk::emit!(ObsHelloEmitted {
+    obs_kit::emit!(ObsHelloEmitted {
         who: "macro".to_string()
     });
-    obs_sdk::test::assert_emitted!(ObsHelloEmitted { who: "macro", .. });
+    obs_kit::test::assert_emitted!(ObsHelloEmitted { who: "macro", .. });
     Ok(())
 }
 
-#[obs_sdk::test::test]
+#[obs_kit::test::test]
 fn test_quickstart_should_support_emit_at_severity() -> anyhow::Result<()> {
     ObsHelloEmitted::builder()
         .who("warn")
-        .emit_at(obs_sdk::Severity::Warn);
-    obs_sdk::test::assert_emitted!(ObsHelloEmitted { who: "warn", .. });
+        .emit_at(obs_kit::Severity::Warn);
+    obs_kit::test::assert_emitted!(ObsHelloEmitted { who: "warn", .. });
     Ok(())
 }

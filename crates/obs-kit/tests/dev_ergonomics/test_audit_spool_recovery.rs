@@ -2,7 +2,7 @@
 //! recovers records on next observer init.
 
 use obs_core::audit_spool::{SpoolWriter, recover};
-use obs_sdk::ObsEnvelope;
+use obs_kit::ObsEnvelope;
 
 #[test]
 fn test_audit_spool_round_trip_recovers_envelopes() {

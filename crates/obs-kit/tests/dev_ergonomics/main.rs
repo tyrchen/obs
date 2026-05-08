@@ -5,7 +5,7 @@
 //! pinned snapshots in one place avoids duplicating expected outputs.
 //!
 //! `#[cfg(feature = "test")]` is intentionally **not** required at the
-//! file level — `obs-sdk`'s `dev-dependencies` enable `obs-core/test`,
+//! file level — `obs-kit`'s `dev-dependencies` enable `obs-core/test`,
 //! so the `#[obs::test]` macro and `assert_emitted!` are always
 //! available within `cargo test`.
 

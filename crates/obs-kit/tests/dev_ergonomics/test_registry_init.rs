@@ -2,7 +2,7 @@
 //! every `ObsXxx` defined in this crate appears in the registry's
 //! `by_name`/`by_hash` indices. Spec 72 § 7.
 
-use obs_sdk::{Event, EventSchema};
+use obs_kit::{Event, EventSchema};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]

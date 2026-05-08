@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
-use obs_sdk::{Emit, FormatterStyle, StandardObserver, StdoutSink, install_observer};
+use obs_kit::{Emit, FormatterStyle, StandardObserver, StdoutSink, install_observer};
 
-obs_sdk::include_schemas!("myapp.v1");
+obs_kit::include_schemas!("myapp.v1");
 
 fn main() -> anyhow::Result<()> {
     let observer = StandardObserver::builder()

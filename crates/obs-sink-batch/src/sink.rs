@@ -54,7 +54,7 @@ pub struct WorkerCounters {
 /// One `BatchingSink` owns one worker task and one spool subtree. The
 /// sink is cheap to clone via `Arc` — pass the result of
 /// [`Self::new`] as the `Arc<dyn Sink>` argument to
-/// [`obs_sdk::InitBuilder::with_sink_for`].
+/// [`obs_kit::InitBuilder::with_sink_for`].
 pub struct BatchingSink<B: BatchBackend> {
     ingress: mpsc::Sender<ObsEnvelope>,
     counters: Arc<WorkerCounters>,

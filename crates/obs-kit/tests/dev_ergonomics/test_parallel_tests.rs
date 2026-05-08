@@ -2,7 +2,7 @@
 //! and asserts each test sees only its own events (no cross-thread
 //! contamination via the per-thread observer slot). Spec 72 § 7.
 
-use obs_sdk::{Emit, Event};
+use obs_kit::{Emit, Event};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]
@@ -13,7 +13,7 @@ pub struct ObsParallelProbe {
 
 macro_rules! parallel_case {
     ($name:ident, $label:literal) => {
-        #[obs_sdk::test::test]
+        #[obs_kit::test::test]
         fn $name() {
             // A small busy loop / sleep + emit pattern simulates the
             // realistic case where one test is doing work while
@@ -26,7 +26,7 @@ macro_rules! parallel_case {
             }
             // Every captured envelope should carry our label, and no
             // other label values from sibling tests leaked into ours.
-            let drained = obs_sdk::test::take_emitted();
+            let drained = obs_kit::test::take_emitted();
             assert!(
                 !drained.is_empty(),
                 "expected at least one captured envelope"

@@ -12,7 +12,7 @@
 
 //! Façade crate — re-exports the everyday obs API.
 //!
-//! Most downstream apps depend only on `obs-sdk`. Spec 61 § 2.11 +
+//! Most downstream apps depend only on `obs-kit`. Spec 61 § 2.11 +
 //! boundary-review § 3.6 (`init_for_service`).
 
 mod init;

@@ -1,7 +1,7 @@
 //! `test_in_memory_observer` — verifies `assert_emitted!` matches on
 //! partial fields and `wait_for` times out. Spec 60 § 13.
 
-use obs_sdk::{Emit, Event, Severity, with_test_observer};
+use obs_kit::{Emit, Event, Severity, with_test_observer};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]
@@ -14,7 +14,7 @@ pub struct ObsRequestCompleted {
 
 #[test]
 fn test_assert_emitted_should_match_partial_fields() {
-    let (observer, _handle, _g) = obs_sdk::test::install_thread_handle();
+    let (observer, _handle, _g) = obs_kit::test::install_thread_handle();
     with_test_observer(observer, || {
         ObsRequestCompleted {
             route: "list_users".into(),
@@ -23,19 +23,19 @@ fn test_assert_emitted_should_match_partial_fields() {
         .emit();
 
         // Partial match — only `route` named.
-        obs_sdk::test::assert_emitted!(ObsRequestCompleted {
+        obs_kit::test::assert_emitted!(ObsRequestCompleted {
             route: "list_users",
             ..
         });
 
         // Empty body — match by type name only.
-        obs_sdk::test::assert_emitted!(ObsRequestCompleted { .. });
+        obs_kit::test::assert_emitted!(ObsRequestCompleted { .. });
     });
 }
 
 #[test]
 fn test_in_memory_handle_wait_for_should_timeout() {
-    let (_observer, handle, _g) = obs_sdk::test::install_thread_handle();
+    let (_observer, handle, _g) = obs_kit::test::install_thread_handle();
     // Nothing emitted; `wait_for` should time out.
     let res = handle.wait_for(1, std::time::Duration::from_millis(20));
     assert!(res.is_none(), "expected wait_for to time out");
@@ -43,7 +43,7 @@ fn test_in_memory_handle_wait_for_should_timeout() {
 
 #[test]
 fn test_emit_at_should_be_callable() {
-    let (observer, handle, _g) = obs_sdk::test::install_thread_handle();
+    let (observer, handle, _g) = obs_kit::test::install_thread_handle();
     with_test_observer(observer, || {
         ObsRequestCompleted {
             route: "x".into(),

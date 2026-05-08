@@ -13,11 +13,11 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
-# obs-core is a transitive dep of obs-sdk; macro-generated code uses
+# obs-core is a transitive dep of obs-kit; macro-generated code uses
 # `::obs_core::__private::*` absolute paths, so we declare it directly
 # until the macro learns to emit `::obs_sdk::__private::*` (Phase 2).
 obs-core = { workspace = true }
-obs-sdk = { workspace = true }
+obs-kit = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

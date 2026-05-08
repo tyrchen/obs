@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use obs_sdk::{InMemoryObserver, Observer, with_test_observer};
+use obs_kit::{InMemoryObserver, Observer, with_test_observer};
 use obs_tracing_bridge::TracingToObsLayer;
 use tracing_subscriber::layer::SubscriberExt;
 

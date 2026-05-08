@@ -29,10 +29,10 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         }
     };
 
-    if manifest.contains("obs-sdk =") {
-        report.ok("obs-sdk in [dependencies]");
+    if manifest.contains("obs-kit =") {
+        report.ok("obs-kit in [dependencies]");
     } else {
-        report.error("obs-sdk missing from [dependencies]");
+        report.error("obs-kit missing from [dependencies]");
     }
     if manifest.contains("obs-build =") {
         report.ok("obs-build in [build-dependencies]");

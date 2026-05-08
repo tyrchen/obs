@@ -27,7 +27,7 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
-use obs_sdk::observer as resolve_observer;
+use obs_kit::observer as resolve_observer;
 use tokio::time::sleep;
 
 use crate::{schema::showcase, sinks::install_observer_with_sinks};

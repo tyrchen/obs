@@ -18,7 +18,7 @@ obs-clickhouse = { workspace = true }
 obs-core = { workspace = true }
 obs-otel = { workspace = true }
 obs-parquet = { workspace = true }
-obs-sdk = { workspace = true }
+obs-kit = { workspace = true }
 obs-tracing-bridge = { workspace = true }
 tokio = { workspace = true, features = [
   "rt",

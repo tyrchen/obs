@@ -15,7 +15,7 @@ clap = { workspace = true }
 obs-core = { workspace = true }
 obs-otel = { workspace = true }
 obs-parquet = { workspace = true }
-obs-sdk = { workspace = true }
+obs-kit = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal"] }
 
 [build-dependencies]

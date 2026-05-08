@@ -15,7 +15,7 @@ publish = false
 anyhow = { workspace = true }
 buffa = { workspace = true }
 obs-core = { workspace = true }
-obs-sdk = { workspace = true }
+obs-kit = { workspace = true }
 
 [build-dependencies]
 obs-build = { workspace = true }

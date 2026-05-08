@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use obs_sdk::{Event, FormatterStyle, StandardObserver, StdoutSink, install_observer};
+use obs_kit::{Event, FormatterStyle, StandardObserver, StdoutSink, install_observer};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]

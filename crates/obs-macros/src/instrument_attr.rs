@@ -53,7 +53,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 
     let emit_entered = if cfg.enter {
         quote! {
-            ::obs_macros::emit!(::obs_sdk::ObsFnEntered {
+            ::obs_macros::emit!(::obs_kit::ObsFnEntered {
                 fn_name: #fn_name,
             });
         }
@@ -61,7 +61,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
         quote!()
     };
     let executed_emit = quote! {
-        ::obs_macros::emit!(::obs_sdk::ObsFnExecuted {
+        ::obs_macros::emit!(::obs_kit::ObsFnExecuted {
             fn_name: #fn_name,
             latency_ns: __obs_started.elapsed().as_nanos() as u64,
         });

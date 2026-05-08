@@ -19,11 +19,11 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use obs_kit::{FormatterStyle, Sink, StandardObserver, StdoutSink, Tier, install_observer};
 use obs_otel::{
     GrpcOtlpExporter, OtlpEndpoint, OtlpLogSink, OtlpMetricSink, OtlpProtocol, OtlpResourceAttrs,
 };
 use obs_parquet::{ParquetLayout, ParquetSink};
-use obs_sdk::{FormatterStyle, Sink, StandardObserver, StdoutSink, Tier, install_observer};
 
 /// Service identity used by every sink in the showcase.
 pub(crate) const SERVICE: &str = "obs-example-sinks-showcase";

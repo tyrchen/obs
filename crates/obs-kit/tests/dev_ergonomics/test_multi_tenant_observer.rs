@@ -12,7 +12,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use obs_sdk::{Emit, Event, InMemoryObserver, Observer, with_test_observer};
+use obs_kit::{Emit, Event, InMemoryObserver, Observer, with_test_observer};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]

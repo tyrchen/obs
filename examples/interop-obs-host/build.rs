@@ -4,7 +4,7 @@
 //! 2. `obs-build` produces builders, lints, and the schema registry plumbing for every
 //!    `obs.v1.event`-annotated message.
 //!
-//! `obs_sdk::include_schemas!("orders.v1")` in `src/main.rs` wires the
+//! `obs_kit::include_schemas!("orders.v1")` in `src/main.rs` wires the
 //! generated files into the binary.
 
 #![allow(

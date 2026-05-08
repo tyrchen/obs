@@ -8,7 +8,7 @@
 //! A typical `main.rs` now looks like:
 //!
 //! ```no_run
-//! use obs_sdk::{ServicePreset, init_for_service};
+//! use obs_kit::{ServicePreset, init_for_service};
 //!
 //! # async fn demo() -> anyhow::Result<()> {
 //! let _obs = init_for_service("my-service", env!("CARGO_PKG_VERSION"))
@@ -25,10 +25,10 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! use obs_sdk::{
+//! use obs_kit::{
 //!     FanOutSink, NdjsonFileSink, RollingFileWriterBuilder, RollingPolicy, Sink, Tier,
 //! };
-//! # use obs_sdk::{ServicePreset, init_for_service};
+//! # use obs_kit::{ServicePreset, init_for_service};
 //! #
 //! # async fn demo() -> anyhow::Result<()> {
 //! let writer = RollingFileWriterBuilder::default()
@@ -183,7 +183,7 @@ impl InitBuilder {
 
     /// Install the `tracing → obs` bridge with the supplied filter
     /// directive (`RUST_LOG` shape). Requires the `tracing-bridge`
-    /// feature on `obs-sdk`.
+    /// feature on `obs-kit`.
     #[cfg(feature = "tracing-bridge")]
     pub fn with_tracing_bridge(mut self, filter: impl Into<String>) -> Self {
         self.tracing_bridge_filter = Some(filter.into());
@@ -302,7 +302,7 @@ fn build_observer(
         }
         ServicePreset::Production => {
             // No OTLP wiring here — obs-otel is a separate crate, and
-            // forcing the feature-graph into obs-sdk's init path would
+            // forcing the feature-graph into obs-kit's init path would
             // either bloat the default build or leak feature flags out
             // of the façade. Production callers wire OTLP sinks
             // through `with_sink_for` (the `otlp_trio_from_env()`

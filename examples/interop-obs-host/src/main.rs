@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use obs_sdk::{
+use obs_kit::{
     FormatterStyle, Sink, StandardObserver, StdoutSink, install_observer, observer, scope,
 };
 

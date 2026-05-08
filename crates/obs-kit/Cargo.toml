@@ -1,6 +1,6 @@
 [package]
-name = "obs-sdk"
-description = "Façade for the obs SDK; re-exports the everyday API."
+name = "obs-kit"
+description = "Façade for the obs observability SDK; re-exports the everyday API (init, observer, sinks, macros)."
 categories = ["development-tools"]
 keywords = ["observability", "obs"]
 version.workspace = true
@@ -14,7 +14,7 @@ homepage.workspace = true
 
 [features]
 # Spec 61 § 2.11 / spec 93 P2-15 + decision D6-4: ship `otel` in the
-# default set so `obs-sdk = "0.1"` brings in the OTLP transport without
+# default set so `obs-kit = "0.1"` brings in the OTLP transport without
 # extra feature flags. Compile-slim consumers can pass
 # `default-features = false` and pick their sinks.
 default = ["dev", "panic-hook", "otel"]

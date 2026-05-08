@@ -54,7 +54,7 @@ crates/
   obs-core           # Observer、sinks、registry、采样、scope、过滤
   obs-macros         # #[derive(Event)]、obs::emit!、#[obs::test]、…
   obs-build          # 用于 proto-first 撰写路径的 build.rs 代码生成
-  obs-sdk            # 门面 re-export
+  obs-kit            # 门面 re-export
   obs-otel           # OTLP log / metric / trace sink
   obs-parquet        # Parquet sink（单表布局）
   obs-clickhouse     # ClickHouse sink

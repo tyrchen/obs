@@ -60,7 +60,7 @@ crates/
   obs-core           # Observer, sinks, registry, sampling, scope, filter
   obs-macros         # #[derive(Event)], obs::emit!, #[obs::test], …
   obs-build          # build.rs codegen for proto-first authoring
-  obs-sdk            # façade re-export
+  obs-kit            # façade re-export
   obs-otel           # OTLP log / metric / trace sinks
   obs-parquet        # Parquet sink (Single-table layout)
   obs-clickhouse     # ClickHouse sink

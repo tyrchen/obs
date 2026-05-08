@@ -2,7 +2,7 @@
 //! installs an observer, captures emits, and supports `Result<T, E>`
 //! returns so tests use `?`. Spec 60 § 8 + spec 72 § 3.
 
-use obs_sdk::{Emit, Event};
+use obs_kit::{Emit, Event};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]
@@ -11,31 +11,31 @@ pub struct ObsAttrProbe {
     pub kind: String,
 }
 
-#[obs_sdk::test::test]
+#[obs_kit::test::test]
 fn test_obs_test_sync_should_capture_via_assert_emitted() -> anyhow::Result<()> {
     ObsAttrProbe {
         kind: "sync".into(),
     }
     .emit();
-    obs_sdk::test::assert_emitted!(ObsAttrProbe { kind: "sync", .. });
+    obs_kit::test::assert_emitted!(ObsAttrProbe { kind: "sync", .. });
     Ok(())
 }
 
-#[obs_sdk::test::test]
+#[obs_kit::test::test]
 async fn test_obs_test_async_should_capture_via_assert_emitted() -> anyhow::Result<()> {
     ObsAttrProbe {
         kind: "async".into(),
     }
     .emit();
-    obs_sdk::test::assert_emitted!(ObsAttrProbe { kind: "async", .. });
+    obs_kit::test::assert_emitted!(ObsAttrProbe { kind: "async", .. });
     Ok(())
 }
 
-#[obs_sdk::test::test]
+#[obs_kit::test::test]
 fn test_obs_test_should_support_no_return() {
     ObsAttrProbe {
         kind: "no_return".into(),
     }
     .emit();
-    obs_sdk::test::assert_emitted!(ObsAttrProbe { .. });
+    obs_kit::test::assert_emitted!(ObsAttrProbe { .. });
 }

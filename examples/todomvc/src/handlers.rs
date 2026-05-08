@@ -15,7 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use obs_sdk::{Severity, scope};
+use obs_kit::{Severity, scope};
 use serde::Deserialize;
 use serde_json::json;
 

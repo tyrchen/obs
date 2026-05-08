@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use obs_sdk::{InMemorySink, Observer, StandardObserver, Tier};
+use obs_kit::{InMemorySink, Observer, StandardObserver, Tier};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_worker_pool_should_deliver_to_log_sink() {
@@ -16,11 +16,11 @@ async fn test_worker_pool_should_deliver_to_log_sink() {
         .build()
         .unwrap();
 
-    let env = obs_sdk::ObsEnvelope {
+    let env = obs_kit::ObsEnvelope {
         full_name: "test.v1.WorkerPool".to_string(),
-        tier: ::obs_sdk::__private::EnumValue::Known(::obs_sdk::__private::ProtoTier::TIER_LOG),
-        sev: ::obs_sdk::__private::EnumValue::Known(
-            ::obs_sdk::__private::ProtoSeverity::SEVERITY_INFO,
+        tier: ::obs_kit::__private::EnumValue::Known(::obs_kit::__private::ProtoTier::TIER_LOG),
+        sev: ::obs_kit::__private::EnumValue::Known(
+            ::obs_kit::__private::ProtoSeverity::SEVERITY_INFO,
         ),
         ..Default::default()
     };

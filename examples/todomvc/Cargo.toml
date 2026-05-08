@@ -15,7 +15,7 @@ buffa = { workspace = true }
 clap = { workspace = true }
 http = { workspace = true }
 obs-core = { workspace = true }
-obs-sdk = { workspace = true }
+obs-kit = { workspace = true }
 obs-tower = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

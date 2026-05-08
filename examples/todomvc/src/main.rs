@@ -24,7 +24,7 @@ use axum::{
     routing::{get, patch, post},
 };
 use clap::Parser;
-use obs_sdk::{
+use obs_kit::{
     FormatterStyle, NdjsonFileSink, RollingFileWriter, RollingPolicy, Sink, StandardObserver,
     StdoutSink, Tier, install_observer, observer,
 };

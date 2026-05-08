@@ -13,7 +13,7 @@ anyhow = { workspace = true }
 buffa = { workspace = true }
 clap = { workspace = true }
 obs-core = { workspace = true }
-obs-sdk = { workspace = true }
+obs-kit = { workspace = true }
 obs-tracing-bridge = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing = { workspace = true }

@@ -20,7 +20,7 @@ mod schema;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use obs_sdk::{Sink, StandardObserver, install_observer, observer};
+use obs_kit::{Sink, StandardObserver, install_observer, observer};
 use obs_tracing_bridge::ObsToTracingSink;
 use tracing_subscriber::EnvFilter;
 

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use obs_sdk::{Filter, Observer, StandardObserver, Tier};
+use obs_kit::{Filter, Observer, StandardObserver, Tier};
 
 #[test]
 fn test_should_bump_generation_on_reload() {
@@ -12,7 +12,7 @@ fn test_should_bump_generation_on_reload() {
         .service("hot-reload", "0.0.0")
         .filter("info")
         .spawn_workers(false)
-        .sink_for(Tier::Log, Arc::new(obs_sdk::InMemorySink::new()))
+        .sink_for(Tier::Log, Arc::new(obs_kit::InMemorySink::new()))
         .build()
         .unwrap();
     let g0 = observer.generation();
@@ -24,5 +24,5 @@ fn test_should_bump_generation_on_reload() {
 #[test]
 fn test_filter_parse_should_route_via_default_level() {
     let f: Filter = "warn".parse().unwrap();
-    assert!(f.default_level() >= obs_sdk::Severity::Warn);
+    assert!(f.default_level() >= obs_kit::Severity::Warn);
 }

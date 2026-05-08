@@ -3,7 +3,7 @@
 //! been installed and no per-thread/task override is set. Spec 60 § 13
 //! + spec 11 § 3 ("no observer = no panic, ≤ one atomic load").
 
-use obs_sdk::{Emit, Event};
+use obs_kit::{Emit, Event};
 
 #[derive(Debug, Default, Event)]
 #[event(tier = "log", default_sev = "info")]
@@ -18,5 +18,5 @@ fn test_emit_without_observer_should_not_panic() {
     // so the global remains the default `NoopObserver`. Re-emitting
     // without any per-thread install should hit the noop path.
     ObsNoopProbe { kind: "x".into() }.emit();
-    ObsNoopProbe { kind: "x".into() }.emit_at(obs_sdk::Severity::Warn);
+    ObsNoopProbe { kind: "x".into() }.emit_at(obs_kit::Severity::Warn);
 }

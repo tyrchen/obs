@@ -60,13 +60,13 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use obs_clickhouse::ClickHouseSink;
 use obs_core::observer::WorkerCounters;
-use obs_otel::otlp_trio_from_env;
-use obs_parquet::{ParquetLayout, ParquetSink};
-use obs_sdk::{
+use obs_kit::{
     Event, FormatterStyle, NdjsonFileSink, NonBlockingWriter, NoopSink, RollingFileWriter,
     RollingPolicy, StandardObserver, StdoutSink, Tier, WorkerGuard, install_observer,
     observer as resolve_observer,
 };
+use obs_otel::otlp_trio_from_env;
+use obs_parquet::{ParquetLayout, ParquetSink};
 use obs_tracing_bridge::TracingToObsLayer;
 use tokio::{signal, time::sleep};
 use tracing_subscriber::layer::SubscriberExt;
@@ -529,7 +529,7 @@ fn build_observer(cli: &Cli) -> Result<ObserverBundle> {
     // Always wire a fast fallback sink so a tier without a per-tier
     // sink still sees delivery (we want to count every event toward
     // `delivered`).
-    let fallback: Arc<dyn obs_sdk::Sink> = if cli.null_sink {
+    let fallback: Arc<dyn obs_kit::Sink> = if cli.null_sink {
         Arc::new(NoopSink)
     } else if cli.no_file_sink {
         Arc::new(StdoutSink::new(FormatterStyle::Compact))
