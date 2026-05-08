@@ -74,6 +74,11 @@ impl EventsConfig {
     /// expanded against the process environment before parsing — set
     /// `${VAR:-default}` to provide a fallback.
     ///
+    /// Unknown top-level keys fail parsing (struct is
+    /// `deny_unknown_fields`). The error message is annotated with the
+    /// valid root-key set so typos like `filtr:` surface with an
+    /// immediate fix-up hint — boundary-review § 4.1.
+    ///
     /// # Errors
     ///
     /// Returns `ConfigError::Yaml` when parsing fails (unknown fields,
@@ -81,7 +86,8 @@ impl EventsConfig {
     /// — call [`Self::validate`] after loading.
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
         let expanded = expand_env_vars(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| ConfigError::Yaml(e.to_string()))
+        serde_yaml::from_str(&expanded)
+            .map_err(|e| ConfigError::Yaml(annotate_yaml_err(e.to_string())))
     }
 
     /// Read a YAML file from disk.
@@ -125,6 +131,28 @@ impl EventsConfig {
             apply_yaml_path(&mut overlay, &path, &value);
         }
         serde_yaml::from_value::<EventsConfig>(overlay).unwrap_or(self)
+    }
+}
+
+/// Valid top-level keys on an `obs.yaml` root. Kept in lockstep with
+/// [`EventsConfig`]'s field list so adding a field here requires the
+/// matching struct field (and vice versa — the
+/// `test_valid_root_keys_cover_struct_fields` round-trip test catches
+/// drift). Boundary-review § 4.1.
+const VALID_ROOT_KEYS: &[&str] = &[
+    "filter", "sampling", "limits", "audit", "queues", "sinks", "service", "dev_mode",
+];
+
+fn annotate_yaml_err(msg: String) -> String {
+    // Only hint when the error is the `deny_unknown_fields`-shaped one;
+    // leaving syntax errors untouched keeps the failure surface focused.
+    if msg.contains("unknown field") {
+        format!(
+            "{msg}\nhint: valid obs.yaml root keys are: {}",
+            VALID_ROOT_KEYS.join(", ")
+        )
+    } else {
+        msg
     }
 }
 
@@ -648,6 +676,45 @@ mod tests {
         let yaml = "filter: info\nbogus_field: 42\n";
         let result: Result<EventsConfig, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err(), "unknown_fields must reject unknown keys");
+    }
+
+    #[test]
+    fn test_from_yaml_str_should_hint_valid_root_keys_on_typo() {
+        // Common operator typo — `filtr:` instead of `filter:`.
+        let yaml = "filtr: info\n";
+        let err = EventsConfig::from_yaml_str(yaml).expect_err("unknown field");
+        let s = err.to_string();
+        assert!(
+            s.contains("unknown field"),
+            "raw serde error preserved: {s}"
+        );
+        assert!(
+            s.contains("valid obs.yaml root keys"),
+            "hint must list valid keys: {s}",
+        );
+        // Spot-check: both the first and last valid keys show up in the hint.
+        assert!(s.contains("filter"), "hint must enumerate `filter`: {s}");
+        assert!(
+            s.contains("dev_mode"),
+            "hint must enumerate `dev_mode`: {s}"
+        );
+    }
+
+    #[test]
+    fn test_valid_root_keys_cover_struct_fields() {
+        // Drift guard — every field in the serialized EventsConfig must
+        // appear in VALID_ROOT_KEYS so the hint stays correct.
+        let cfg = EventsConfig::default();
+        let value = serde_yaml::to_value(&cfg).expect("serialize default");
+        let map = value.as_mapping().expect("config serializes as mapping");
+        for key in map.keys() {
+            let k = key.as_str().expect("key is string");
+            assert!(
+                VALID_ROOT_KEYS.contains(&k),
+                "EventsConfig field `{k}` missing from VALID_ROOT_KEYS; update the list so the \
+                 hint keeps covering every valid root key",
+            );
+        }
     }
 
     #[test]

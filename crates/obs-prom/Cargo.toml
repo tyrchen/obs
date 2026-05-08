@@ -1,0 +1,28 @@
+[package]
+name = "obs-prom"
+description = "Prometheus scrape exporter for obs: derives counters, gauges, and histograms from MEASUREMENT-annotated envelope fields."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "prometheus", "metrics"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+buffa = { workspace = true }
+dashmap = { workspace = true }
+obs-core = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
+
+[lints]
+workspace = true

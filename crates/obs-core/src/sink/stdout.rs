@@ -16,10 +16,11 @@ use crate::registry::ScrubbedEnvelope;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum FormatterStyle {
-    /// Single line; field names elided when obvious from event name.
-    Compact,
-    /// Single line; full envelope with explicit field names (default).
+    /// Single line; tracing-fmt-shaped. Default — readable under `tail
+    /// -f` and friendly to `grep`. Boundary-review § 4.6 + spec 20 § 3.6.
     #[default]
+    Compact,
+    /// Single line; full envelope with explicit field names.
     Full,
     /// Multi-line; human-readable, dev-focused.
     Pretty,
@@ -150,7 +151,7 @@ impl StdoutSink {
 
 impl Default for StdoutSink {
     fn default() -> Self {
-        Self::new(FormatterStyle::Full)
+        Self::new(FormatterStyle::default())
     }
 }
 

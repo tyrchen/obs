@@ -1,0 +1,32 @@
+[package]
+name = "obs-sink-batch"
+description = "Generic batching sink framework for obs: triggers + retry + spool + escalation with a pluggable BatchBackend trait."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "batching", "sink"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+buffa = { workspace = true }
+bytes = { workspace = true }
+obs-core = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "sync", "time", "rt", "macros", "io-util"] }
+uuid = { version = "1.12", features = ["v4"] }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+
+[lints]
+workspace = true
