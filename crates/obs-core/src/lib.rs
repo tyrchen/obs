@@ -31,8 +31,12 @@
 //! - [`sink`] — sink trait + writers (spec 20).
 
 pub mod audit_spool;
-pub mod aux;
+// NB: previously `aux` — renamed because `aux` is a reserved Windows
+// filename (`aux.rs` silently omitted from published tarballs on
+// win32; flagged by `cargo publish`). The `aux` module path is still
+// re-exported below for backwards compatibility.
 pub mod callsite;
+pub mod codegen_helpers;
 pub mod config;
 pub mod config_watcher;
 pub mod emit;
@@ -99,8 +103,12 @@ pub fn cap_external_string(field: &'static str, raw: String, max_bytes: u16) -> 
     out
 }
 
-pub use aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame};
 pub use callsite::ObsCallsite;
+/// Back-compat alias: the module used to be called `aux`. Kept as a
+/// re-export so downstream `use obs_core::aux::…` paths keep working.
+#[doc(hidden)]
+pub use codegen_helpers as aux;
+pub use codegen_helpers::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame};
 pub use config::{EventsConfig, SamplingConfig};
 pub use config_watcher::{ConfigWatcher, DEFAULT_DEBOUNCE};
 pub use emit::Emit;
@@ -164,8 +172,8 @@ pub mod __private {
     pub use serde_json;
 
     pub use crate::{
-        aux::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame},
         callsite::ObsCallsite,
+        codegen_helpers::{BuildableTo, EnumCount, FieldCapture, SpanCtx, SpanFrame},
         forensic::{ForensicLimiter, ensure_limiter, try_acquire_forensic},
         registry::{EVENT_SCHEMAS, EventSchemaErased, Sealed},
         scope::{ScopeField, ScopeGuard, ScopeKind},

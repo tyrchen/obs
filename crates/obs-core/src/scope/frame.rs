@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use obs_proto::obs::v1::ObsEnvelope;
 
-use crate::aux::SpanFrame;
+use crate::codegen_helpers::SpanFrame;
 
 /// A field declared on `obs::scope!` / `obs::context!`. Field types
 /// match the envelope projection contract: trace ids land on the typed
