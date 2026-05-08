@@ -22,6 +22,7 @@ dev = []
 panic-hook = []
 test = ["obs-core/test"]
 clickhouse = ["dep:obs-clickhouse"]
+live-tail = ["dep:obs-live-tail"]
 parquet = ["dep:obs-parquet"]
 tower = ["dep:obs-tower"]
 tracing-bridge = ["dep:obs-tracing-bridge"]
@@ -30,6 +31,7 @@ otel = ["dep:obs-otel"]
 [dependencies]
 obs-clickhouse = { workspace = true, optional = true }
 obs-core = { workspace = true }
+obs-live-tail = { workspace = true, optional = true }
 obs-macros = { workspace = true }
 obs-otel = { workspace = true, optional = true }
 obs-parquet = { workspace = true, optional = true }
@@ -37,6 +39,8 @@ obs-proto = { workspace = true }
 obs-tower = { workspace = true, optional = true }
 obs-tracing-bridge = { workspace = true, optional = true }
 obs-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "signal"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }

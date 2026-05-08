@@ -116,9 +116,9 @@ pub use obs_types::{
     Cardinality, Classification, FieldKind, MetricKind, SamplingReason, Severity, Tier,
 };
 pub use observer::{
-    InMemoryHandle, InMemoryObserver, NoopObserver, Observer, StandardObserver,
+    BuildError, InMemoryHandle, InMemoryObserver, NoopObserver, Observer, StandardObserver,
     StandardObserverBuilder, ThreadObserverGuard, WeakObserver, WorkerCounters, install_observer,
-    observer, observer_weak, with_observer_task, with_observer_task_sync,
+    install_observer_arc, observer, observer_weak, with_observer_task, with_observer_task_sync,
     with_observer_thread_local, with_test_observer,
 };
 pub use panic_hook::install_panic_hook;
@@ -136,9 +136,9 @@ pub use resource::ResourceAttrs;
 pub use sampling::{SamplingDecision, decide as sample_decide};
 pub use scope::{ScopeField, ScopeFrame, ScopeFrameBuilder, ScopeGuard, ScopeKind};
 pub use sink::{
-    FormatterStyle, InMemorySink, LevelSplitWriter, MakeWriter, NdjsonFileSink, NonBlockingWriter,
-    NoopSink, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy, Sink, StderrWriter,
-    StdoutSink, StdoutWriter, TeeWriter, WorkerGuard,
+    FanOutSink, FormatterStyle, InMemorySink, LevelSplitWriter, MakeWriter, NdjsonFileSink,
+    NonBlockingWriter, NoopSink, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy, Sink,
+    StderrWriter, StdoutSink, StdoutWriter, TeeWriter, WorkerGuard,
 };
 pub use span_trace::SpanTrace;
 

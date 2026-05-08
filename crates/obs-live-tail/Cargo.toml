@@ -1,0 +1,29 @@
+[package]
+name = "obs-live-tail"
+description = "In-process live-tail subscriber registry + Sink for obs envelopes."
+categories = ["development-tools"]
+keywords = ["observability", "obs", "live-tail", "sse"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+buffa = { workspace = true }
+dashmap = { workspace = true }
+obs-core = { workspace = true }
+obs-proto = { workspace = true }
+obs-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+obs-core = { workspace = true, features = ["test"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

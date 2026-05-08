@@ -10,6 +10,7 @@
 //! - `MakeWriter` family: `StdoutWriter`, `StderrWriter`, `LevelSplitWriter`, `TeeWriter`,
 //!   `RollingFileWriter`, `NonBlockingWriter`.
 
+pub mod fanout;
 mod in_memory;
 mod ndjson;
 mod noop;
@@ -19,6 +20,7 @@ pub(crate) mod writer;
 use std::{future::Future, pin::Pin};
 
 pub use self::{
+    fanout::FanOutSink,
     in_memory::{InMemoryHandle, InMemorySink},
     ndjson::NdjsonFileSink,
     noop::NoopSink,

@@ -154,6 +154,7 @@ trybuild = "1.0"
 obs-build = { path = "crates/obs-build", version = "0.1.0" }
 obs-clickhouse = { path = "crates/obs-clickhouse", version = "0.1.0" }
 obs-core = { path = "crates/obs-core", version = "0.1.0" }
+obs-live-tail = { path = "crates/obs-live-tail", version = "0.1.0" }
 obs-macros = { path = "crates/obs-macros", version = "0.1.0" }
 obs-otel = { path = "crates/obs-otel", version = "0.1.0" }
 obs-parquet = { path = "crates/obs-parquet", version = "0.1.0" }

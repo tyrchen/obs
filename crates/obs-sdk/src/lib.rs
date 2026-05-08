@@ -1,10 +1,23 @@
 #![forbid(unsafe_code)]
 #![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 
 //! Façade crate — re-exports the everyday obs API.
 //!
-//! Most downstream apps depend only on `obs-sdk`. Spec 61 § 2.11.
+//! Most downstream apps depend only on `obs-sdk`. Spec 61 § 2.11 +
+//! boundary-review § 3.6 (`init_for_service`).
 
+mod init;
+
+pub use init::{InitBuilder, InitError, InitGuard, ServicePreset, init_for_service};
 /// Typed wrappers for `Classification::Secret` fields. Decision D6-2:
 /// SECRET-classified event fields should be declared as
 /// `secrecy::SecretString` / `secrecy::SecretBox<T>` so the in-memory
@@ -15,16 +28,22 @@ pub use obs_core::__private::secrecy;
 pub use obs_core::sink::FormatterStyle;
 pub use obs_core::{
     BuildableTo, Cardinality, Classification, ENVELOPE_FORMAT_VER, Emit, EnumCount, EventSchema,
-    EventsConfig, FieldCapture, FieldKind, FieldMeta, FieldRole, Filter, InMemoryHandle,
-    InMemoryObserver, InMemorySink, Instrument, Instrumented, LevelSplitWriter, MakeWriter,
-    MetricEmitter, MetricKind, NdjsonFileSink, NonBlockingWriter, NoopObserver, NoopSink, ObsBatch,
-    ObsCallsite, ObsEnvelope, Observer, RollingFileWriter, RollingFileWriterBuilder, RollingPolicy,
-    SamplingConfig, SamplingReason, ScopeField, ScopeFrame, ScopeGuard, ScopeKind, Severity, Sink,
-    SpanCtx, SpanFrame, SpanTrace, StandardObserver, StandardObserverBuilder, StderrWriter,
-    StdoutSink, StdoutWriter, TeeWriter, Tier, WithObserver, WorkerCounters, WorkerGuard,
-    install_observer, install_panic_hook, observer, observer_weak, with_observer_task,
-    with_observer_task_sync, with_observer_thread_local, with_test_observer,
+    EventsConfig, FanOutSink, FieldCapture, FieldKind, FieldMeta, FieldRole, Filter,
+    InMemoryHandle, InMemoryObserver, InMemorySink, Instrument, Instrumented, LevelSplitWriter,
+    MakeWriter, MetricEmitter, MetricKind, NdjsonFileSink, NonBlockingWriter, NoopObserver,
+    NoopSink, ObsBatch, ObsCallsite, ObsEnvelope, ObsTraceCtx, Observer, RollingFileWriter,
+    RollingFileWriterBuilder, RollingPolicy, SamplingConfig, SamplingReason, ScopeField,
+    ScopeFrame, ScopeFrameBuilder, ScopeGuard, ScopeKind, Severity, Sink, SpanCtx, SpanFrame,
+    SpanTrace, StandardObserver, StandardObserverBuilder, StderrWriter, StdoutSink, StdoutWriter,
+    TeeWriter, Tier, W3cPropagator, WithObserver, WorkerCounters, WorkerGuard, extract_w3c,
+    fresh_span_id, fresh_trace_id, inject_w3c, install_observer, install_panic_hook, observer,
+    observer_weak, status_class, with_observer_task, with_observer_task_sync,
+    with_observer_thread_local, with_test_observer,
 };
+/// In-process live-tail subscriber registry + Sink. Enable via the
+/// `live-tail` feature. Boundary-review § 3.1.
+#[cfg(feature = "live-tail")]
+pub use obs_live_tail as live_tail;
 pub use obs_macros::{Event, context, emit, forensic, include_schemas, instrument, scope};
 pub use obs_proto::obs::v1::{ObsFnEntered, ObsFnExecuted, ObsForensicEvent};
 

@@ -33,7 +33,7 @@ use once_cell::sync::Lazy;
 pub use self::{
     in_memory::{InMemoryHandle, InMemoryObserver},
     noop::NoopObserver,
-    standard::{StandardObserver, StandardObserverBuilder},
+    standard::{BuildError, StandardObserver, StandardObserverBuilder},
     workers::WorkerCounters,
 };
 use crate::callsite::ObsCallsite;
